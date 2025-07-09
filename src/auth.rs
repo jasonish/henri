@@ -119,7 +119,7 @@ async fn request_device_code(client: &Client) -> Result<DeviceCodeResponse> {
     let response = client
         .post("https://github.com/login/device/code")
         .header("Accept", "application/json")
-        .header("User-Agent", "coder/0.1.0")
+        .header("User-Agent", "henri-cli")
         .form(&[("client_id", "Iv1.b507a08c87ecfe98"), ("scope", "copilot")])
         .send()
         .await
@@ -157,7 +157,7 @@ async fn poll_for_token(
         let response = client
             .post("https://github.com/login/oauth/access_token")
             .header("Accept", "application/json")
-            .header("User-Agent", "coder/0.1.0")
+            .header("User-Agent", "henri-cli")
             .form(&[
                 ("client_id", "Iv1.b507a08c87ecfe98"),
                 ("device_code", &device_code.device_code),

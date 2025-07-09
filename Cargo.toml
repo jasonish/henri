@@ -1,7 +1,10 @@
 [package]
-name = "coder"
+name = "henri"
 version = "0.1.0-alpha.1"
 edition = "2024"
+description = "Your Golden Retriever coding assistant"
+repository = "https://github.com/jasonish/henri"
+homepage = "https://github.com/jasonish/henri"
 
 [dependencies]
 rustyline = "14.0"

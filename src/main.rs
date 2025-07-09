@@ -87,7 +87,7 @@ impl Highlighter for ReplHelper {
 impl Validator for ReplHelper {}
 
 #[derive(Parser)]
-#[command(name = "coder")]
+#[command(name = "henri")]
 #[command(about = "A coding assistant REPL")]
 struct Cli {
     #[command(subcommand)]
@@ -128,7 +128,7 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
         Err(e) => {
             eprintln!("Warning: Failed to initialize LLM client: {e}");
             eprintln!("You can still use the REPL, but responses will be echoed back.");
-            eprintln!("Run 'coder login' to authenticate with a provider.");
+            eprintln!("Run 'henri login' to authenticate with a provider.");
             None
         }
     };
@@ -162,7 +162,7 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
         );
     } else {
         println!("No LLM provider configured. Responses will be echoed back.");
-        println!("Run 'coder login' to authenticate with GitHub Copilot.");
+        println!("Run 'henri login' to authenticate with GitHub Copilot.");
     }
 
     let mut multi_line_buffer = String::new();
@@ -320,7 +320,7 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
                         } else {
                             print_full_width_message(
                                 "Error",
-                                "No LLM provider configured. Run 'coder login' to authenticate.",
+                                "No LLM provider configured. Run 'henri login' to authenticate.",
                                 DisplayStyle::Error,
                             );
                         }
@@ -513,7 +513,7 @@ async fn show_model_selection_menu() -> Result<()> {
     if !has_github_copilot {
         println!(
             "{}",
-            "No LLM providers configured. Run 'coder login' to authenticate.".yellow()
+            "No LLM providers configured. Run 'henri login' to authenticate.".yellow()
         );
         return Ok(());
     }

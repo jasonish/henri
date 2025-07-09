@@ -45,7 +45,7 @@ impl Default for Config {
 impl Config {
     pub fn config_dir() -> Result<PathBuf> {
         let home = home_dir().context("Could not find home directory")?;
-        Ok(home.join(".coder"))
+        Ok(home.join(".henri"))
     }
 
     pub fn config_path() -> Result<PathBuf> {
