@@ -2,24 +2,29 @@
 name = "henri"
 version = "0.1.0-alpha.1"
 edition = "2024"
+rust-version = "1.85.1"
 description = "Your Golden Retriever coding assistant"
+license = "AGPL-3.0-only"
 repository = "https://github.com/jasonish/henri"
 homepage = "https://github.com/jasonish/henri"
+keywords = ["assistant", "coding", "llm", "github-copilot"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
-rustyline = "14.0"
-colored = "2.1"
+rustyline = "16.0"
+colored = "3.0"
 clap = { version = "4.5", features = ["derive"] }
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.46", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-dirs = "5.0"
+dirs = "6.0"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 inquire = "0.7"
-crossterm = "0.28"
+crossterm = "0.29"
 textwrap = "0.16"
+async-trait = "0.1"
 
 [dev-dependencies]
-tempfile = "3.8"
+tempfile = "3.20"

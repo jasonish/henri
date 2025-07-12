@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use textwrap::{Options, wrap};
 
 /// Wraps text to fit within the specified width, preserving formatting where possible

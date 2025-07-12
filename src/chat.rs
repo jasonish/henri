@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -6,6 +8,10 @@ pub struct ChatMessage {
     pub role: MessageRole,
     pub content: MessageContent,
     pub timestamp: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<crate::llm::ToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +33,7 @@ pub enum MessageRole {
     User,
     Assistant,
     System,
+    Tool,
 }
 
 #[derive(Debug, Clone)]
@@ -50,11 +57,25 @@ impl ChatConversation {
         Self::default()
     }
 
+    pub fn add_system_message(&mut self, content: String) {
+        let message = ChatMessage {
+            role: MessageRole::System,
+            content: MessageContent::Text(content),
+            timestamp: chrono::Utc::now().timestamp(),
+            tool_calls: None,
+            tool_call_id: None,
+        };
+
+        self.add_message(message);
+    }
+
     pub fn add_user_message(&mut self, content: String) {
         let message = ChatMessage {
             role: MessageRole::User,
             content: MessageContent::Text(content),
             timestamp: chrono::Utc::now().timestamp(),
+            tool_calls: None,
+            tool_call_id: None,
         };
 
         self.add_message(message);
@@ -65,6 +86,36 @@ impl ChatConversation {
             role: MessageRole::Assistant,
             content: MessageContent::Text(content),
             timestamp: chrono::Utc::now().timestamp(),
+            tool_calls: None,
+            tool_call_id: None,
+        };
+
+        self.add_message(message);
+    }
+
+    pub fn add_assistant_message_with_tool_calls(
+        &mut self,
+        content: String,
+        tool_calls: Vec<crate::llm::ToolCall>,
+    ) {
+        let message = ChatMessage {
+            role: MessageRole::Assistant,
+            content: MessageContent::Text(content),
+            timestamp: chrono::Utc::now().timestamp(),
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+        };
+
+        self.add_message(message);
+    }
+
+    pub fn add_tool_message(&mut self, content: String, tool_call_id: String) {
+        let message = ChatMessage {
+            role: MessageRole::Tool,
+            content: MessageContent::Text(content),
+            timestamp: chrono::Utc::now().timestamp(),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id),
         };
 
         self.add_message(message);

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -23,7 +25,7 @@ use chat::ChatConversation;
 use config::Config as AppConfig;
 use display::{DisplayStyle, clear_lines, print_full_width_message};
 use history::History;
-use llm::get_github_copilot_models;
+use llm::{LLM, ProviderClient, get_available_models};
 
 struct ReplHelper;
 
@@ -39,7 +41,15 @@ impl Completer for ReplHelper {
         _ctx: &rustyline::Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
         let commands = vec![
-            "/quit", "/exit", "/help", "/clear", "/model", "/models", "/verbose", "/json",
+            "/quit",
+            "/exit",
+            "/help",
+            "/clear",
+            "/model",
+            "/verbose",
+            "/json",
+            "/system",
+            "/providers",
         ];
         let mut candidates = Vec::new();
 
@@ -65,7 +75,14 @@ impl Hinter for ReplHelper {
     fn hint(&self, line: &str, pos: usize, _ctx: &rustyline::Context<'_>) -> Option<String> {
         if line.starts_with('/') && pos == line.len() {
             let commands = vec![
-                "/quit", "/exit", "/help", "/clear", "/model", "/models", "/verbose",
+                "/quit",
+                "/exit",
+                "/help",
+                "/clear",
+                "/model",
+                "/verbose",
+                "/system",
+                "/providers",
             ];
             for cmd in commands {
                 if cmd.starts_with(line) && cmd.len() > line.len() {
@@ -102,6 +119,18 @@ struct Cli {
 enum Commands {
     /// Login to model providers
     Login,
+    /// Test authentication for configured providers
+    #[command(name = "auth")]
+    Auth {
+        #[command(subcommand)]
+        subcommand: AuthCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthCommands {
+    /// Test authentication for a provider
+    Test,
 }
 
 #[tokio::main]
@@ -112,6 +141,11 @@ async fn main() -> Result<()> {
         Some(Commands::Login) => {
             auth::login().await?;
         }
+        Some(Commands::Auth { subcommand }) => match subcommand {
+            AuthCommands::Test => {
+                auth::test_auth_interactive(cli.verbose).await?;
+            }
+        },
         None => {
             start_repl(cli.verbose).await?;
         }
@@ -150,10 +184,17 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
         eprintln!("Warning: Failed to load history into editor: {e}");
     }
 
-    // Initialize chat conversation
-    let mut conversation = ChatConversation::default();
+    // Load config to get system mode
+    let config = AppConfig::load().unwrap_or_default();
+    let system_mode = config.get_system_mode();
 
-    println!("Welcome to the LLM Chat! Type '/quit' or '/exit' to quit.");
+    // Initialize chat conversation with system message
+    let mut conversation = ChatConversation::default();
+    conversation.add_system_message(system_mode.system_prompt().to_string());
+
+    println!("Welcome to Henri, your Golden Retriever coding assistant! 🐕");
+    println!("Current mode: {} Assistant", system_mode.as_str());
+    println!("Type '/quit' or '/exit' to quit.");
     println!("Use Alt+Enter for multi-line input or end lines with '\\'.");
 
     if llm_client.is_some() {
@@ -172,7 +213,12 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
     loop {
         // Display token usage before the prompt if available
         if let Some(usage) = last_usage.take() {
-            llm::LLMClient::log_token_usage(&usage);
+            if let Some(ref client) = llm_client {
+                match client {
+                    ProviderClient::GitHubCopilot(_) => llm::LLMClient::log_token_usage(&usage),
+                    ProviderClient::OpenRouter(_) => llm::OpenRouterClient::log_token_usage(&usage),
+                }
+            }
         }
 
         let prompt = if multi_line_buffer.is_empty() {
@@ -185,6 +231,215 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
             Ok(line) => {
                 // Count this line
                 input_line_count += 1;
+
+                // Check if user typed just "/" to show command menu
+                if line.trim() == "/" {
+                    match show_command_menu().await {
+                        Ok(Some(command)) => {
+                            // Execute the selected command by simulating user input
+                            rl.add_history_entry(&command).ok();
+                            history.add_entry(command.clone(), false);
+
+                            // Process the command as if the user typed it
+                            if command == "/quit" || command == "/exit" {
+                                // Save history before exiting
+                                if let Err(e) = history.save() {
+                                    eprintln!("Warning: Failed to save history: {e}");
+                                }
+                                break;
+                            } else if command == "/help" {
+                                println!("Available commands:");
+                                println!("  /help    - Show this help message");
+                                println!("  /clear   - Clear chat conversation history");
+                                println!(
+                                    "  /verbose - Toggle verbose mode (show raw API requests/responses)"
+                                );
+                                println!(
+                                    "  /model [model_name] - Show interactive model menu or set a model"
+                                );
+                                println!(
+                                    "  /json    - Enter JSON mode to send raw JSON to the LLM API (use /exit to leave)"
+                                );
+                                println!(
+                                    "  /system  - Toggle between Developer and SysAdmin modes"
+                                );
+                                println!(
+                                    "  /providers - Show configured providers and their status"
+                                );
+                                println!("  /quit    - Exit the REPL");
+                                println!("  /exit    - Exit the REPL");
+                                println!();
+                                println!(
+                                    "Use Alt+Enter for multi-line input or end lines with '\\\\'."
+                                );
+                            } else if command == "/clear" {
+                                conversation.clear();
+                                println!(
+                                    "{}",
+                                    "Chat history cleared (system prompt preserved).".yellow()
+                                );
+                            } else if command == "/system" {
+                                let config = AppConfig::load().unwrap_or_default();
+                                let current_mode = config.get_system_mode();
+                                let new_mode = current_mode.toggle();
+
+                                // Save new mode to config
+                                let mut config = AppConfig::load().unwrap_or_default();
+                                config.set_system_mode(new_mode);
+                                if let Err(e) = config.save() {
+                                    eprintln!("Warning: Failed to save config: {e}");
+                                }
+
+                                // Clear conversation and add new system message
+                                conversation.clear();
+                                conversation
+                                    .add_system_message(new_mode.system_prompt().to_string());
+
+                                println!(
+                                    "{}",
+                                    format!(
+                                        "System mode switched to: {} Assistant",
+                                        new_mode.as_str()
+                                    )
+                                    .green()
+                                    .bold()
+                                );
+                                println!(
+                                    "{}",
+                                    "Chat history cleared with new system prompt.".yellow()
+                                );
+                            } else if command == "/verbose" {
+                                verbose = !verbose;
+                                println!(
+                                    "{}",
+                                    format!("Verbose mode: {}", if verbose { "ON" } else { "OFF" })
+                                        .yellow()
+                                );
+                                // Update the LLM client's verbose setting if it exists
+                                if let Some(ref mut client) = llm_client {
+                                    client.set_verbose(verbose);
+                                }
+                            } else if command == "/providers" {
+                                handle_providers_command();
+                            } else if command.starts_with("/model") {
+                                handle_model_command(&command).await;
+                                // Recreate LLM client with new model/provider
+                                llm_client = match llm::create_llm_client(verbose) {
+                                    Ok(client) => client,
+                                    Err(e) => {
+                                        eprintln!(
+                                            "{} Failed to create LLM client: {e}",
+                                            "error>".red().bold()
+                                        );
+                                        None
+                                    }
+                                };
+                            } else if command == "/json" {
+                                println!("📝 JSON mode enabled. Send raw JSON to the LLM.");
+                                println!(
+                                    "   Example: {{\"messages\": [{{\"role\": \"user\", \"content\": \"Hello\"}}], \"model\": \"gpt-4o\"}}"
+                                );
+                                println!("   Type '/exit' or press Ctrl+C to exit JSON mode.");
+                                println!();
+
+                                // Enter JSON mode loop
+                                'json_mode: loop {
+                                    let mut json_input = String::new();
+                                    let mut empty_line_count = 0;
+
+                                    // Collect multi-line JSON input
+                                    loop {
+                                        let json_line = rl.readline("JSON> ");
+                                        match json_line {
+                                            Ok(line) => {
+                                                // Check for exit command
+                                                if line.trim() == "/exit" {
+                                                    println!("Exiting JSON mode.");
+                                                    break 'json_mode;
+                                                }
+
+                                                // Add to history
+                                                if !line.trim().is_empty() {
+                                                    history.add_entry(line.clone(), false);
+                                                }
+
+                                                if line.trim().is_empty() {
+                                                    empty_line_count += 1;
+                                                    if empty_line_count >= 2 {
+                                                        break;
+                                                    }
+                                                } else {
+                                                    empty_line_count = 0;
+                                                }
+                                                json_input.push_str(&line);
+                                                json_input.push('\n');
+                                            }
+                                            Err(ReadlineError::Interrupted) => {
+                                                println!("Exiting JSON mode.");
+                                                break 'json_mode;
+                                            }
+                                            Err(ReadlineError::Eof) => {
+                                                println!("Exiting JSON mode.");
+                                                break 'json_mode;
+                                            }
+                                            Err(err) => {
+                                                eprintln!("Error reading JSON: {err}");
+                                                continue;
+                                            }
+                                        }
+                                    }
+
+                                    if json_input.trim().is_empty() {
+                                        continue;
+                                    }
+
+                                    // Send raw JSON to LLM
+                                    if let Some(ref mut client) = llm_client {
+                                        match client
+                                            .send_raw_json_request(&json_input, verbose)
+                                            .await
+                                        {
+                                            Ok((response, usage)) => {
+                                                println!();
+                                                print_full_width_message(
+                                                    "Assistant",
+                                                    &response,
+                                                    DisplayStyle::Assistant,
+                                                );
+                                                if let Some(usage) = usage {
+                                                    last_usage = Some(usage);
+                                                }
+                                                println!();
+                                            }
+                                            Err(e) => {
+                                                print_full_width_message(
+                                                    "Error",
+                                                    &format!("Failed to send JSON request: {e}"),
+                                                    DisplayStyle::Error,
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        print_full_width_message(
+                                            "Error",
+                                            "No LLM provider configured. Run 'henri login' to authenticate.",
+                                            DisplayStyle::Error,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            // User cancelled the selection
+                        }
+                        Err(e) => {
+                            eprintln!("Error showing command menu: {e}");
+                        }
+                    }
+                    input_line_count = 0;
+                    continue;
+                }
+
                 if line.trim() == "/quit" || line.trim() == "/exit" {
                     // Save history before exiting
                     if let Err(e) = history.save() {
@@ -197,10 +452,11 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
                     println!("  /clear   - Clear chat conversation history");
                     println!("  /verbose - Toggle verbose mode (show raw API requests/responses)");
                     println!("  /model [model_name] - Show interactive model menu or set a model");
-                    println!("  /models  - Query available models from the API");
                     println!(
                         "  /json    - Enter JSON mode to send raw JSON to the LLM API (use /exit to leave)"
                     );
+                    println!("  /system  - Toggle between Developer and SysAdmin modes");
+                    println!("  /providers - Show configured providers and their status");
                     println!("  /quit    - Exit the REPL");
                     println!("  /exit    - Exit the REPL");
                     println!();
@@ -212,6 +468,34 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
                     println!(
                         "{}",
                         "Chat history cleared (system prompt preserved).".yellow()
+                    );
+                    input_line_count = 0;
+                    continue;
+                } else if line.trim() == "/system" {
+                    let config = AppConfig::load().unwrap_or_default();
+                    let current_mode = config.get_system_mode();
+                    let new_mode = current_mode.toggle();
+
+                    // Save new mode to config
+                    let mut config = AppConfig::load().unwrap_or_default();
+                    config.set_system_mode(new_mode);
+                    if let Err(e) = config.save() {
+                        eprintln!("Warning: Failed to save config: {e}");
+                    }
+
+                    // Clear conversation and add new system message
+                    conversation.clear();
+                    conversation.add_system_message(new_mode.system_prompt().to_string());
+
+                    println!(
+                        "{}",
+                        format!("System mode switched to: {} Assistant", new_mode.as_str())
+                            .green()
+                            .bold()
+                    );
+                    println!(
+                        "{}",
+                        "Chat history cleared with new system prompt.".yellow()
                     );
                     input_line_count = 0;
                     continue;
@@ -227,12 +511,16 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
                     }
                     input_line_count = 0;
                     continue;
-                } else if line.trim() == "/models" {
-                    handle_models_query(&mut llm_client).await;
-                    input_line_count = 0;
-                    continue;
                 } else if line.trim().starts_with("/model") {
                     handle_model_command(line.trim()).await;
+                    // Recreate LLM client with new model/provider
+                    llm_client = match llm::create_llm_client(verbose) {
+                        Ok(client) => client,
+                        Err(e) => {
+                            eprintln!("{} Failed to create LLM client: {e}", "error>".red().bold());
+                            None
+                        }
+                    };
                     input_line_count = 0;
                     continue;
                 } else if line.trim() == "/json" {
@@ -330,7 +618,15 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
                 } else if line.trim().starts_with('/') && !line.trim().is_empty() {
                     let command = line.trim();
                     if ![
-                        "/quit", "/exit", "/help", "/clear", "/verbose", "/models", "/json",
+                        "/quit",
+                        "/exit",
+                        "/help",
+                        "/clear",
+                        "/verbose",
+                        "/models",
+                        "/json",
+                        "/system",
+                        "/providers",
                     ]
                     .contains(&command)
                         && !command.starts_with("/model")
@@ -416,19 +712,134 @@ async fn start_repl(mut verbose: bool) -> Result<()> {
 }
 
 async fn handle_llm_response(
-    _client: &mut llm::LLMClient,
+    client: &mut ProviderClient,
     conversation: &mut ChatConversation,
-    response: String,
-    _verbose: bool,
+    mut choices: Vec<llm::CopilotChoice>,
+    verbose: bool,
 ) -> Option<llm::CopilotUsage> {
-    // Just add the response to conversation and display it
-    conversation.add_assistant_message(response.clone());
-    print_wrapped_response("assistant>", &response);
-    None
+    let mut accumulated_usage: Option<llm::CopilotUsage> = None;
+
+    // Process choices in a loop to handle tool calls iteratively
+    loop {
+        let mut has_tool_calls = false;
+        let mut all_tool_results = Vec::new();
+
+        let mut assistant_content = String::new();
+        let mut assistant_tool_calls = Vec::new();
+
+        // First pass: collect content and tool calls from all choices
+        for choice in &choices {
+            // Collect content
+            if let Some(content) = &choice.message.content {
+                if !content.is_empty() {
+                    assistant_content = content.clone();
+                    print_wrapped_response("assistant>", content);
+                }
+            }
+
+            // Collect tool calls
+            if let Some(tool_calls) = &choice.message.tool_calls {
+                if !tool_calls.is_empty() {
+                    has_tool_calls = true;
+                    assistant_tool_calls.extend(tool_calls.clone());
+                    if verbose {
+                        eprintln!("🔧 Found {} tool call(s)", tool_calls.len());
+                    }
+                }
+            }
+        }
+
+        // Add the assistant message to conversation (only once, combining content and tool calls)
+        if !assistant_content.is_empty() || !assistant_tool_calls.is_empty() {
+            if assistant_tool_calls.is_empty() {
+                conversation.add_assistant_message(assistant_content);
+            } else {
+                conversation.add_assistant_message_with_tool_calls(
+                    assistant_content,
+                    assistant_tool_calls.clone(),
+                );
+            }
+        }
+
+        // Now execute tool calls if we have any
+        if has_tool_calls && !assistant_tool_calls.is_empty() {
+            if verbose {
+                eprintln!("🔧 Executing {} tool call(s)", assistant_tool_calls.len());
+            }
+
+            // Execute the tool calls
+            match llm::execute_tool_calls(&assistant_tool_calls, verbose).await {
+                Ok(tool_results) => {
+                    // Display tool results
+                    for result in &tool_results {
+                        let mut output = format!("Exit code: {}", result.exit_code);
+
+                        if !result.stdout.trim().is_empty() {
+                            output.push_str(&format!("\nStdout:\n{}", result.stdout));
+                        }
+
+                        if !result.stderr.trim().is_empty() {
+                            output.push_str(&format!("\nStderr:\n{}", result.stderr));
+                        }
+
+                        print_wrapped_response("tool>", &output);
+                    }
+
+                    // Add tool results to conversation
+                    for result in &tool_results {
+                        let tool_content = serde_json::json!({
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                            "exit_code": result.exit_code
+                        });
+                        conversation.add_tool_message(
+                            serde_json::to_string(&tool_content).unwrap_or_default(),
+                            result.tool_call_id.clone(),
+                        );
+                    }
+
+                    all_tool_results.extend(tool_results);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{} Failed to execute tool calls: {e}",
+                        "error>".red().bold()
+                    );
+                }
+            }
+        }
+
+        // If we had tool calls, send the results back and continue
+        if has_tool_calls && !all_tool_results.is_empty() {
+            match client
+                .send_tool_results(conversation.get_messages(), &all_tool_results, verbose)
+                .await
+            {
+                Ok((new_choices, new_usage)) => {
+                    // Update usage if provided
+                    if let Some(usage) = new_usage {
+                        accumulated_usage = Some(usage);
+                    }
+
+                    // Continue with the new choices
+                    choices = new_choices;
+                }
+                Err(e) => {
+                    eprintln!("{} Failed to send tool results: {e}", "error>".red().bold());
+                    break;
+                }
+            }
+        } else {
+            // No more tool calls, we're done
+            break;
+        }
+    }
+
+    accumulated_usage
 }
 
 async fn handle_user_input(
-    llm_client: &mut Option<llm::LLMClient>,
+    llm_client: &mut Option<ProviderClient>,
     conversation: &mut ChatConversation,
     user_input: String,
     verbose: bool,
@@ -449,8 +860,8 @@ async fn handle_user_input(
             .send_chat_request(conversation.get_messages(), verbose)
             .await
         {
-            Ok((response, usage)) => {
-                handle_llm_response(client, conversation, response, verbose).await;
+            Ok((choices, usage)) => {
+                handle_llm_response(client, conversation, choices, verbose).await;
                 usage
             }
             Err(e) => {
@@ -507,10 +918,11 @@ async fn show_model_selection_menu() -> Result<()> {
     let config = AppConfig::load()?;
     let current_model = config.get_selected_model();
 
-    // Check if we have GitHub Copilot configured
-    let has_github_copilot = config.providers.github_copilot.is_some();
+    // Check if we have any providers configured
+    let has_providers =
+        config.providers.github_copilot.is_some() || config.providers.open_router.is_some();
 
-    if !has_github_copilot {
+    if !has_providers {
         println!(
             "{}",
             "No LLM providers configured. Run 'henri login' to authenticate.".yellow()
@@ -518,15 +930,8 @@ async fn show_model_selection_menu() -> Result<()> {
         return Ok(());
     }
 
-    // Create a temporary LLM client to query models
-    let mut temp_client = config
-        .providers
-        .github_copilot
-        .clone()
-        .map(|github_config| llm::LLMClient::new(github_config, false));
-
-    // Get available models (will try API first, then fall back to defaults)
-    let models = get_github_copilot_models(temp_client.as_mut()).await;
+    // Get available models based on configured providers
+    let models = get_available_models(&config);
 
     // Create display options with current selection indicator
     let options: Vec<String> = models
@@ -537,38 +942,68 @@ async fn show_model_selection_menu() -> Result<()> {
             } else {
                 "  "
             };
-            format!("{}{}", indicator, model.name)
+            // Extract provider from the model name
+            let provider = if model.name.contains("GitHub Copilot") {
+                "GitHub Copilot"
+            } else if model.name.contains("OpenRouter") {
+                "OpenRouter"
+            } else {
+                "Unknown"
+            };
+            format!("{}{} ({})", indicator, model.id, provider)
         })
         .collect();
 
     // Show current selection
     if let Some(current) = current_model {
-        if let Some(current_model_info) = models.iter().find(|m| m.id == *current) {
-            println!(
-                "{} {}",
-                "Current model:".green().bold(),
-                current_model_info.name,
-            );
+        // Determine provider for current model
+        let provider = if current.contains("anthropic/") {
+            "OpenRouter"
         } else {
-            println!("{} {} (unknown)", "Current model:".green().bold(), current);
-        }
+            "GitHub Copilot"
+        };
+        println!(
+            "{} {} ({})",
+            "Current model:".green().bold(),
+            current,
+            provider,
+        );
         println!();
     }
+
+    // Find the index of the current model for default selection
+    let default_index = if let Some(current) = current_model {
+        models.iter().position(|m| m.id == *current).unwrap_or(0)
+    } else {
+        0
+    };
 
     // Show the selection menu
     let selection = Select::new("Select a model:", options)
         .with_page_size(10)
+        .with_starting_cursor(default_index)
         .prompt();
 
     match selection {
         Ok(selected_display) => {
             // Find the selected model by matching the display string
-            if let Some(selected_model) = models.iter().find(|model| {
-                let display = format!("  {}", model.name);
-                selected_display.ends_with(&display[2..]) // Skip the indicator part
-            }) {
+            // Handle the indicator which might be multi-byte (● is 3 bytes)
+            let display_without_indicator =
+                if let Some(stripped) = selected_display.strip_prefix("● ") {
+                    stripped
+                } else if let Some(stripped) = selected_display.strip_prefix("  ") {
+                    stripped
+                } else {
+                    &selected_display
+                };
+
+            // Find model by checking if the display starts with the model ID
+            if let Some(selected_model) = models
+                .iter()
+                .find(|model| display_without_indicator.starts_with(&model.id))
+            {
                 set_model(&selected_model.id).await?;
-                println!("{} {}", "Model set to:".green().bold(), selected_model.name,);
+                println!("{} {}", "Model set to:".green().bold(), selected_model.id);
             } else {
                 anyhow::bail!("Could not find selected model");
             }
@@ -591,13 +1026,68 @@ async fn set_model(model_id: &str) -> Result<()> {
     Ok(())
 }
 
-async fn handle_models_query(llm_client: &mut Option<llm::LLMClient>) {
-    // Get the list of available models
-    let models = llm::get_github_copilot_models(llm_client.as_mut()).await;
+async fn show_command_menu() -> Result<Option<String>> {
+    #[derive(Clone)]
+    struct Command {
+        name: &'static str,
+        description: &'static str,
+    }
 
-    println!("{}", "Available models:".green().bold());
-    for model in models {
-        println!("  - {}", model.id.cyan());
+    let commands = vec![
+        Command {
+            name: "/help",
+            description: "Show help message with available commands",
+        },
+        Command {
+            name: "/clear",
+            description: "Clear chat conversation history",
+        },
+        Command {
+            name: "/model",
+            description: "Show interactive model menu or set a model",
+        },
+        Command {
+            name: "/verbose",
+            description: "Toggle verbose mode (show raw API requests/responses)",
+        },
+        Command {
+            name: "/json",
+            description: "Enter JSON mode to send raw JSON to the LLM API",
+        },
+        Command {
+            name: "/quit",
+            description: "Exit the REPL",
+        },
+        Command {
+            name: "/exit",
+            description: "Exit the REPL",
+        },
+        Command {
+            name: "/system",
+            description: "Toggle between Developer and SysAdmin modes",
+        },
+    ];
+
+    let options: Vec<String> = commands
+        .iter()
+        .map(|cmd| format!("{:<12} - {}", cmd.name, cmd.description))
+        .collect();
+
+    let selection = Select::new("Select a command:", options)
+        .with_page_size(10)
+        .prompt();
+
+    match selection {
+        Ok(selected) => {
+            // Extract the command name from the selection
+            if let Some(cmd) = commands.iter().find(|c| selected.starts_with(c.name)) {
+                Ok(Some(cmd.name.to_string()))
+            } else {
+                Ok(None)
+            }
+        }
+        Err(inquire::InquireError::OperationCanceled) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("Selection error: {}", e)),
     }
 }
 
@@ -613,4 +1103,57 @@ fn print_wrapped_response(prefix: &str, text: &str) {
 
     // Always use full-width background display
     display::print_full_width_message(&prefix[..prefix.len() - 1], text, style);
+}
+
+fn handle_providers_command() {
+    let config = match AppConfig::load() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("{} Failed to load config: {e}", "error>".red().bold());
+            return;
+        }
+    };
+
+    println!("\n{}", "Configured Providers".cyan().bold());
+    println!("{}", "═".repeat(50).cyan());
+    println!();
+
+    // GitHub Copilot status
+    let github_status = if config.providers.github_copilot.is_some() {
+        "✓ Configured".green()
+    } else {
+        "✗ Not configured".red()
+    };
+    println!("  {} {}", "GitHub Copilot:".bold(), github_status);
+
+    // OpenRouter status
+    let openrouter_status = if config.providers.open_router.is_some() {
+        "✓ Configured".green()
+    } else {
+        "✗ Not configured".red()
+    };
+    println!("  {} {}", "OpenRouter:    ".bold(), openrouter_status);
+
+    // Show current model and its provider
+    if let Some(model) = config.get_selected_model() {
+        println!();
+        println!("{} {}", "Current model:".yellow().bold(), model);
+
+        // Determine which provider is active
+        let provider = if model.contains("anthropic/") {
+            "OpenRouter"
+        } else {
+            "GitHub Copilot"
+        };
+        println!("{} {}", "Active provider:".yellow().bold(), provider);
+    } else {
+        println!();
+        println!("{}", "No model selected.".yellow());
+    }
+
+    println!();
+    println!(
+        "{}",
+        "Run 'henri login' to configure additional providers.".italic()
+    );
 }
