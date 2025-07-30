@@ -52,11 +52,6 @@ impl Default for ChatConversation {
 }
 
 impl ChatConversation {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn add_system_message(&mut self, content: String) {
         let message = ChatMessage {
             role: MessageRole::System,
@@ -148,15 +143,5 @@ impl ChatConversation {
         if let Some(msg) = message {
             self.messages.push_back(msg);
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.messages.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.messages.is_empty()
     }
 }

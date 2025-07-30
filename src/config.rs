@@ -11,6 +11,7 @@ use std::path::PathBuf;
 pub enum Provider {
     GitHubCopilot,
     OpenRouter,
+    Anthropic,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
@@ -77,6 +78,7 @@ pub struct Config {
 pub struct Providers {
     pub github_copilot: Option<GitHubCopilotConfig>,
     pub open_router: Option<OpenRouterConfig>,
+    pub anthropic: Option<AnthropicConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,12 +95,26 @@ pub struct GitHubCopilotConfig {
     pub copilot_expires_at: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum AnthropicConfig {
+    #[serde(rename = "oauth")]
+    OAuth {
+        refresh: String,
+        access: String,
+        expires: u64, // timestamp in milliseconds
+    },
+    #[serde(rename = "api")]
+    ApiKey { key: String },
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             providers: Providers {
                 github_copilot: None,
                 open_router: None,
+                anthropic: None,
             },
             selected_model: None,
             system_mode: SystemMode::default(),
@@ -170,24 +186,12 @@ impl Config {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn set_github_copilot(&mut self, config: GitHubCopilotConfig) {
-        self.providers.github_copilot = Some(config);
-    }
-
-    #[allow(dead_code)]
-    pub fn get_github_copilot(&self) -> Option<&GitHubCopilotConfig> {
-        self.providers.github_copilot.as_ref()
-    }
-
-    #[allow(dead_code)]
     pub fn set_open_router(&mut self, config: OpenRouterConfig) {
         self.providers.open_router = Some(config);
     }
 
-    #[allow(dead_code)]
-    pub fn get_open_router(&self) -> Option<&OpenRouterConfig> {
-        self.providers.open_router.as_ref()
+    pub fn set_anthropic(&mut self, config: AnthropicConfig) {
+        self.providers.anthropic = Some(config);
     }
 
     pub fn set_selected_model(&mut self, model: String) {

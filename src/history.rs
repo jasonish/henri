@@ -97,26 +97,6 @@ impl History {
         self.entries.push_back(entry);
     }
 
-    #[allow(dead_code)]
-    pub fn get_entries(&self) -> &VecDeque<HistoryEntry> {
-        &self.entries
-    }
-
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
-        self.entries.clear();
-    }
-
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     pub fn load_into_rustyline<H: rustyline::Helper>(
         &self,
         editor: &mut rustyline::Editor<H, rustyline::history::DefaultHistory>,

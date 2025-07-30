@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use anyhow::{Context, Result};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use colored::Colorize;
 use inquire::Select;
+use rand::{Rng, thread_rng};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::time::{Duration, SystemTime};
 use tokio::time::sleep;
 
-use crate::config::{Config, GitHubCopilotConfig, OpenRouterConfig};
+use crate::config::{AnthropicConfig, Config, GitHubCopilotConfig, OpenRouterConfig};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DeviceCodeResponse {
@@ -34,7 +38,7 @@ struct TokenError {
 }
 
 pub async fn login() -> Result<()> {
-    let providers = vec!["GitHub Copilot", "OpenRouter"];
+    let providers = vec!["GitHub Copilot", "OpenRouter", "Anthropic"];
 
     let selection = Select::new("Select a provider to login:", providers)
         .prompt()
@@ -46,6 +50,9 @@ pub async fn login() -> Result<()> {
         }
         "OpenRouter" => {
             login_open_router().await?;
+        }
+        "Anthropic" => {
+            login_anthropic().await?;
         }
         _ => unreachable!(),
     }
@@ -215,6 +222,9 @@ pub async fn test_auth_interactive(verbose: bool) -> Result<()> {
     if config.providers.open_router.is_some() {
         providers.push("OpenRouter");
     }
+    if config.providers.anthropic.is_some() {
+        providers.push("Anthropic");
+    }
 
     if providers.is_empty() {
         println!(
@@ -237,6 +247,7 @@ pub async fn test_auth_interactive(verbose: bool) -> Result<()> {
     match provider {
         "GitHub Copilot" => test_github_copilot_auth(&config, verbose).await,
         "OpenRouter" => test_open_router_auth(&config, verbose).await,
+        "Anthropic" => test_anthropic_auth(&config, verbose).await,
         _ => unreachable!(),
     }
 }
@@ -362,6 +373,201 @@ async fn test_open_router_auth(config: &Config, verbose: bool) -> Result<()> {
         }
     } else {
         anyhow::bail!("OpenRouter is not configured. Please run 'henri login openrouter' first.");
+    }
+
+    Ok(())
+}
+
+async fn login_anthropic() -> Result<()> {
+    println!("\n{}", "Anthropic Authentication".cyan().bold());
+    println!("{}", "═".repeat(50).cyan());
+
+    login_anthropic_oauth("https://claude.ai/oauth/authorize").await
+}
+
+async fn login_anthropic_oauth(auth_url: &str) -> Result<()> {
+    let client = Client::new();
+
+    // Generate PKCE challenge and verifier
+    let code_verifier = generate_code_verifier();
+    let code_challenge = generate_code_challenge(&code_verifier);
+
+    // Build authorization URL
+    let client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+    let redirect_uri = "https://console.anthropic.com/oauth/code/callback";
+    let scopes = "user:profile user:inference";
+
+    let full_auth_url = format!(
+        "{}?code=true&client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
+        auth_url,
+        client_id,
+        urlencoding::encode(redirect_uri),
+        urlencoding::encode(scopes),
+        code_challenge,
+        code_verifier
+    );
+
+    println!("\n{}", "Step 1: Authorization".green().bold());
+    println!("Opening browser for authentication...");
+
+    // Open browser
+    if let Err(e) = open::that(&full_auth_url) {
+        println!("{}", format!("Failed to open browser: {e}").yellow());
+        println!("Please manually open this URL:");
+        println!("{}", full_auth_url.blue().underline());
+    }
+
+    println!("\n{}", "Step 2: Authorization Code".green().bold());
+    println!("After authorizing, you'll receive a code in the format: code#state");
+
+    let auth_code = inquire::Text::new("Enter the authorization code:")
+        .prompt()
+        .context("Failed to read authorization code")?;
+
+    // Parse the authorization code (format: code#state)
+    let parts: Vec<&str> = auth_code.split('#').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("Invalid authorization code format. Expected: code#state");
+    }
+
+    let (code, state) = (parts[0], parts[1]);
+
+    // Verify state matches our code verifier
+    if state != code_verifier {
+        anyhow::bail!("State mismatch. This may indicate a security issue.");
+    }
+
+    println!("\n{}", "Step 3: Token Exchange".green().bold());
+    println!("Exchanging authorization code for tokens...");
+
+    // Exchange code for tokens
+    let token_request = serde_json::json!({
+        "code": code,
+        "state": state,
+        "grant_type": "authorization_code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier
+    });
+
+    let response = client
+        .post("https://console.anthropic.com/v1/oauth/token")
+        .header("Content-Type", "application/json")
+        .json(&token_request)
+        .send()
+        .await
+        .context("Failed to exchange authorization code")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Token exchange failed: {} - {}", status, body);
+    }
+
+    let token_response: serde_json::Value = response
+        .json()
+        .await
+        .context("Failed to parse token response")?;
+
+    let access_token = token_response["access_token"]
+        .as_str()
+        .context("Missing access_token in response")?;
+    let refresh_token = token_response["refresh_token"]
+        .as_str()
+        .context("Missing refresh_token in response")?;
+    let expires_in = token_response["expires_in"]
+        .as_u64()
+        .context("Missing expires_in in response")?;
+
+    let expires = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + (expires_in * 1000);
+
+    // OAuth mode - store tokens
+    let anthropic_config = AnthropicConfig::OAuth {
+        refresh: refresh_token.to_string(),
+        access: access_token.to_string(),
+        expires,
+    };
+
+    // Save configuration
+    let mut config = Config::load().unwrap_or_default();
+    config.set_anthropic(anthropic_config);
+    config.save()?;
+
+    println!(
+        "\n{}",
+        "✓ Successfully authenticated with Anthropic!"
+            .green()
+            .bold()
+    );
+    println!(
+        "{}",
+        "You can now use Anthropic models by selecting them with /model".green()
+    );
+
+    Ok(())
+}
+
+fn generate_code_verifier() -> String {
+    let mut rng = thread_rng();
+    let bytes: Vec<u8> = (0..32).map(|_| rng.r#gen()).collect();
+    URL_SAFE_NO_PAD.encode(&bytes)
+}
+
+fn generate_code_challenge(verifier: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(verifier.as_bytes());
+    let hash = hasher.finalize();
+    URL_SAFE_NO_PAD.encode(hash)
+}
+
+async fn test_anthropic_auth(config: &Config, verbose: bool) -> Result<()> {
+    println!("{}", "Testing Anthropic authentication...".blue());
+
+    if let Some(anthropic_config) = &config.providers.anthropic {
+        // Create a temporary Anthropic client to test the connection
+        let mut client = crate::llm::AnthropicClient::new(anthropic_config.clone(), verbose);
+
+        // Try a simple API call
+        let test_message = json!({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 10,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Say 'Authentication test successful' and what your name is. Nothing else."
+                }
+            ],
+            "system": [
+                {
+                    "type": "text",
+                    "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+                },
+                {
+                    "type": "text",
+                    "text": "Your name is Henri",
+                },
+            ]
+        });
+        let test_message = serde_json::to_string(&test_message).unwrap();
+
+        match client.send_raw_json_request(&test_message, verbose).await {
+            Ok((response, _)) => {
+                println!("{}", "✓ Anthropic authentication is valid".green());
+                println!("{}", "✓ API call successful".green());
+                if verbose {
+                    println!("Response: {response}");
+                }
+            }
+            Err(e) => {
+                anyhow::bail!("Failed to authenticate with Anthropic: {}", e);
+            }
+        }
+    } else {
+        anyhow::bail!("Anthropic is not configured. Please run 'henri login anthropic' first.");
     }
 
     Ok(())
