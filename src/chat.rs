@@ -1,147 +1,141 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2025 Jason Ish
+//
+// Reusable chat session management for sending prompts to providers.
 
-use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatMessage {
-    pub role: MessageRole,
-    pub content: MessageContent,
-    pub timestamp: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<crate::llm::ToolCall>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-}
+use crate::error::{Error, Result};
+use crate::output;
+use crate::provider::{ContentBlock, Message, MessageContent, Provider, Role, StopReason};
+use crate::services::Services;
+use crate::tools;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum MessageContent {
-    Text(String),
-}
+/// Run a chat interaction loop, emitting events via OutputContext.
+///
+/// This is the core agentic loop that:
+/// 1. Sends messages to the provider
+/// 2. Executes any tool calls
+/// 3. Continues until the model stops or is interrupted
+pub(crate) async fn run_chat_loop<P: Provider>(
+    provider: &P,
+    messages: &mut Vec<Message>,
+    interrupted: &Arc<AtomicBool>,
+    output: &output::OutputContext,
+    services: &Services,
+) -> Result<()> {
+    // Reset turn counters at the start of each user interaction.
+    // This ensures accumulated usage across tool call loops is tracked correctly.
+    provider.start_turn();
 
-impl MessageContent {
-    pub fn as_text(&self) -> String {
-        match self {
-            MessageContent::Text(text) => text.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum MessageRole {
-    User,
-    Assistant,
-    System,
-    Tool,
-}
-
-#[derive(Debug, Clone)]
-pub struct ChatConversation {
-    pub messages: VecDeque<ChatMessage>,
-    pub max_messages: usize,
-}
-
-impl Default for ChatConversation {
-    fn default() -> Self {
-        Self {
-            messages: VecDeque::new(),
-            max_messages: 100, // Keep last 100 messages for context
-        }
-    }
-}
-
-impl ChatConversation {
-    pub fn add_system_message(&mut self, content: String) {
-        let message = ChatMessage {
-            role: MessageRole::System,
-            content: MessageContent::Text(content),
-            timestamp: chrono::Utc::now().timestamp(),
-            tool_calls: None,
-            tool_call_id: None,
-        };
-
-        self.add_message(message);
-    }
-
-    pub fn add_user_message(&mut self, content: String) {
-        let message = ChatMessage {
-            role: MessageRole::User,
-            content: MessageContent::Text(content),
-            timestamp: chrono::Utc::now().timestamp(),
-            tool_calls: None,
-            tool_call_id: None,
-        };
-
-        self.add_message(message);
-    }
-
-    pub fn add_assistant_message(&mut self, content: String) {
-        let message = ChatMessage {
-            role: MessageRole::Assistant,
-            content: MessageContent::Text(content),
-            timestamp: chrono::Utc::now().timestamp(),
-            tool_calls: None,
-            tool_call_id: None,
-        };
-
-        self.add_message(message);
-    }
-
-    pub fn add_assistant_message_with_tool_calls(
-        &mut self,
-        content: String,
-        tool_calls: Vec<crate::llm::ToolCall>,
-    ) {
-        let message = ChatMessage {
-            role: MessageRole::Assistant,
-            content: MessageContent::Text(content),
-            timestamp: chrono::Utc::now().timestamp(),
-            tool_calls: Some(tool_calls),
-            tool_call_id: None,
-        };
-
-        self.add_message(message);
-    }
-
-    pub fn add_tool_message(&mut self, content: String, tool_call_id: String) {
-        let message = ChatMessage {
-            role: MessageRole::Tool,
-            content: MessageContent::Text(content),
-            timestamp: chrono::Utc::now().timestamp(),
-            tool_calls: None,
-            tool_call_id: Some(tool_call_id),
-        };
-
-        self.add_message(message);
-    }
-
-    fn add_message(&mut self, message: ChatMessage) {
-        // Remove oldest messages if we exceed max_messages
-        while self.messages.len() >= self.max_messages {
-            self.messages.pop_front();
+    loop {
+        // Check if already interrupted before starting model call
+        if interrupted.load(Ordering::SeqCst) {
+            output::emit_interrupted(output);
+            return Err(Error::Interrupted);
         }
 
-        self.messages.push_back(message);
-    }
+        // Notify that we're waiting for the model
+        output::emit_waiting(output);
 
-    pub fn get_messages(&self) -> &VecDeque<ChatMessage> {
-        &self.messages
-    }
+        // Race the model call against interrupt check
+        let response = tokio::select! {
+            biased;
+            _ = async {
+                while !interrupted.load(Ordering::SeqCst) {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            } => {
+                output::emit_interrupted(output);
+                return Err(Error::Interrupted);
+            }
+            result = provider.chat(messages.clone(), output) => {
+                match result {
+                    Ok(response) => response,
+                    Err(e) => {
+                        output::emit_error(output, &e.tui_message());
+                        return Err(e);
+                    }
+                }
+            }
+        };
 
-    pub fn clear(&mut self) {
-        // Preserve the initial system message if it exists
-        let message = self
-            .messages
-            .iter()
-            .find(|msg| matches!(msg.role, MessageRole::System))
-            .cloned();
-
-        self.messages.clear();
-
-        // Re-add the system message if it existed
-        if let Some(msg) = message {
-            self.messages.push_back(msg);
+        // If no tool calls, add the response and we're done
+        if response.stop_reason != StopReason::ToolUse || response.tool_calls.is_empty() {
+            if !response.content_blocks.is_empty() {
+                messages.push(Message::assistant_blocks(response.content_blocks.clone()));
+            }
+            output::emit_done(output);
+            break;
         }
+
+        // Execute each tool call and collect results
+        let mut tool_results: Vec<ContentBlock> = Vec::new();
+
+        for tool_call in &response.tool_calls {
+            let description =
+                tools::format_tool_call_description(&tool_call.name, &tool_call.input);
+            // Skip tool call banner for todo tools - they emit their own display
+            if !tool_call.name.starts_with("todo_") {
+                output::print_tool_call(output, &tool_call.name, &description);
+            }
+
+            let result = tools::execute(
+                &tool_call.name,
+                &tool_call.id,
+                tool_call.input.clone(),
+                output,
+                services,
+            )
+            .await;
+
+            match result {
+                Some(tool_result) => {
+                    let error_preview = if tool_result.is_error {
+                        Some(tool_result.content.clone())
+                    } else {
+                        None
+                    };
+                    // Skip tool result indicator for todo tools
+                    if !tool_call.name.starts_with("todo_") {
+                        output::print_tool_result(output, tool_result.is_error, error_preview);
+                    }
+
+                    tool_results.push(ContentBlock::ToolResult {
+                        tool_use_id: tool_call.id.clone(),
+                        content: tool_result.content,
+                        is_error: tool_result.is_error,
+                    });
+                }
+                None => {
+                    let error_msg = format!("Unknown tool: {}", tool_call.name);
+                    output::print_tool_result(output, true, Some(error_msg.clone()));
+
+                    tool_results.push(ContentBlock::ToolResult {
+                        tool_use_id: tool_call.id.clone(),
+                        content: error_msg,
+                        is_error: true,
+                    });
+                }
+            }
+
+            // Check for interrupt after each tool execution
+            if interrupted.load(Ordering::SeqCst) {
+                output::emit_interrupted(output);
+                return Err(Error::Interrupted);
+            }
+        }
+
+        // Add assistant message and tool results together atomically
+        if !response.content_blocks.is_empty() {
+            messages.push(Message::assistant_blocks(response.content_blocks.clone()));
+        }
+        messages.push(Message {
+            role: Role::User,
+            content: MessageContent::Blocks(tool_results),
+        });
     }
+
+    Ok(())
 }

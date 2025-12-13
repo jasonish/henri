@@ -1,10 +1,20 @@
+import? '../Justfile.common'
+
 default:
 
-fix:
-    cargo clippy --fix --allow-dirty
+check:
+    cargo fmt --check
+    cargo clippy --all-targets --all-features
+
+fix *args:
+    cargo clippy --all-targets --all-features --fix --allow-dirty {{args}}
     cargo fmt
 
-check:
-    cargo clippy
+pre-commit: check
     cargo msrv verify
-    cargo clippy --all-features --all-targets --target x86_64-pc-windows-gnu
+
+build-release:
+    cargo build --target x86_64-unknown-linux-musl --release
+
+install:
+    cargo install --path . --target x86_64-unknown-linux-musl

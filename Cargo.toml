@@ -1,38 +1,80 @@
 [package]
 name = "henri"
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 edition = "2024"
-rust-version = "1.85.1"
-description = "Your Golden Retriever coding assistant"
-license = "AGPL-3.0-only"
-repository = "https://github.com/jasonish/henri"
-homepage = "https://github.com/jasonish/henri"
-keywords = ["assistant", "coding", "llm", "github-copilot"]
-categories = ["command-line-utilities", "development-tools"]
+license = "MIT"
+rust-version = "1.88.0"
 
 [dependencies]
-rustyline = "16.0"
-colored = "3.0"
-clap = { version = "4.5", features = ["derive"] }
-tokio = { version = "1.46", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-dirs = "6.0"
-anyhow = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
-inquire = "0.7"
-crossterm = "0.29"
-textwrap = "0.16"
-async-trait = "0.1"
-sha2 = "0.10"
 base64 = "0.22"
-rand = "0.8"
-open = "5.0"
-urlencoding = "2.1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "color"] }
+colored = "3"
+crossterm = { version = "0.29", features = ["event-stream", "libc"] }
+dirs = "6.0.0"
+futures = "0.3"
+inquire = "0.9"
+open = "5"
+rand = "0.9"
+sha2 = "0.10"
+tempfile = "3.23.0"
+terminal_size = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "io-util", "process", "net", "signal"] }
+toml = "0.9"
+url = "2.5"
+urlencoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+thiserror = "2"
+unicode-width = "0.2"
+ratatui = "0.29"
+image = "0.25.9"
+rmcp = { version = "0.12", features = ["client", "transport-child-process"] }
+glob = "0.3"
+lsp-types = "0.97"
+walkdir = "2"
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "default-themes", "regex-onig"] }
+similar = "2"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = "0.4"
+# Tree-sitter syntax highlighting (optional, default on)
+tree-sitter-highlight = { version = "0.26", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-python = { version = "0.23", optional = true }
+tree-sitter-javascript = { version = "0.23", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-bash = { version = "0.23", optional = true }
+tree-sitter-go = { version = "0.23", optional = true }
+tree-sitter-toml-ng = { version = "0.7", optional = true }
+tree-sitter-c = { version = "0.23", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-html = { version = "0.23", optional = true }
+tree-sitter-css = { version = "0.23", optional = true }
+tree-sitter-yaml = { version = "0.7", optional = true }
 
 [dev-dependencies]
-tempfile = "3.20"
+
+[features]
+default = ["tree-sitter"]
+tree-sitter = [
+    "dep:tree-sitter-highlight",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-json",
+    "dep:tree-sitter-bash",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-toml-ng",
+    "dep:tree-sitter-c",
+    "dep:tree-sitter-cpp",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-ruby",
+    "dep:tree-sitter-java",
+    "dep:tree-sitter-html",
+    "dep:tree-sitter-css",
+    "dep:tree-sitter-yaml",
+]

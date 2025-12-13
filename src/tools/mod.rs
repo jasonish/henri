@@ -1,0 +1,298 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2025 Jason Ish
+
+mod bash;
+mod file_delete;
+mod file_edit;
+mod file_read;
+mod file_write;
+mod glob;
+mod list_dir;
+pub(crate) mod todo;
+
+pub use bash::Bash;
+pub use file_delete::FileDelete;
+pub use file_edit::FileEdit;
+pub use file_read::FileRead;
+pub use file_write::FileWrite;
+pub use glob::Glob;
+pub use list_dir::ListDir;
+pub use todo::{TodoItem, TodoRead, TodoStatus, TodoWrite};
+
+use serde::{Deserialize, Serialize};
+
+/// Tool definition for AI model consumption
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+/// Result of executing a tool
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResult {
+    pub tool_use_id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub content: String,
+    pub is_error: bool,
+}
+
+impl ToolResult {
+    pub(crate) fn success(tool_use_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            tool_use_id: tool_use_id.into(),
+            kind: "tool_result".to_string(),
+            content: content.into(),
+            is_error: false,
+        }
+    }
+
+    pub(crate) fn error(tool_use_id: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            tool_use_id: tool_use_id.into(),
+            kind: "tool_result".to_string(),
+            content: message.into(),
+            is_error: true,
+        }
+    }
+}
+
+/// Trait that all tools must implement
+pub trait Tool: Send + Sync {
+    /// Returns the tool definition for AI consumption
+    fn definition(&self) -> ToolDefinition;
+
+    /// Execute the tool with the given input
+    fn execute(
+        &self,
+        tool_use_id: &str,
+        input: serde_json::Value,
+        output: &crate::output::OutputContext,
+        services: &crate::services::Services,
+    ) -> impl std::future::Future<Output = ToolResult> + Send;
+}
+
+/// Helper to deserialize tool input and return an error ToolResult on failure
+pub(crate) fn deserialize_input<T: serde::de::DeserializeOwned>(
+    tool_use_id: &str,
+    input: serde_json::Value,
+) -> Result<T, ToolResult> {
+    serde_json::from_value(input)
+        .map_err(|e| ToolResult::error(tool_use_id, format!("Invalid input: {}", e)))
+}
+
+/// Validate that a path exists, returning an error ToolResult if not
+pub(crate) fn validate_path_exists(
+    tool_use_id: &str,
+    path: &std::path::Path,
+    path_str: &str,
+) -> Result<(), ToolResult> {
+    if !path.exists() {
+        Err(ToolResult::error(
+            tool_use_id,
+            format!("Path not found: {}", path_str),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Validate that a path is a directory, returning an error ToolResult if not
+pub(crate) fn validate_is_directory(
+    tool_use_id: &str,
+    path: &std::path::Path,
+    path_str: &str,
+) -> Result<(), ToolResult> {
+    if !path.is_dir() {
+        Err(ToolResult::error(
+            tool_use_id,
+            format!("Path is not a directory: {}", path_str),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Validate that a path is a file, returning an error ToolResult if not
+pub(crate) fn validate_is_file(
+    tool_use_id: &str,
+    path: &std::path::Path,
+    path_str: &str,
+) -> Result<(), ToolResult> {
+    if !path.is_file() {
+        Err(ToolResult::error(
+            tool_use_id,
+            format!("Path is not a file: {}", path_str),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Generates a one-liner description for a tool call (used for UI display)
+pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::Value) -> String {
+    match tool_name {
+        "bash" => {
+            let command = input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("command");
+            // Indent subsequent lines for better readability with vertical line
+            let lines: Vec<&str> = command.lines().collect();
+            if lines.len() > 1 {
+                let mut result = format!("Running: {}", lines[0]);
+                for line in &lines[1..] {
+                    result.push_str(&format!("\n  │ {}", line));
+                }
+                result
+            } else {
+                format!("Running: {}", command)
+            }
+        }
+        "file_read" => {
+            let filename = input
+                .get("filename")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
+            let offset = input.get("offset").and_then(|v| v.as_u64());
+            let limit = input.get("limit").and_then(|v| v.as_u64());
+            match (offset, limit) {
+                (Some(o), Some(l)) => format!("Reading {} (offset: {}, limit: {})", filename, o, l),
+                (Some(o), None) => format!("Reading {} (offset: {})", filename, o),
+                (None, Some(l)) => format!("Reading {} (limit: {})", filename, l),
+                (None, None) => format!("Reading {}", filename),
+            }
+        }
+        "file_edit" => {
+            let filepath = input
+                .get("filePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
+            format!("Editing {}", filepath)
+        }
+        "file_write" => {
+            let filepath = input
+                .get("filePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
+            format!("Writing {}", filepath)
+        }
+        "glob" => {
+            let pattern = input
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("pattern");
+            let path = input.get("path").and_then(|v| v.as_str());
+            match path {
+                Some(p) => format!("Finding \"{}\" in {}", pattern, p),
+                None => format!("Finding \"{}\"", pattern),
+            }
+        }
+        "file_delete" => {
+            let filepath = input
+                .get("filePath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("file");
+            format!("Deleting {}", filepath)
+        }
+        "list_dir" => {
+            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            format!("Listing {}", path)
+        }
+        "todo_read" => "Reading todo list".to_string(),
+        "todo_write" => {
+            let count = input
+                .get("todos")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            format!("Updating todo list ({} items)", count)
+        }
+        name if name.starts_with("mcp_") => {
+            // MCP tools: format as "tool_name via server_name"
+            // Format: mcp_{server}_{tool}
+            let parts: Vec<&str> = name
+                .strip_prefix("mcp_")
+                .unwrap_or(name)
+                .splitn(2, '_')
+                .collect();
+            if parts.len() == 2 {
+                format!("Calling {} via MCP ({})", parts[1], parts[0])
+            } else {
+                format!("Calling MCP tool: {}", name)
+            }
+        }
+        _ => {
+            format!("Calling tool: {}", tool_name)
+        }
+    }
+}
+
+/// Get all available tool definitions (built-in only)
+pub(crate) fn builtin_definitions() -> Vec<ToolDefinition> {
+    vec![
+        Bash.definition(),
+        FileDelete.definition(),
+        FileEdit.definition(),
+        FileRead.definition(),
+        FileWrite.definition(),
+        Glob.definition(),
+        ListDir.definition(),
+        TodoRead.definition(),
+        TodoWrite.definition(),
+    ]
+}
+
+/// Get all available tool definitions including MCP tools
+pub async fn all_definitions() -> Vec<ToolDefinition> {
+    let mut defs = builtin_definitions();
+    let mcp_defs = crate::mcp::manager().all_tool_definitions().await;
+    defs.extend(mcp_defs);
+    defs
+}
+
+/// Execute a tool by name
+pub async fn execute(
+    name: &str,
+    tool_use_id: &str,
+    input: serde_json::Value,
+    output: &crate::output::OutputContext,
+    services: &crate::services::Services,
+) -> Option<ToolResult> {
+    // First try built-in tools
+    match name {
+        "bash" => return Some(Bash.execute(tool_use_id, input, output, services).await),
+        "file_delete" => {
+            return Some(
+                FileDelete
+                    .execute(tool_use_id, input, output, services)
+                    .await,
+            );
+        }
+        "file_edit" => return Some(FileEdit.execute(tool_use_id, input, output, services).await),
+        "file_read" => return Some(FileRead.execute(tool_use_id, input, output, services).await),
+        "file_write" => {
+            return Some(
+                FileWrite
+                    .execute(tool_use_id, input, output, services)
+                    .await,
+            );
+        }
+        "glob" => return Some(Glob.execute(tool_use_id, input, output, services).await),
+        "list_dir" => return Some(ListDir.execute(tool_use_id, input, output, services).await),
+        "todo_read" => return Some(TodoRead.execute(tool_use_id, input, output, services).await),
+        "todo_write" => {
+            return Some(
+                TodoWrite
+                    .execute(tool_use_id, input, output, services)
+                    .await,
+            );
+        }
+        _ => {}
+    }
+
+    // Try MCP tools
+    services.mcp.execute_tool(name, tool_use_id, input).await
+}
