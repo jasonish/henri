@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Jason Ish
 
 mod bash;
+mod fetch;
 mod file_delete;
 mod file_edit;
 mod file_read;
@@ -12,6 +13,7 @@ mod list_dir;
 pub(crate) mod todo;
 
 pub use bash::Bash;
+pub use fetch::Fetch;
 pub use file_delete::FileDelete;
 pub use file_edit::FileEdit;
 pub use file_read::FileRead;
@@ -210,6 +212,10 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
                 .unwrap_or("file");
             format!("Deleting {}", filepath)
         }
+        "fetch" => {
+            let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("url");
+            format!("Fetching {}", url)
+        }
         "list_dir" => {
             let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
             format!("Listing {}", path)
@@ -247,6 +253,7 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
 pub(crate) fn builtin_definitions() -> Vec<ToolDefinition> {
     vec![
         Bash.definition(),
+        Fetch.definition(),
         FileDelete.definition(),
         FileEdit.definition(),
         FileRead.definition(),
@@ -278,6 +285,7 @@ pub async fn execute(
     // First try built-in tools
     match name {
         "bash" => return Some(Bash.execute(tool_use_id, input, output, services).await),
+        "fetch" => return Some(Fetch.execute(tool_use_id, input, output, services).await),
         "file_delete" => {
             return Some(
                 FileDelete
