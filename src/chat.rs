@@ -72,8 +72,15 @@ pub(crate) async fn run_chat_loop<P: Provider>(
 
         // Execute each tool call and collect results
         let mut tool_results: Vec<ContentBlock> = Vec::new();
+        let services = services.with_interrupted(interrupted.clone());
 
         for tool_call in &response.tool_calls {
+            // Check for interrupt before starting each tool
+            if interrupted.load(Ordering::SeqCst) {
+                output::emit_interrupted(output);
+                return Err(Error::Interrupted);
+            }
+
             let description =
                 tools::format_tool_call_description(&tool_call.name, &tool_call.input);
             // Skip tool call banner for todo tools - they emit their own display
@@ -86,7 +93,7 @@ pub(crate) async fn run_chat_loop<P: Provider>(
                 &tool_call.id,
                 tool_call.input.clone(),
                 output,
-                services,
+                &services,
             )
             .await;
 

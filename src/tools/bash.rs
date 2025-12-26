@@ -72,7 +72,7 @@ Web content fetching:
         tool_use_id: &str,
         input: serde_json::Value,
         _output: &crate::output::OutputContext,
-        _services: &crate::services::Services,
+        services: &crate::services::Services,
     ) -> ToolResult {
         let input: BashInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
@@ -119,22 +119,33 @@ Web content fetching:
 
         let stderr_task = tokio::spawn(async move { capture_stream_output(stderr).await });
 
-        let stream_result = tokio::time::timeout(timeout_duration, async {
-            let (stdout_output, stderr_output, status) =
-                tokio::join!(stdout_task, stderr_task, child.wait());
-
-            let mut combined = stdout_output.unwrap_or_default();
-            let stderr_str = stderr_output.unwrap_or_default();
-            if !stderr_str.is_empty() {
-                combined.push_str(&stderr_str);
+        // Wait for child with interrupt and timeout handling.
+        // We separate child.wait() from output collection so we can kill on interrupt/timeout.
+        let wait_result = tokio::select! {
+            biased;
+            // Check for interrupt every 100ms
+            _ = async {
+                while !services.is_interrupted() {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            } => {
+                let _ = child.kill().await;
+                return ToolResult::error(tool_use_id, "Interrupted by user");
             }
+            result = tokio::time::timeout(timeout_duration, child.wait()) => result
+        };
 
-            status.map(|s| (s, combined))
-        })
-        .await;
+        match wait_result {
+            Ok(Ok(status)) => {
+                // Collect output from spawned tasks
+                let stdout_output = stdout_task.await.unwrap_or_default();
+                let stderr_output = stderr_task.await.unwrap_or_default();
 
-        match stream_result {
-            Ok(Ok((status, combined))) => {
+                let mut combined = stdout_output;
+                if !stderr_output.is_empty() {
+                    combined.push_str(&stderr_output);
+                }
+
                 let truncated = if combined.len() > MAX_OUTPUT_BYTES {
                     let truncated_content = &combined[..MAX_OUTPUT_BYTES];
                     format!(
