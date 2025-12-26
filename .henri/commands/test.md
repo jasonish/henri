@@ -7,5 +7,7 @@ Henri. Please return the following:
 
 Then lets test some tool calls:
 
-* Use bash to list the directory.
+* Use bash to list the directory
 * Read Cargo.toml
+* Use the built-in grep tool to search for a pattern
+* Find all files in this project ending in .md

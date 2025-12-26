@@ -7,6 +7,7 @@ mod file_edit;
 mod file_read;
 mod file_write;
 mod glob;
+mod grep;
 mod list_dir;
 pub(crate) mod todo;
 
@@ -16,6 +17,7 @@ pub use file_edit::FileEdit;
 pub use file_read::FileRead;
 pub use file_write::FileWrite;
 pub use glob::Glob;
+pub use grep::Grep;
 pub use list_dir::ListDir;
 pub use todo::{TodoItem, TodoRead, TodoStatus, TodoWrite};
 
@@ -190,6 +192,17 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
                 None => format!("Finding \"{}\"", pattern),
             }
         }
+        "grep" => {
+            let pattern = input
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .unwrap_or("pattern");
+            let path = input.get("path").and_then(|v| v.as_str());
+            match path {
+                Some(p) => format!("Grep \"{}\" in {}", pattern, p),
+                None => format!("Grep \"{}\"", pattern),
+            }
+        }
         "file_delete" => {
             let filepath = input
                 .get("filePath")
@@ -239,6 +252,7 @@ pub(crate) fn builtin_definitions() -> Vec<ToolDefinition> {
         FileRead.definition(),
         FileWrite.definition(),
         Glob.definition(),
+        Grep.definition(),
         ListDir.definition(),
         TodoRead.definition(),
         TodoWrite.definition(),
@@ -281,6 +295,7 @@ pub async fn execute(
             );
         }
         "glob" => return Some(Glob.execute(tool_use_id, input, output, services).await),
+        "grep" => return Some(Grep.execute(tool_use_id, input, output, services).await),
         "list_dir" => return Some(ListDir.execute(tool_use_id, input, output, services).await),
         "todo_read" => return Some(TodoRead.execute(tool_use_id, input, output, services).await),
         "todo_write" => {

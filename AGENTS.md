@@ -117,7 +117,8 @@ src/
 │   ├── file_write.rs
 │   ├── file_edit.rs
 │   ├── file_list.rs
-│   └── file_delete.rs
+│   ├── file_delete.rs
+│   └── grep.rs
 ├── shell/            # Traditional REPL interface
 │   ├── mod.rs
 │   ├── input.rs      # User input handling
