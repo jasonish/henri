@@ -4,8 +4,6 @@
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
 
-use image::{DynamicImage, ImageFormat};
-
 /// Copy text to clipboard using wl-copy (Wayland) or xclip (X11)
 pub(crate) fn copy_selection(text: &str) -> Result<(), String> {
     // Try wl-copy first (Wayland)
@@ -142,14 +140,4 @@ fn wl_paste_list_types() -> io::Result<Vec<String>> {
         .filter(|s| !s.is_empty())
         .collect();
     Ok(types)
-}
-
-pub(crate) fn load_image_from_bytes(bytes: &[u8], mime: Option<&str>) -> io::Result<DynamicImage> {
-    if let Some(fmt) = mime.and_then(ImageFormat::from_mime_type)
-        && let Ok(img) = image::load_from_memory_with_format(bytes, fmt)
-    {
-        return Ok(img);
-    }
-    image::load_from_memory(bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
 }

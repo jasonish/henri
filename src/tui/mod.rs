@@ -225,7 +225,10 @@ fn edit_in_external_editor(text: &str) -> io::Result<Option<String>> {
     }
 }
 
-async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<ExitStatus> {
+async fn run_app(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    mut app: App,
+) -> io::Result<ExitStatus> {
     let mut last_escape: Option<Instant> = None;
     let mut last_ctrl_a: Option<Instant> = None;
     let mut last_ctrl_e: Option<Instant> = None;

@@ -2085,8 +2085,6 @@ impl App {
         // Try image paste first (check clipboard types before fetching content)
         // This prevents raw image bytes from being interpreted as text
         if let Ok((bytes, mime)) = clipboard::paste_image() {
-            // Validate that we can decode the image
-            let _ = clipboard::load_image_from_bytes(&bytes, Some(&mime))?;
             self.add_pending_image(mime, bytes);
             return Ok(());
         }
