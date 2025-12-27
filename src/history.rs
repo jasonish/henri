@@ -18,7 +18,7 @@ struct HistoryEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HistoryImage {
+pub(crate) struct HistoryImage {
     pub marker: String,
     pub mime_type: String,
     pub data: String, // Base64 encoded image data
@@ -55,7 +55,7 @@ impl HistoryImage {
     }
 }
 
-pub struct FileHistory {
+pub(crate) struct FileHistory {
     entries: Vec<String>,
     path: PathBuf,
     max_len: usize,

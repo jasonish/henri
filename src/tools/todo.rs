@@ -16,7 +16,7 @@ use crate::output;
 /// Status of a todo item
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum TodoStatus {
+pub(crate) enum TodoStatus {
     Pending,
     InProgress,
     Completed,
@@ -24,7 +24,7 @@ pub enum TodoStatus {
 
 /// A single todo item
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TodoItem {
+pub(crate) struct TodoItem {
     /// What needs to be done (imperative form: "Run tests")
     pub content: String,
     /// Current status of the item
@@ -76,7 +76,7 @@ fn format_todos(todos: &[TodoItem]) -> String {
 // === TodoWrite Tool ===
 
 /// Tool for updating the todo list
-pub struct TodoWrite;
+pub(crate) struct TodoWrite;
 
 #[derive(Debug, Deserialize)]
 struct TodoWriteInput {
@@ -147,7 +147,7 @@ impl Tool for TodoWrite {
 // === TodoRead Tool ===
 
 /// Tool for reading the current todo list
-pub struct TodoRead;
+pub(crate) struct TodoRead;
 
 impl Tool for TodoRead {
     fn definition(&self) -> ToolDefinition {

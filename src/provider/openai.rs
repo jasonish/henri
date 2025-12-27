@@ -71,7 +71,7 @@ struct OpenAiState {
     expires_at: u64,
 }
 
-pub struct OpenAiProvider {
+pub(crate) struct OpenAiProvider {
     client: Client,
     state: Mutex<OpenAiState>,
     instructions: Mutex<Option<String>>,

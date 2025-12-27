@@ -8,7 +8,7 @@ use std::path::Path;
 
 use super::{Tool, ToolDefinition, ToolResult};
 
-pub struct FileWrite;
+pub(crate) struct FileWrite;
 
 #[derive(Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]

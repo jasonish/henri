@@ -3,7 +3,7 @@
 
 /// Thinking modes for models that support extended thinking
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThinkingMode {
+pub(crate) enum ThinkingMode {
     /// Thinking disabled
     Off,
     /// Minimal thinking (gemini-3-flash only)

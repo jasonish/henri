@@ -20,7 +20,7 @@ use crate::history::FileHistory;
 
 const PROMPT: &str = "› ";
 
-pub struct PromptInfo {
+pub(crate) struct PromptInfo {
     pub provider: String,
     pub model: String,
     pub path: String,
@@ -29,7 +29,7 @@ pub struct PromptInfo {
     pub show_thinking_status: bool,
 }
 
-pub enum PromptOutcome {
+pub(crate) enum PromptOutcome {
     Submitted {
         content: String,
         pasted_images: Vec<PastedImage>,
@@ -39,7 +39,7 @@ pub enum PromptOutcome {
     SelectModel,
 }
 
-pub struct PastedImage {
+pub(crate) struct PastedImage {
     pub marker: String,
     pub mime_type: String,
     pub data: Vec<u8>,
@@ -50,7 +50,7 @@ enum ClipboardPayload {
     Text(String),
 }
 
-pub struct PromptUi {
+pub(crate) struct PromptUi {
     buffer: String,
     cursor: usize,
     history_index: Option<usize>,

@@ -17,7 +17,7 @@ mod output;
 mod prompts;
 mod provider;
 mod providers;
-pub mod services;
+mod services;
 mod session;
 mod sse;
 mod tools;

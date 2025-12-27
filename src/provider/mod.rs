@@ -1,34 +1,34 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
-pub mod anthropic;
-pub mod antigravity;
-pub mod copilot;
-pub mod openai;
-pub mod openai_compat;
-pub mod openrouter;
-pub mod transaction_log;
-pub mod zen;
+pub(crate) mod anthropic;
+pub(crate) mod antigravity;
+pub(crate) mod copilot;
+pub(crate) mod openai;
+pub(crate) mod openai_compat;
+pub(crate) mod openrouter;
+pub(crate) mod transaction_log;
+pub(crate) mod zen;
 
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Message {
+pub(crate) struct Message {
     pub role: Role,
     pub content: MessageContent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum MessageContent {
+pub(crate) enum MessageContent {
     Text(String),
     Blocks(Vec<ContentBlock>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ContentBlock {
+pub(crate) enum ContentBlock {
     Text {
         text: String,
     },
@@ -63,7 +63,7 @@ pub enum ContentBlock {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum Role {
+pub(crate) enum Role {
     System,
     User,
     Assistant,
@@ -94,7 +94,7 @@ impl Message {
 
 /// A tool call requested by the model
 #[derive(Debug, Clone, Serialize)]
-pub struct ToolCall {
+pub(crate) struct ToolCall {
     pub id: String,
     pub name: String,
     pub input: serde_json::Value,
@@ -104,7 +104,7 @@ pub struct ToolCall {
 
 /// Response from the chat API
 #[derive(Debug)]
-pub struct ChatResponse {
+pub(crate) struct ChatResponse {
     /// Tool calls requested by the model
     pub tool_calls: Vec<ToolCall>,
     /// The content blocks to store in message history
@@ -114,7 +114,7 @@ pub struct ChatResponse {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum StopReason {
+pub(crate) enum StopReason {
     EndTurn,
     ToolUse,
     MaxTokens,
@@ -122,7 +122,7 @@ pub enum StopReason {
 }
 
 /// Trait for AI providers
-pub trait Provider: Send + Sync {
+pub(crate) trait Provider: Send + Sync {
     fn chat(
         &self,
         messages: Vec<Message>,

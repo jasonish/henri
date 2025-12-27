@@ -11,7 +11,7 @@ use crate::provider::anthropic::{ANTHROPIC_BETA, ANTHROPIC_VERSION, API_URL, Ant
 
 /// Rate limit information from Anthropic API
 #[derive(Debug, Default)]
-pub struct RateLimits {
+pub(crate) struct RateLimits {
     pub unified_5h_reset: Option<i64>,
     pub unified_5h_utilization: Option<f64>,
     pub unified_7d_reset: Option<i64>,
@@ -195,7 +195,7 @@ pub async fn fetch_anthropic_rate_limits() -> Result<RateLimits> {
 }
 
 #[derive(Default)]
-pub struct NetworkStats {
+pub(crate) struct NetworkStats {
     tx_bytes: AtomicU64,
     rx_bytes: AtomicU64,
 }
@@ -230,7 +230,7 @@ pub(crate) fn network_stats() -> &'static NetworkStats {
 }
 
 #[derive(Default)]
-pub struct Usage {
+pub(crate) struct Usage {
     last_input_tokens: AtomicU64,
     last_output_tokens: AtomicU64,
     last_cache_creation_tokens: AtomicU64,

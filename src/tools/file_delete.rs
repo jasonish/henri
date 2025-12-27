@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::{Tool, ToolDefinition, ToolResult};
 
-pub struct FileDelete;
+pub(crate) struct FileDelete;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

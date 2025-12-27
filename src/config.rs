@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{self, Result};
 
-pub const DEFAULT_MODEL: &str = "zen/grok-code";
+pub(crate) const DEFAULT_MODEL: &str = "zen/grok-code";
 const CONFIG_FILE: &str = "config.toml";
 const CONFIG_DIR: &str = ".config/henri";
 
@@ -20,7 +20,7 @@ const CONFIG_DIR: &str = ".config/henri";
 /// or a specific model string like "claude/claude-sonnet-4-5".
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum DefaultModel {
+pub(crate) enum DefaultModel {
     /// Use the most recently selected model
     #[default]
     #[serde(rename = ":last-used")]
@@ -33,7 +33,7 @@ pub enum DefaultModel {
 /// Default UI mode for the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum UiDefault {
+pub(crate) enum UiDefault {
     /// Terminal UI (ratatui-based)
     #[default]
     Tui,
@@ -43,14 +43,14 @@ pub enum UiDefault {
 
 /// UI configuration section.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UiConfig {
+pub(crate) struct UiConfig {
     /// Default interface to use (tui or cli). Defaults to tui.
     #[serde(default)]
     pub default: UiDefault,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ConfigFile {
+pub(crate) struct ConfigFile {
     #[serde(default)]
     pub providers: Providers,
     pub model: Option<String>,
@@ -93,20 +93,20 @@ fn default_lsp_enabled() -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct McpConfig {
+pub(crate) struct McpConfig {
     #[serde(default)]
     pub servers: Vec<McpServerConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LspConfig {
+pub(crate) struct LspConfig {
     #[serde(default)]
     pub servers: Vec<LspServerConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct LspServerConfig {
+pub(crate) struct LspServerConfig {
     pub name: String,
     pub command: String,
     #[serde(default)]
@@ -119,7 +119,7 @@ pub struct LspServerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct McpServerConfig {
+pub(crate) struct McpServerConfig {
     pub name: String,
     pub command: String,
     #[serde(default)]
@@ -137,7 +137,7 @@ fn default_enabled() -> bool {
 /// Provider type identifier - maps to the `type` field in config
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ProviderType {
+pub(crate) enum ProviderType {
     Antigravity,
     Claude,
     GithubCopilot,
@@ -178,7 +178,7 @@ impl ProviderType {
 /// Unified provider configuration with tagged union
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
-pub enum ProviderConfig {
+pub(crate) enum ProviderConfig {
     Antigravity(AntigravityProviderConfig),
     Claude(ClaudeProviderConfig),
     GithubCopilot(CopilotProviderConfig),
@@ -272,7 +272,7 @@ impl ProviderConfig {
 
 /// New Providers struct using HashMap with flatten
 #[derive(Debug, Clone, Serialize, Default)]
-pub struct Providers {
+pub(crate) struct Providers {
     #[serde(flatten)]
     pub entries: HashMap<String, ProviderConfig>,
 }
@@ -306,7 +306,7 @@ impl<'de> Deserialize<'de> for Providers {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct AntigravityProviderConfig {
+pub(crate) struct AntigravityProviderConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     pub access_token: String,
@@ -321,7 +321,7 @@ pub struct AntigravityProviderConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaudeProviderConfig {
+pub(crate) struct ClaudeProviderConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(flatten)]
@@ -329,7 +329,7 @@ pub struct ClaudeProviderConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClaudeAuth {
+pub(crate) struct ClaudeAuth {
     #[serde(rename = "refresh-token")]
     pub refresh_token: String,
     #[serde(rename = "access-token")]
@@ -340,7 +340,7 @@ pub struct ClaudeAuth {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct CopilotProviderConfig {
+pub(crate) struct CopilotProviderConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     pub access_token: String,
@@ -352,7 +352,7 @@ pub struct CopilotProviderConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct OpenAiProviderConfig {
+pub(crate) struct OpenAiProviderConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default = "default_openai_client_id")]
@@ -368,7 +368,7 @@ pub struct OpenAiProviderConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct ZenProviderConfig {
+pub(crate) struct ZenProviderConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     pub api_key: String,
@@ -376,7 +376,7 @@ pub struct ZenProviderConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct OpenAiCompatProviderConfig {
+pub(crate) struct OpenAiCompatProviderConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
@@ -404,7 +404,7 @@ impl OpenAiCompatProviderConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct OpenRouterConfig {
+pub(crate) struct OpenRouterConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default)]
@@ -431,7 +431,7 @@ impl OpenRouterConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct ModelConfig {
+pub(crate) struct ModelConfig {
     /// Model name/identifier
     pub name: String,
     /// Reasoning effort level (low, medium, high)
@@ -457,12 +457,12 @@ pub struct ModelConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
-pub struct State {
+pub(crate) struct State {
     pub last_model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Config {
+pub(crate) struct Config {
     pub api_key: String,
     pub model: String,
 }

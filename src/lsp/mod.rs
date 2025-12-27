@@ -50,7 +50,7 @@ fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
 
 /// Configuration for an LSP server
 #[derive(Debug, Clone)]
-pub struct LspServerConfig {
+pub(crate) struct LspServerConfig {
     /// User-friendly name for the server
     pub name: String,
     /// Command to run (e.g., "rust-analyzer")
@@ -65,7 +65,7 @@ pub struct LspServerConfig {
 
 /// A diagnostic with file context
 #[derive(Debug, Clone)]
-pub struct FileDiagnostic {
+pub(crate) struct FileDiagnostic {
     pub file_path: PathBuf,
     pub line: u32,
     pub column: u32,
@@ -497,7 +497,7 @@ impl LspClient {
 }
 
 /// Manager for multiple LSP server connections
-pub struct LspManager {
+pub(crate) struct LspManager {
     clients: RwLock<Vec<LspClient>>,
 }
 
@@ -605,7 +605,7 @@ pub(crate) fn manager() -> Arc<LspManager> {
 }
 
 /// Initialize LSP servers from configuration
-pub async fn initialize(servers: Vec<LspServerConfig>) -> Result<()> {
+pub(crate) async fn initialize(servers: Vec<LspServerConfig>) -> Result<()> {
     let mgr = manager();
     for config in servers {
         if let Err(_e) = mgr.start_server(&config).await {
@@ -616,7 +616,7 @@ pub async fn initialize(servers: Vec<LspServerConfig>) -> Result<()> {
 }
 
 /// Reload LSP servers from configuration file
-pub async fn reload_from_config(working_dir: &std::path::Path) -> Result<usize> {
+pub(crate) async fn reload_from_config(working_dir: &std::path::Path) -> Result<usize> {
     use crate::config::ConfigFile;
 
     let mgr = manager();

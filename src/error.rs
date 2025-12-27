@@ -4,7 +4,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum Error {
+pub(crate) enum Error {
     #[error("Authentication error: {0}")]
     Auth(String),
 
@@ -59,4 +59,4 @@ impl Error {
     }
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;

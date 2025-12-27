@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use super::{Tool, ToolDefinition, ToolResult};
 
-pub struct Fetch;
+pub(crate) struct Fetch;
 
 #[derive(Debug, Deserialize)]
 struct FetchInput {

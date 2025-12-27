@@ -12,22 +12,22 @@ mod grep;
 mod list_dir;
 pub(crate) mod todo;
 
-pub use bash::Bash;
-pub use fetch::Fetch;
-pub use file_delete::FileDelete;
-pub use file_edit::FileEdit;
-pub use file_read::FileRead;
-pub use file_write::FileWrite;
-pub use glob::Glob;
-pub use grep::Grep;
-pub use list_dir::ListDir;
-pub use todo::{TodoItem, TodoRead, TodoStatus, TodoWrite};
+pub(crate) use bash::Bash;
+pub(crate) use fetch::Fetch;
+pub(crate) use file_delete::FileDelete;
+pub(crate) use file_edit::FileEdit;
+pub(crate) use file_read::FileRead;
+pub(crate) use file_write::FileWrite;
+pub(crate) use glob::Glob;
+pub(crate) use grep::Grep;
+pub(crate) use list_dir::ListDir;
+pub(crate) use todo::{TodoItem, TodoRead, TodoStatus, TodoWrite};
 
 use serde::{Deserialize, Serialize};
 
 /// Tool definition for AI model consumption
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolDefinition {
+pub(crate) struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: serde_json::Value,
@@ -35,7 +35,7 @@ pub struct ToolDefinition {
 
 /// Result of executing a tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
+pub(crate) struct ToolResult {
     pub tool_use_id: String,
     #[serde(rename = "type")]
     pub kind: String,
@@ -64,7 +64,7 @@ impl ToolResult {
 }
 
 /// Trait that all tools must implement
-pub trait Tool: Send + Sync {
+pub(crate) trait Tool: Send + Sync {
     /// Returns the tool definition for AI consumption
     fn definition(&self) -> ToolDefinition;
 
@@ -267,7 +267,7 @@ pub(crate) fn builtin_definitions() -> Vec<ToolDefinition> {
 }
 
 /// Get all available tool definitions including MCP tools
-pub async fn all_definitions() -> Vec<ToolDefinition> {
+pub(crate) async fn all_definitions() -> Vec<ToolDefinition> {
     let mut defs = builtin_definitions();
     let mcp_defs = crate::mcp::manager().all_tool_definitions().await;
     defs.extend(mcp_defs);
@@ -275,7 +275,7 @@ pub async fn all_definitions() -> Vec<ToolDefinition> {
 }
 
 /// Execute a tool by name
-pub async fn execute(
+pub(crate) async fn execute(
     name: &str,
     tool_use_id: &str,
     input: serde_json::Value,

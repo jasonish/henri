@@ -11,7 +11,7 @@ use chrono::Utc;
 use serde::Serialize;
 
 #[derive(Serialize)]
-pub struct Transaction {
+pub(crate) struct Transaction {
     pub timestamp: String,
     pub host: String,
     pub path: String,

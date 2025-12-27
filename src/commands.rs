@@ -20,7 +20,7 @@ pub(crate) fn has_claude_oauth_provider() -> bool {
 
 /// Command identifier for dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Command {
+pub(crate) enum Command {
     BuildAgentsMd,
     ClaudeCountTokens,
     Clear,
@@ -42,7 +42,7 @@ pub enum Command {
 
 /// Defines when a command should be visible in the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Availability {
+pub(crate) enum Availability {
     /// Always available
     Always,
     /// Only available when using Claude (Anthropic) provider
@@ -56,7 +56,7 @@ pub enum Availability {
 }
 
 #[derive(Debug, Clone)]
-pub struct SlashCommand {
+pub(crate) struct SlashCommand {
     pub command: Command,
     pub name: &'static str,
     pub description: &'static str,
@@ -65,7 +65,7 @@ pub struct SlashCommand {
 
 /// Owned version of SlashCommand for dynamic commands.
 #[derive(Debug, Clone)]
-pub struct DynamicSlashCommand {
+pub(crate) struct DynamicSlashCommand {
     pub command: Command,
     pub name: String,
     pub description: String,
@@ -74,7 +74,7 @@ pub struct DynamicSlashCommand {
 /// Session state for mode transitions.
 /// This carries the current session directly to avoid reloading from disk.
 #[derive(Debug, Clone)]
-pub struct ModeTransferSession {
+pub(crate) struct ModeTransferSession {
     pub messages: Vec<crate::provider::Message>,
     pub provider: crate::providers::ModelProvider,
     pub model_id: String,
@@ -121,7 +121,7 @@ impl ModeTransferSession {
 
 /// Status returned when exiting a mode (CLI or TUI)
 #[derive(Debug, Clone)]
-pub enum ExitStatus {
+pub(crate) enum ExitStatus {
     Quit,
     /// Switch to CLI mode, optionally carrying current session state
     SwitchToCli(Option<ModeTransferSession>),
@@ -129,7 +129,7 @@ pub enum ExitStatus {
     SwitchToTui(Option<ModeTransferSession>),
 }
 
-pub const COMMANDS: &[SlashCommand] = &[
+pub(crate) const COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         command: Command::BuildAgentsMd,
         name: "build-agents-md",
@@ -228,7 +228,7 @@ pub const COMMANDS: &[SlashCommand] = &[
     },
 ];
 
-pub const SLASH_MENU_MAX_VISIBLE: usize = 6;
+pub(crate) const SLASH_MENU_MAX_VISIBLE: usize = 6;
 
 /// Filter commands based on context.
 pub(crate) fn filter_commands(

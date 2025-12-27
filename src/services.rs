@@ -11,7 +11,7 @@ use crate::mcp::McpManager;
 
 /// Container for shared services. Clone is cheap (uses Arc).
 #[derive(Clone)]
-pub struct Services {
+pub(crate) struct Services {
     pub mcp: Arc<McpManager>,
     pub lsp: Arc<LspManager>,
     /// Interrupt flag for cancellable operations (e.g., bash commands).
@@ -19,7 +19,7 @@ pub struct Services {
 }
 
 impl Services {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             mcp: crate::mcp::manager(),
             lsp: crate::lsp::manager(),
@@ -28,7 +28,8 @@ impl Services {
     }
 
     /// Create an isolated Services instance for tests.
-    pub fn null() -> Self {
+    #[cfg(test)]
+    pub(crate) fn null() -> Self {
         Self {
             mcp: Arc::new(McpManager::new()),
             lsp: Arc::new(LspManager::new()),
@@ -37,7 +38,7 @@ impl Services {
     }
 
     /// Return a clone with the interrupt flag set.
-    pub fn with_interrupted(&self, flag: Arc<AtomicBool>) -> Self {
+    pub(crate) fn with_interrupted(&self, flag: Arc<AtomicBool>) -> Self {
         Self {
             mcp: self.mcp.clone(),
             lsp: self.lsp.clone(),
@@ -46,7 +47,7 @@ impl Services {
     }
 
     /// Check if the interrupt flag is set.
-    pub fn is_interrupted(&self) -> bool {
+    pub(crate) fn is_interrupted(&self) -> bool {
         self.interrupted
             .as_ref()
             .is_some_and(|f| f.load(Ordering::SeqCst))

@@ -12,7 +12,7 @@ use super::{Tool, ToolDefinition, ToolResult};
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 const MAX_OUTPUT_BYTES: usize = 30_000;
 
-pub struct Bash;
+pub(crate) struct Bash;
 
 async fn capture_stream_output<R>(reader: R) -> String
 where

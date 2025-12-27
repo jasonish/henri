@@ -6,7 +6,7 @@
 mod input;
 pub(crate) mod listener;
 
-pub use input::{PastedImage, PromptInfo, PromptOutcome, PromptUi};
+pub(crate) use input::{PastedImage, PromptInfo, PromptOutcome, PromptUi};
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -666,7 +666,7 @@ fn default_thinking_mode(model_id: &str) -> Option<String> {
 }
 
 /// Arguments specific to the CLI interface
-pub struct CliArgs {
+pub(crate) struct CliArgs {
     pub model: Option<String>,
     pub prompt: Vec<String>,
     pub working_dir: std::path::PathBuf,
@@ -676,7 +676,7 @@ pub struct CliArgs {
 }
 
 /// Main entry point for the CLI interface
-pub async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
+pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
     // Create output context for CLI
     let output = {
         let listener: Arc<dyn crate::output::OutputListener> =

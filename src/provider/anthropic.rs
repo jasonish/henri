@@ -20,11 +20,11 @@ use crate::sse;
 use crate::tools;
 use crate::usage;
 
-pub const API_URL: &str = "https://api.anthropic.com/v1/messages";
+pub(crate) const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-pub const ANTHROPIC_VERSION: &str = "2023-06-01";
-pub const ANTHROPIC_BETA: &str = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
+pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
+pub(crate) const ANTHROPIC_BETA: &str = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
 
 const ANTHROPIC_MODELS: &[&str] = &["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"];
 
@@ -35,7 +35,7 @@ struct AuthState {
     expires_at: u64,
 }
 
-pub struct AnthropicClient {
+pub(crate) struct AnthropicClient {
     client: Client,
     state: Mutex<AuthState>,
 }
@@ -256,7 +256,7 @@ enum PendingBlock {
     Text(PendingText),
 }
 
-pub struct AnthropicProvider {
+pub(crate) struct AnthropicProvider {
     client: AnthropicClient,
     model: String,
     thinking_enabled: bool,

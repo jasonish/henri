@@ -74,7 +74,7 @@ impl ModelProvider {
 
 /// A model choice representing a provider/model combination
 #[derive(Clone, Debug)]
-pub struct ModelChoice {
+pub(crate) struct ModelChoice {
     pub provider: ModelProvider,
     pub model_id: String,
     pub custom_provider: Option<String>,
@@ -315,7 +315,7 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
 }
 
 /// Manages all provider instances and handles routing chat requests
-pub struct ProviderManager {
+pub(crate) struct ProviderManager {
     zen_provider: ZenProvider,
     antigravity_providers: HashMap<String, AntigravityProvider>,
     copilot_provider: Option<CopilotProvider>,

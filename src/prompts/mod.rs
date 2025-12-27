@@ -11,7 +11,7 @@ use chrono::Local;
 const GIT_GUIDELINES: &str = include_str!("git.md");
 
 /// Prompt for building/updating AGENTS.md files.
-pub const BUILD_AGENTS_MD_PROMPT: &str = include_str!("build-agents-md.md");
+pub(crate) const BUILD_AGENTS_MD_PROMPT: &str = include_str!("build-agents-md.md");
 
 /// Default system prompt for AI assistants.
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("system.md");

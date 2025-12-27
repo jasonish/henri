@@ -8,7 +8,7 @@ use super::{Tool, ToolDefinition, ToolResult};
 
 const DEFAULT_LIMIT: usize = 1000;
 
-pub struct Glob;
+pub(crate) struct Glob;
 
 #[derive(Debug, Deserialize)]
 struct GlobInput {

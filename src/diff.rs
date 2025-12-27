@@ -3,14 +3,14 @@
 
 use std::path::Path;
 
-pub struct DiffResult {
+pub(crate) struct DiffResult {
     pub unified_diff: String,
     pub lines_added: usize,
     pub lines_removed: usize,
     pub has_changes: bool,
 }
 
-pub fn unified_diff(path: &Path, old: &str, new: &str, context_lines: usize) -> DiffResult {
+pub(crate) fn unified_diff(path: &Path, old: &str, new: &str, context_lines: usize) -> DiffResult {
     let diff = similar::TextDiff::from_lines(old, new);
 
     let unified_diff = diff

@@ -8,7 +8,7 @@ use std::path::Path;
 use super::{Tool, ToolDefinition, ToolResult};
 
 /// Tool for reading file contents
-pub struct FileRead;
+pub(crate) struct FileRead;
 
 #[derive(Debug, Deserialize)]
 struct FileReadInput {

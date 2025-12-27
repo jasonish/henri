@@ -4,7 +4,7 @@
 use futures::Stream;
 use futures::StreamExt;
 
-pub struct SseStream<S> {
+pub(crate) struct SseStream<S> {
     stream: S,
     line_buffer: String,
 }

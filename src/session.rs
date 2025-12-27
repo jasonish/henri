@@ -23,13 +23,13 @@ const SESSION_VERSION: u32 = 1;
 
 /// Rich intermediate representation for session replay
 #[derive(Debug, Clone)]
-pub struct SessionReplayMessage {
+pub(crate) struct SessionReplayMessage {
     pub role: Role,
     pub segments: Vec<ReplaySegment>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ReplaySegment {
+pub(crate) enum ReplaySegment {
     UserText {
         text: String,
         has_images: bool,
@@ -55,7 +55,7 @@ pub enum ReplaySegment {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ToolStatus {
+pub(crate) enum ToolStatus {
     Pending,
     Success,
     Error,
@@ -63,7 +63,7 @@ pub enum ToolStatus {
 
 /// Session metadata stored as the first line of the JSONL file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionMeta {
+pub(crate) struct SessionMeta {
     /// Version for future compatibility
     pub version: u32,
 
@@ -90,7 +90,7 @@ pub struct SessionMeta {
 
 /// Session state loaded from disk (metadata + messages).
 #[derive(Debug, Clone)]
-pub struct SessionState {
+pub(crate) struct SessionState {
     pub meta: SessionMeta,
     pub messages: Vec<SerializableMessage>,
 }
@@ -98,7 +98,7 @@ pub struct SessionState {
 /// Restored session ready to be used by CLI or TUI.
 /// Contains the converted messages and settings.
 #[derive(Debug, Clone)]
-pub struct RestoredSession {
+pub(crate) struct RestoredSession {
     pub messages: Vec<Message>,
     pub provider: String,
     pub model_id: String,
@@ -127,21 +127,21 @@ impl RestoredSession {
 /// A message that can be serialized to JSON efficiently.
 /// Images are stored as base64 strings instead of byte arrays.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializableMessage {
+pub(crate) struct SerializableMessage {
     pub role: Role,
     pub content: SerializableContent,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum SerializableContent {
+pub(crate) enum SerializableContent {
     Text(String),
     Blocks(Vec<SerializableContentBlock>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum SerializableContentBlock {
+pub(crate) enum SerializableContentBlock {
     Text {
         text: String,
     },

@@ -29,7 +29,7 @@ use crate::usage;
 const MAX_CONTINUATION_DEPTH: u8 = 255;
 
 /// Configuration for an OpenAI-compatible chat client.
-pub struct OpenAiChatConfig {
+pub(crate) struct OpenAiChatConfig {
     pub provider_name: String,
     pub client: Client,
     pub api_key: String,

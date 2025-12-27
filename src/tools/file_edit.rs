@@ -8,7 +8,7 @@ use std::path::Path;
 use super::{Tool, ToolDefinition, ToolResult};
 
 /// Tool for performing exact string replacements in files
-pub struct FileEdit;
+pub(crate) struct FileEdit;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

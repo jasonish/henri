@@ -211,7 +211,7 @@ pub(crate) struct HighlightLookup {
 
 impl HighlightLookup {
     /// Create a new lookup from the given text
-    pub fn new(text: &str) -> Self {
+    pub(crate) fn new(text: &str) -> Self {
         let hash = hash_text(text);
 
         // Try to get from cache first
@@ -243,7 +243,7 @@ impl HighlightLookup {
 
     /// Get the highlight color for a given byte offset in the text
     /// Returns None if the offset is not within a highlighted code block
-    pub fn color_at(&self, byte_offset: usize) -> Option<Color> {
+    pub(crate) fn color_at(&self, byte_offset: usize) -> Option<Color> {
         for block in &self.blocks {
             if byte_offset >= block.content_start && byte_offset < block.content_end {
                 // Find the span containing this offset

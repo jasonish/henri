@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use super::{Tool, ToolDefinition, ToolResult};
 
-pub struct ListDir;
+pub(crate) struct ListDir;
 
 #[derive(Debug, Deserialize)]
 struct ListDirInput {

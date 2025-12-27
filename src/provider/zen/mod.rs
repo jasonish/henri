@@ -93,7 +93,7 @@ fn strip_unsupported_schema_fields(schema: serde_json::Value) -> serde_json::Val
     }
 }
 
-pub struct ZenProvider {
+pub(crate) struct ZenProvider {
     client: Client,
     api_key: String,
     model: String,

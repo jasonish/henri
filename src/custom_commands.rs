@@ -15,7 +15,7 @@ use walkdir::WalkDir;
 
 /// A custom command loaded from a markdown file.
 #[derive(Debug, Clone)]
-pub struct CustomCommand {
+pub(crate) struct CustomCommand {
     pub name: String,
     pub description: String,
     pub prompt: String,

@@ -17,7 +17,7 @@ use crate::tools::{ToolDefinition, ToolResult};
 
 /// Configuration for an MCP server
 #[derive(Debug, Clone)]
-pub struct McpServerConfig {
+pub(crate) struct McpServerConfig {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
@@ -32,7 +32,7 @@ struct McpClient {
 }
 
 /// Manager for multiple MCP server connections
-pub struct McpManager {
+pub(crate) struct McpManager {
     clients: RwLock<Vec<McpClient>>,
 }
 
@@ -221,7 +221,7 @@ pub(crate) fn manager() -> Arc<McpManager> {
 }
 
 /// Initialize MCP servers from configuration
-pub async fn initialize(servers: Vec<McpServerConfig>) -> Result<()> {
+pub(crate) async fn initialize(servers: Vec<McpServerConfig>) -> Result<()> {
     let mgr = manager();
     for config in servers {
         if let Err(e) = mgr.start_server(&config).await {

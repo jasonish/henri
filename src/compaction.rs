@@ -4,7 +4,7 @@
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
 
 /// Result of a compaction operation
-pub struct CompactionResult {
+pub(crate) struct CompactionResult {
     pub messages_compacted: usize,
 }
 

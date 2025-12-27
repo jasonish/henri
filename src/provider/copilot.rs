@@ -6,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use tokio::sync::Mutex;
 
 use crate::config::{ConfigFile, CopilotProviderConfig, ProviderConfig, ProviderType};
@@ -46,7 +45,7 @@ struct CopilotState {
     copilot_expires_at: Option<u64>,
 }
 
-pub struct CopilotProvider {
+pub(crate) struct CopilotProvider {
     client: Client,
     state: Mutex<CopilotState>,
     model: String,

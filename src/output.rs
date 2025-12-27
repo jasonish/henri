@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 /// Unified output events for CLI and TUI rendering
 #[derive(Debug, Clone)]
-pub enum OutputEvent {
+pub(crate) enum OutputEvent {
     /// Thinking/reasoning started
     ThinkingStart,
     /// Thinking/reasoning text delta
@@ -53,13 +53,13 @@ pub enum OutputEvent {
 }
 
 /// Trait for listening to output events
-pub trait OutputListener: Send + Sync {
+pub(crate) trait OutputListener: Send + Sync {
     fn on_event(&self, event: &OutputEvent);
 }
 
 /// Context for emitting output events. Cheap to clone (Arc internally).
 #[derive(Clone)]
-pub struct OutputContext {
+pub(crate) struct OutputContext {
     listener: Option<Arc<dyn OutputListener>>,
     event_sender: Option<mpsc::UnboundedSender<OutputEvent>>,
 }
@@ -133,7 +133,7 @@ pub(crate) fn print_thinking_end(ctx: &OutputContext) {
 }
 
 /// Tracks thinking/reasoning state during streaming with automatic cleanup.
-pub struct ThinkingState<'a> {
+pub(crate) struct ThinkingState<'a> {
     ctx: &'a OutputContext,
     active: bool,
 }

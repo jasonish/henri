@@ -12,7 +12,7 @@ use super::{Tool, ToolDefinition, ToolResult};
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_OUTPUT_BYTES: usize = 30_000;
 
-pub struct Grep;
+pub(crate) struct Grep;
 
 #[derive(Debug, Deserialize)]
 struct GrepInput {
