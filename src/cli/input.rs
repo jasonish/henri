@@ -83,12 +83,16 @@ impl PromptUi {
         }
     }
 
-    pub(crate) fn read(
+    pub(crate) fn read<F>(
         &mut self,
-        info: &PromptInfo,
+        info: &mut PromptInfo,
         thinking_enabled: &mut bool,
         history: &mut FileHistory,
-    ) -> io::Result<PromptOutcome> {
+        mut cycle_favorite: F,
+    ) -> io::Result<PromptOutcome>
+    where
+        F: FnMut() -> Option<(String, String)>,
+    {
         self.buffer.clear();
         self.cursor = 0;
         self.history_index = None;
@@ -113,9 +117,13 @@ impl PromptUi {
                     Event::Key(key)
                         if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                     {
-                        if let Some(outcome) =
-                            self.handle_key(key, history, info, thinking_enabled)?
-                        {
+                        if let Some(outcome) = self.handle_key(
+                            key,
+                            history,
+                            info,
+                            thinking_enabled,
+                            &mut cycle_favorite,
+                        )? {
                             self.finalize_display()?;
                             return Ok(outcome);
                         }
@@ -505,13 +513,17 @@ impl PromptUi {
         Ok(())
     }
 
-    fn handle_key(
+    fn handle_key<F>(
         &mut self,
         key: crossterm::event::KeyEvent,
         history: &mut FileHistory,
-        info: &PromptInfo,
+        info: &mut PromptInfo,
         thinking_enabled: &mut bool,
-    ) -> io::Result<Option<PromptOutcome>> {
+        cycle_favorite: &mut F,
+    ) -> io::Result<Option<PromptOutcome>>
+    where
+        F: FnMut() -> Option<(String, String)>,
+    {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             if self.buffer.is_empty() && self.pasted_images.is_empty() {
                 return Ok(Some(PromptOutcome::Eof));
@@ -695,6 +707,18 @@ impl PromptUi {
             }
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return Ok(Some(PromptOutcome::SelectModel));
+            }
+            KeyCode::BackTab => {
+                if let Some((provider, model)) = cycle_favorite() {
+                    info.provider = provider;
+                    info.model = model;
+                    // Redraw status bar in place
+                    let mut stdout = io::stdout();
+                    let lines_up = self.rendered_lines + self.rendered_menu_lines;
+                    crossterm::execute!(stdout, MoveUp(lines_up), MoveToColumn(0))?;
+                    self.render_status_bar(info, *thinking_enabled)?;
+                    crossterm::execute!(stdout, MoveToColumn(0), cursor::MoveDown(lines_up))?;
+                }
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Run fzf history search

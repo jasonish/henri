@@ -324,20 +324,29 @@ impl App {
     }
 
     pub(crate) fn open_model_menu(&mut self) {
-        let choices = build_model_choices();
-        let selected_index = if let Some(ref current) = self.current_model {
-            choices
+        let mut choices = build_model_choices();
+        // Sort: favorites first, then alphabetically by provider/model
+        choices.sort_by(|a, b| match (a.is_favorite, b.is_favorite) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.short_display().cmp(&b.short_display()),
+        });
+        let mut menu = ModelMenuState {
+            choices,
+            selected_index: 0,
+            search_query: String::new(),
+        };
+        // Find the current model in the filtered (sorted) list
+        if let Some(ref current) = self.current_model {
+            let filtered = menu.filtered_choices();
+            if let Some(idx) = filtered
                 .iter()
                 .position(|c| c.provider == current.provider && c.model_id == current.model_id)
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        self.model_menu = Some(ModelMenuState {
-            choices,
-            selected_index,
-            search_query: String::new(),
-        });
+            {
+                menu.selected_index = idx;
+            }
+        }
+        self.model_menu = Some(menu);
     }
 
     pub(crate) fn close_model_menu(&mut self) {
@@ -456,9 +465,10 @@ impl App {
     pub(crate) fn handle_model_menu_key(
         &mut self,
         code: crossterm::event::KeyCode,
-        _modifiers: crossterm::event::KeyModifiers,
+        modifiers: crossterm::event::KeyModifiers,
     ) -> bool {
         use crossterm::event::KeyCode;
+        use crossterm::event::KeyModifiers;
 
         let Some(menu) = &mut self.model_menu else {
             return false;
@@ -466,6 +476,12 @@ impl App {
 
         // Helper to get filtered count
         let filtered_len = || menu.filtered_choices().len();
+
+        // Handle Ctrl+F to toggle favorite
+        if modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('f') {
+            self.toggle_selected_model_favorite();
+            return true;
+        }
 
         match code {
             KeyCode::Esc => {
@@ -532,6 +548,95 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// Toggle the favorite status of the currently selected model in the menu
+    fn toggle_selected_model_favorite(&mut self) {
+        let Some(menu) = &mut self.model_menu else {
+            return;
+        };
+
+        // Get the model info from filtered choices
+        let filtered = menu.filtered_choices();
+        let Some(choice) = filtered.get(menu.selected_index) else {
+            return;
+        };
+        let model_id = choice.short_display();
+        let provider = choice.provider;
+        let choice_model_id = choice.model_id.clone();
+
+        // Toggle favorite in config and save
+        let new_favorite_status = if let Ok(mut config) = ConfigFile::load() {
+            let is_now_favorite = config.toggle_favorite(&model_id);
+            let _ = config.save();
+            is_now_favorite
+        } else {
+            return;
+        };
+
+        // Update the is_favorite flag in-place (don't reorder - that happens on next menu open)
+        if let Some(choice) = menu
+            .choices
+            .iter_mut()
+            .find(|c| c.provider == provider && c.model_id == choice_model_id)
+        {
+            choice.is_favorite = new_favorite_status;
+        }
+    }
+
+    /// Cycle through favorite models (triggered by Shift+Tab)
+    pub(crate) fn cycle_favorite_model(&mut self) {
+        let choices = build_model_choices();
+        let favorites: Vec<_> = choices.iter().filter(|c| c.is_favorite).collect();
+
+        if favorites.is_empty() {
+            return;
+        }
+
+        // Find current model's position in favorites
+        let current_idx = if let Some(ref current) = self.current_model {
+            favorites
+                .iter()
+                .position(|c| c.provider == current.provider && c.model_id == current.model_id)
+        } else {
+            None
+        };
+
+        // Cycle to next favorite (or first if not found)
+        let next_idx = match current_idx {
+            Some(idx) => (idx + 1) % favorites.len(),
+            None => 0,
+        };
+
+        let next_model = favorites[next_idx];
+        let model_str = next_model.short_display();
+
+        // Update current model
+        self.current_model = Some(next_model.clone());
+
+        // Update provider manager
+        if let Some(ref mut pm) = self.provider_manager {
+            pm.set_model(
+                next_model.provider,
+                next_model.model_id.clone(),
+                next_model.custom_provider.clone(),
+            );
+        }
+
+        // Update thinking availability and mode
+        self.thinking_available =
+            super::supports_thinking(next_model.provider, &next_model.model_id);
+        self.thinking_mode =
+            super::thinking_mode::ThinkingMode::default_for_model(&next_model.model_id);
+
+        // Show model change message
+        self.messages
+            .push(Message::Text(format!("Model set to: {}", model_str)));
+        self.layout_cache.invalidate();
+        self.reset_scroll();
+
+        // Save to config
+        let _ = crate::config::Config::save_state_model(&model_str);
     }
 
     pub(crate) fn open_settings_menu(&mut self) {

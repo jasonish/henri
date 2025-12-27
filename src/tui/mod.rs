@@ -575,6 +575,10 @@ async fn run_app(
                                 // Open model selection menu
                                 app.open_model_menu();
                             }
+                            (KeyCode::BackTab, _) => {
+                                // Cycle through favorite models
+                                app.cycle_favorite_model();
+                            }
                             (KeyCode::Esc, mods) => {
                                 handle_escape(&mut app, &mut last_escape, mods);
                             }

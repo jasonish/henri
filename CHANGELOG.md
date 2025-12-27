@@ -4,6 +4,7 @@
 
 ### Added
 
+- Allow marking models as favourites
 - `fetch` tool for fetching URLs with automatic HTML-to-Markdown and JSON pretty-printing
 - `grep` tool for searching patterns in files using ripgrep (with grep fallback)
 - Interrupt handling for bash tool: Ctrl+C now kills running commands

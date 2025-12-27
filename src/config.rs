@@ -71,6 +71,13 @@ pub struct ConfigFile {
     /// Enable LSP integration for diagnostics (default: true)
     #[serde(default = "default_lsp_enabled", rename = "lsp-enabled")]
     pub lsp_enabled: bool,
+    /// List of favorite model identifiers (e.g., "zen/grok-code", "claude/claude-sonnet-4-5")
+    #[serde(
+        default,
+        rename = "favorite-models",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub favorite_models: Vec<String>,
 }
 
 fn default_show_network_stats() -> bool {
@@ -517,6 +524,34 @@ impl ConfigFile {
     /// Remove a provider by local identifier
     pub(crate) fn remove_provider(&mut self, local_id: &str) -> Option<ProviderConfig> {
         self.providers.entries.remove(local_id)
+    }
+
+    /// Check if a model is marked as a favorite
+    pub(crate) fn is_favorite(&self, model_id: &str) -> bool {
+        self.favorite_models.iter().any(|m| m == model_id)
+    }
+
+    /// Add a model to favorites
+    pub(crate) fn add_favorite(&mut self, model_id: String) {
+        if !self.is_favorite(&model_id) {
+            self.favorite_models.push(model_id);
+        }
+    }
+
+    /// Remove a model from favorites
+    pub(crate) fn remove_favorite(&mut self, model_id: &str) {
+        self.favorite_models.retain(|m| m != model_id);
+    }
+
+    /// Toggle a model's favorite status
+    pub(crate) fn toggle_favorite(&mut self, model_id: &str) -> bool {
+        if self.is_favorite(model_id) {
+            self.remove_favorite(model_id);
+            false
+        } else {
+            self.add_favorite(model_id.to_string());
+            true
+        }
     }
 
     /// Get all providers of a specific type

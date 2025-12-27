@@ -224,6 +224,50 @@ fn select_model(provider_manager: &mut ProviderManager) {
     }
 }
 
+/// Cycle through favorite models (triggered by Shift+Tab)
+/// Returns the new (provider_display, model_id) if successful
+fn cycle_favorite_model(provider_manager: &mut ProviderManager) -> Option<(String, String)> {
+    let choices = build_model_choices();
+    let favorites: Vec<_> = choices.iter().filter(|c| c.is_favorite).collect();
+
+    if favorites.is_empty() {
+        return None;
+    }
+
+    // Find current model's position in favorites
+    let current_model_id = provider_manager.current_model_id();
+    let current_provider = provider_manager.current_provider();
+    let current_idx = favorites
+        .iter()
+        .position(|c| c.provider == current_provider && c.model_id == current_model_id);
+
+    // Cycle to next favorite (or first if not found)
+    let next_idx = match current_idx {
+        Some(idx) => (idx + 1) % favorites.len(),
+        None => 0,
+    };
+
+    let next_model = favorites[next_idx];
+    let model_str = next_model.short_display();
+
+    // Update provider manager
+    provider_manager.set_model(
+        next_model.provider,
+        next_model.model_id.clone(),
+        next_model.custom_provider.clone(),
+    );
+
+    // Save selection to config
+    let _ = Config::save_state_model(&model_str);
+
+    // Return new display values
+    let provider_display = next_model
+        .custom_provider
+        .clone()
+        .unwrap_or_else(|| next_model.provider.display_name().to_string());
+    Some((provider_display, next_model.model_id.clone()))
+}
+
 /// Settings menu options
 #[derive(Clone)]
 enum SettingChoice {
@@ -730,8 +774,19 @@ pub async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
     }
 
     loop {
-        let prompt_info = build_prompt(&provider_manager);
-        let outcome = prompt_ui.read(&prompt_info, &mut thinking_enabled, &mut history)?;
+        let mut prompt_info = build_prompt(&provider_manager);
+        let outcome = prompt_ui.read(
+            &mut prompt_info,
+            &mut thinking_enabled,
+            &mut history,
+            || {
+                let result = cycle_favorite_model(&mut provider_manager);
+                if result.is_some() {
+                    thinking_mode = default_thinking_mode(provider_manager.current_model_id());
+                }
+                result
+            },
+        )?;
 
         match outcome {
             PromptOutcome::Interrupted => {
@@ -743,6 +798,7 @@ pub async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                 select_model(&mut provider_manager);
                 thinking_mode = default_thinking_mode(provider_manager.current_model_id());
             }
+
             PromptOutcome::Submitted {
                 content,
                 pasted_images,

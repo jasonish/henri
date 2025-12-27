@@ -56,7 +56,7 @@ pub(crate) fn render_model_menu(frame: &mut Frame, screen: Rect, menu: &ModelMen
     // Get filtered choices
     let filtered: Vec<&ModelChoice> = menu.filtered_choices();
 
-    // Calculate popup dimensions - add 1 row for search input
+    // Calculate popup dimensions
     // Use 2/3 of screen width to accommodate longer model names
     let popup_width = (screen.width * 2 / 3).min(screen.width.saturating_sub(4));
     let visible_items = MODEL_MENU_MAX_VISIBLE.min(filtered.len().max(1));
@@ -102,12 +102,22 @@ pub(crate) fn render_model_menu(frame: &mut Frame, screen: Rect, menu: &ModelMen
         for (i, choice) in filtered[start..end].iter().enumerate() {
             let actual_idx = start + i;
             let is_selected = actual_idx == menu.selected_index;
+
             let prefix = if is_selected { ">" } else { " " };
+            let star = if choice.is_favorite { "*" } else { " " };
 
             let main_style = if is_selected {
                 Style::default().fg(Color::Cyan).bg(Color::Rgb(48, 48, 48))
             } else {
                 Style::default().fg(Color::White).bg(bg)
+            };
+
+            let star_style = if is_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .bg(Color::Rgb(48, 48, 48))
+            } else {
+                Style::default().fg(Color::Yellow).bg(bg)
             };
 
             let muted_style = if is_selected {
@@ -119,10 +129,11 @@ pub(crate) fn render_model_menu(frame: &mut Frame, screen: Rect, menu: &ModelMen
             };
 
             // Build the line with styled spans
-            let mut spans = vec![Span::styled(
-                format!("{} {}", prefix, choice.display()),
-                main_style,
-            )];
+            let mut spans = vec![
+                Span::styled(prefix, main_style),
+                Span::styled(star, star_style),
+                Span::styled(choice.display(), main_style),
+            ];
 
             // Add the suffix (provider type) in muted color if present
             if let Some(suffix) = choice.display_suffix() {
@@ -136,7 +147,7 @@ pub(crate) fn render_model_menu(frame: &mut Frame, screen: Rect, menu: &ModelMen
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
-        .title(" Select Model (↑↓ Enter Esc) ")
+        .title(" Select Model (↑↓ Enter Esc, ^f=fav) ")
         .title_style(Style::default().fg(Color::Yellow))
         .style(Style::default().bg(bg));
 

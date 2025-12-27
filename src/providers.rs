@@ -78,6 +78,8 @@ pub struct ModelChoice {
     pub provider: ModelProvider,
     pub model_id: String,
     pub custom_provider: Option<String>,
+    /// Whether this model is marked as a favorite
+    pub is_favorite: bool,
 }
 
 impl ModelChoice {
@@ -116,7 +118,8 @@ impl ModelChoice {
 
 impl std::fmt::Display for ModelChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.display())
+        let star = if self.is_favorite { "*" } else { " " };
+        write!(f, "{}{}", star, self.display())
     }
 }
 
@@ -128,6 +131,10 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
         Some(c) => c,
         None => return choices,
     };
+
+    // Helper to check if a model is a favorite
+    let is_favorite =
+        |choice: &ModelChoice| -> bool { config.is_favorite(&choice.short_display()) };
 
     // Count how many providers of each type are enabled
     let mut type_counts: HashMap<ProviderType, usize> = HashMap::new();
@@ -158,16 +165,19 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
         match provider_type {
             ProviderType::Antigravity => {
                 for &model in AntigravityProvider::models() {
-                    choices.push(ModelChoice {
+                    let mut choice = ModelChoice {
                         provider: ModelProvider::Antigravity,
                         model_id: model.to_string(),
                         custom_provider: Some(local_id.clone()),
-                    });
+                        is_favorite: false,
+                    };
+                    choice.is_favorite = is_favorite(&choice);
+                    choices.push(choice);
                 }
             }
             ProviderType::GithubCopilot => {
                 for &model in CopilotProvider::models() {
-                    choices.push(ModelChoice {
+                    let mut choice = ModelChoice {
                         provider: ModelProvider::GitHubCopilot,
                         model_id: model.to_string(),
                         custom_provider: if use_custom_name {
@@ -175,7 +185,10 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
                         } else {
                             None
                         },
-                    });
+                        is_favorite: false,
+                    };
+                    choice.is_favorite = is_favorite(&choice);
+                    choices.push(choice);
                 }
             }
             ProviderType::Zen => {
@@ -183,17 +196,20 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
                     && !zen_config.api_key.is_empty()
                 {
                     for &model in ZenProvider::models() {
-                        choices.push(ModelChoice {
+                        let mut choice = ModelChoice {
                             provider: ModelProvider::OpenCodeZen,
                             model_id: model.to_string(),
                             custom_provider: Some(local_id.clone()),
-                        });
+                            is_favorite: false,
+                        };
+                        choice.is_favorite = is_favorite(&choice);
+                        choices.push(choice);
                     }
                 }
             }
             ProviderType::Claude => {
                 for &model in AnthropicProvider::models() {
-                    choices.push(ModelChoice {
+                    let mut choice = ModelChoice {
                         provider: ModelProvider::Claude,
                         model_id: model.to_string(),
                         custom_provider: if use_custom_name {
@@ -201,12 +217,15 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
                         } else {
                             None
                         },
-                    });
+                        is_favorite: false,
+                    };
+                    choice.is_favorite = is_favorite(&choice);
+                    choices.push(choice);
                 }
             }
             ProviderType::Openai => {
                 for &model in OpenAiProvider::models() {
-                    choices.push(ModelChoice {
+                    let mut choice = ModelChoice {
                         provider: ModelProvider::OpenAi,
                         model_id: model.to_string(),
                         custom_provider: if use_custom_name {
@@ -214,25 +233,34 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
                         } else {
                             None
                         },
-                    });
+                        is_favorite: false,
+                    };
+                    choice.is_favorite = is_favorite(&choice);
+                    choices.push(choice);
                 }
             }
             ProviderType::OpenaiCompat => {
                 if let Some(compat_config) = provider_config.as_openai_compat() {
                     let models = compat_config.all_models();
                     if models.is_empty() {
-                        choices.push(ModelChoice {
+                        let mut choice = ModelChoice {
                             provider: ModelProvider::OpenAiCompat,
                             model_id: "default".to_string(),
                             custom_provider: Some(local_id.clone()),
-                        });
+                            is_favorite: false,
+                        };
+                        choice.is_favorite = is_favorite(&choice);
+                        choices.push(choice);
                     } else {
                         for model in models {
-                            choices.push(ModelChoice {
+                            let mut choice = ModelChoice {
                                 provider: ModelProvider::OpenAiCompat,
                                 model_id: model,
                                 custom_provider: Some(local_id.clone()),
-                            });
+                                is_favorite: false,
+                            };
+                            choice.is_favorite = is_favorite(&choice);
+                            choices.push(choice);
                         }
                     }
                 }
@@ -241,7 +269,7 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
                 if let Some(openrouter_config) = provider_config.as_openrouter() {
                     let models = openrouter_config.all_models();
                     if models.is_empty() {
-                        choices.push(ModelChoice {
+                        let mut choice = ModelChoice {
                             provider: ModelProvider::OpenRouter,
                             model_id: "default".to_string(),
                             custom_provider: if use_custom_name {
@@ -249,10 +277,13 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
                             } else {
                                 None
                             },
-                        });
+                            is_favorite: false,
+                        };
+                        choice.is_favorite = is_favorite(&choice);
+                        choices.push(choice);
                     } else {
                         for model in models {
-                            choices.push(ModelChoice {
+                            let mut choice = ModelChoice {
                                 provider: ModelProvider::OpenRouter,
                                 model_id: model,
                                 custom_provider: if use_custom_name {
@@ -260,13 +291,25 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
                                 } else {
                                     None
                                 },
-                            });
+                                is_favorite: false,
+                            };
+                            choice.is_favorite = is_favorite(&choice);
+                            choices.push(choice);
                         }
                     }
                 }
             }
         }
     }
+
+    // Sort choices for predictable ordering: by provider name, then model ID
+    choices.sort_by(|a, b| {
+        let provider_a = a.custom_provider.as_deref().unwrap_or(a.provider.id());
+        let provider_b = b.custom_provider.as_deref().unwrap_or(b.provider.id());
+        provider_a
+            .cmp(provider_b)
+            .then_with(|| a.model_id.cmp(&b.model_id))
+    });
 
     choices
 }

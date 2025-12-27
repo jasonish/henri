@@ -14,11 +14,13 @@ pub(crate) fn parse_model_string(model_str: &str) -> Option<ModelChoice> {
     if let Ok(config) = ConfigFile::load()
         && let Some(provider_config) = config.get_provider(provider_id)
     {
+        let is_favorite = config.is_favorite(model_str);
         if provider_config.as_openai_compat().is_some() {
             return Some(ModelChoice {
                 provider: ModelProvider::OpenAiCompat,
                 model_id: model_id.to_string(),
                 custom_provider: Some(provider_id.to_string()),
+                is_favorite,
             });
         }
         if provider_config.as_zen().is_some() {
@@ -26,6 +28,7 @@ pub(crate) fn parse_model_string(model_str: &str) -> Option<ModelChoice> {
                 provider: ModelProvider::OpenCodeZen,
                 model_id: model_id.to_string(),
                 custom_provider: Some(provider_id.to_string()),
+                is_favorite,
             });
         }
         if provider_config.as_openrouter().is_some() {
@@ -33,17 +36,22 @@ pub(crate) fn parse_model_string(model_str: &str) -> Option<ModelChoice> {
                 provider: ModelProvider::OpenRouter,
                 model_id: model_id.to_string(),
                 custom_provider: Some(provider_id.to_string()),
+                is_favorite,
             });
         }
     }
 
     // Otherwise, try to parse as a built-in provider
     let provider = ModelProvider::from_id(provider_id)?;
+    let is_favorite = ConfigFile::load()
+        .map(|c| c.is_favorite(model_str))
+        .unwrap_or(false);
 
     Some(ModelChoice {
         provider,
         model_id: model_id.to_string(),
         custom_provider: None,
+        is_favorite,
     })
 }
 
@@ -69,9 +77,10 @@ pub(crate) struct ModelMenuState {
 
 impl ModelMenuState {
     /// Returns filtered choices matching the search query using fuzzy matching.
-    /// Results are sorted by match quality (exact > prefix > fuzzy).
+    /// Choices are returned in their stored order (sorted by favorite when menu opens).
     pub(crate) fn filtered_choices(&self) -> Vec<&ModelChoice> {
         if self.search_query.is_empty() {
+            // Return in stored order (favorites-first sorting happens at menu open)
             self.choices.iter().collect()
         } else {
             let query = self.search_query.to_lowercase();
@@ -97,7 +106,8 @@ impl ModelMenuState {
                         .map(|score| (c, score))
                 })
                 .collect();
-            matches.sort_by_key(|(_, score)| *score);
+            // Sort by match score only (best matches first)
+            matches.sort_by(|(_, score_a), (_, score_b)| score_a.cmp(score_b));
             matches.into_iter().map(|(c, _)| c).collect()
         }
     }
