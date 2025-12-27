@@ -22,7 +22,9 @@ mod session;
 mod sse;
 mod tools;
 mod tui;
+mod upgrade;
 mod usage;
+mod version;
 
 use std::path::PathBuf;
 
@@ -34,19 +36,6 @@ const STYLES: Styles = Styles::styled()
     .usage(AnsiColor::Green.on_default().effects(Effects::BOLD))
     .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Cyan.on_default());
-
-/// Long version string with feature information
-#[cfg(feature = "tree-sitter")]
-const LONG_VERSION: &str = concat!(
-    env!("CARGO_PKG_VERSION"),
-    "\nSyntax highlighting: tree-sitter (with syntect fallback)"
-);
-
-#[cfg(not(feature = "tree-sitter"))]
-const LONG_VERSION: &str = concat!(
-    env!("CARGO_PKG_VERSION"),
-    "\nSyntax highlighting: syntect only"
-);
 
 /// Check for existing session and restore if requested.
 /// Returns (working_dir, Option<RestoredSession>)
@@ -79,7 +68,7 @@ fn handle_session_restore(
 #[derive(Parser, Debug)]
 #[command(name = "henri")]
 #[command(about = "Your Golden Retriever AI Coding Assistant")]
-#[command(long_version = LONG_VERSION)]
+#[command(version = version::VERSION)]
 #[command(styles = STYLES, color = clap::ColorChoice::Always)]
 struct Args {
     #[command(subcommand)]
@@ -156,6 +145,8 @@ enum Command {
         #[command(subcommand)]
         tool: ToolCommand,
     },
+    /// Check for available upgrades
+    Upgrade,
 }
 
 #[derive(Subcommand, Debug)]
@@ -218,6 +209,9 @@ async fn main() -> std::io::Result<()> {
                     .await;
                 }
             },
+            Command::Upgrade => {
+                return handle_upgrade_command().await;
+            }
             _ => {}
         }
     }
@@ -516,5 +510,34 @@ async fn handle_provider_remove_command() -> std::io::Result<()> {
     }
 
     println!("✓ Provider '{}' removed successfully.", provider_id);
+    Ok(())
+}
+
+async fn handle_upgrade_command() -> std::io::Result<()> {
+    println!("Checking for updates...");
+
+    match upgrade::check_for_upgrade().await {
+        Ok(upgrade::UpgradeStatus::Available { latest, url }) => {
+            println!();
+            println!(
+                "A new version of Henri is available: {} (current: {})",
+                latest,
+                version::VERSION
+            );
+            println!();
+            println!("To upgrade, run:");
+            println!("  cargo install --git https://github.com/jasonish/henri");
+            println!();
+            println!("Release notes: {}", url);
+        }
+        Ok(upgrade::UpgradeStatus::UpToDate) => {
+            println!("You're on the latest version ({}).", version::VERSION);
+        }
+        Err(e) => {
+            eprintln!("Failed to check for updates: {}", e);
+            std::process::exit(1);
+        }
+    }
+
     Ok(())
 }

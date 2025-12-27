@@ -4,6 +4,7 @@
 use serde::Deserialize;
 
 use super::{Tool, ToolDefinition, ToolResult};
+use crate::version::VERSION;
 
 pub(crate) struct Fetch;
 
@@ -65,7 +66,7 @@ impl Tool for Fetch {
         }
 
         let client = reqwest::Client::builder()
-            .user_agent(concat!("henri/", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("henri/{VERSION}"))
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .unwrap_or_default();
