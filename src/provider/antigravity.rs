@@ -487,7 +487,7 @@ impl AntigravityProvider {
         );
         headers.insert(
             "User-Agent".to_string(),
-            format!("antigravity/{} linux/amd64", env!("CARGO_PKG_VERSION")),
+            "antigravity/1.11.5 windows/amd64".to_string(),
         );
         headers.insert(
             "X-Goog-Api-Client".to_string(),
