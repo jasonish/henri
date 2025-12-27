@@ -882,6 +882,7 @@ dependencies = [
  "unicode-width",
  "url",
  "urlencoding",
+ "uuid",
  "walkdir",
 ]
 

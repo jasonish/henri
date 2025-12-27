@@ -365,3 +365,9 @@ static OPENROUTER_USAGE: std::sync::OnceLock<Usage> = std::sync::OnceLock::new()
 pub(crate) fn openrouter() -> &'static Usage {
     OPENROUTER_USAGE.get_or_init(Usage::default)
 }
+
+static ANTIGRAVITY_USAGE: std::sync::OnceLock<Usage> = std::sync::OnceLock::new();
+
+pub(crate) fn antigravity() -> &'static Usage {
+    ANTIGRAVITY_USAGE.get_or_init(Usage::default)
+}

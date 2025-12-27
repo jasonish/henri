@@ -60,6 +60,7 @@ use selection::ContentPosition;
 
 pub(crate) fn supports_thinking(provider: crate::providers::ModelProvider, model: &str) -> bool {
     match provider {
+        crate::providers::ModelProvider::Antigravity => true,
         crate::providers::ModelProvider::OpenCodeZen => true,
         crate::providers::ModelProvider::GitHubCopilot => model.starts_with("gpt-5"),
         crate::providers::ModelProvider::Claude => true,

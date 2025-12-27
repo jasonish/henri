@@ -471,6 +471,7 @@ fn show_default_model_menu(current: &DefaultModel) {
 
 fn supports_thinking(provider: ModelProvider, model: &str) -> bool {
     match provider {
+        ModelProvider::Antigravity => true,
         ModelProvider::OpenCodeZen => true,
         ModelProvider::GitHubCopilot => model.starts_with("gpt-5"),
         ModelProvider::Claude => true,
@@ -482,6 +483,7 @@ fn supports_thinking(provider: ModelProvider, model: &str) -> bool {
 
 fn supports_images(provider: ModelProvider, model: &str) -> bool {
     match provider {
+        ModelProvider::Antigravity => true,
         ModelProvider::OpenCodeZen => !matches!(model, "big-pickle" | "glm-4.6"),
         ModelProvider::GitHubCopilot => model.starts_with("gpt-5"),
         ModelProvider::Claude => true,
@@ -1029,6 +1031,10 @@ fn print_usage_for_provider(provider_manager: &ProviderManager) {
     let model_id = provider_manager.current_model_id();
 
     match provider {
+        ModelProvider::Antigravity => {
+            let limit = crate::provider::context_limit(provider, model_id);
+            usage::antigravity().print_last_usage(limit);
+        }
         ModelProvider::Claude => {
             let limit = crate::provider::context_limit(provider, model_id);
             usage::anthropic().print_last_usage(limit);

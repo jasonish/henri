@@ -2,6 +2,7 @@
 // Copyright (c) 2025 Jason Ish
 
 pub mod anthropic;
+pub mod antigravity;
 pub mod copilot;
 pub mod openai;
 pub mod openai_compat;
@@ -148,6 +149,7 @@ pub(crate) fn context_limit(provider: crate::providers::ModelProvider, model: &s
     use crate::providers::ModelProvider;
 
     match provider {
+        ModelProvider::Antigravity => antigravity::AntigravityProvider::context_limit(model),
         ModelProvider::Claude => anthropic::AnthropicProvider::context_limit(model),
         ModelProvider::OpenAi => openai::OpenAiProvider::context_limit(model),
         ModelProvider::GitHubCopilot => copilot::CopilotProvider::context_limit(model),

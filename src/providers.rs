@@ -13,6 +13,7 @@ use crate::config::{Config, ConfigFile, ProviderType};
 use crate::error::Result;
 use crate::output::OutputContext;
 use crate::provider::anthropic::AnthropicProvider;
+use crate::provider::antigravity::AntigravityProvider;
 use crate::provider::copilot::CopilotProvider;
 use crate::provider::openai::OpenAiProvider;
 use crate::provider::openai_compat::OpenAiCompatProvider;
@@ -22,7 +23,8 @@ use crate::provider::{ContentBlock, Message, MessageContent, Role};
 use crate::services::Services;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ModelProvider {
+pub(crate) enum ModelProvider {
+    Antigravity,
     OpenCodeZen,
     GitHubCopilot,
     Claude,
@@ -34,6 +36,7 @@ pub enum ModelProvider {
 impl ModelProvider {
     pub(crate) fn display_name(&self) -> &'static str {
         match self {
+            ModelProvider::Antigravity => "Antigravity",
             ModelProvider::OpenCodeZen => "OpenCode Zen",
             ModelProvider::GitHubCopilot => "GitHub Copilot",
             ModelProvider::Claude => "Anthropic Claude",
@@ -45,6 +48,7 @@ impl ModelProvider {
 
     pub(crate) fn id(&self) -> &'static str {
         match self {
+            ModelProvider::Antigravity => "antigravity",
             ModelProvider::OpenCodeZen => "zen",
             ModelProvider::GitHubCopilot => "copilot",
             ModelProvider::Claude => "claude",
@@ -56,6 +60,7 @@ impl ModelProvider {
 
     pub(crate) fn from_id(id: &str) -> Option<Self> {
         match id {
+            "antigravity" => Some(ModelProvider::Antigravity),
             "zen" => Some(ModelProvider::OpenCodeZen),
             "copilot" => Some(ModelProvider::GitHubCopilot),
             "claude" => Some(ModelProvider::Claude),
@@ -116,7 +121,7 @@ impl std::fmt::Display for ModelChoice {
 }
 
 /// Build a list of all available model choices from configured providers
-pub fn build_model_choices() -> Vec<ModelChoice> {
+pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
     let mut choices = Vec::new();
 
     let config = match ConfigFile::load().ok() {
@@ -151,6 +156,15 @@ pub fn build_model_choices() -> Vec<ModelChoice> {
         let use_custom_name = type_counts.get(&provider_type).copied().unwrap_or(0) > 1;
 
         match provider_type {
+            ProviderType::Antigravity => {
+                for &model in AntigravityProvider::models() {
+                    choices.push(ModelChoice {
+                        provider: ModelProvider::Antigravity,
+                        model_id: model.to_string(),
+                        custom_provider: Some(local_id.clone()),
+                    });
+                }
+            }
             ProviderType::GithubCopilot => {
                 for &model in CopilotProvider::models() {
                     choices.push(ModelChoice {
@@ -260,6 +274,7 @@ pub fn build_model_choices() -> Vec<ModelChoice> {
 /// Manages all provider instances and handles routing chat requests
 pub struct ProviderManager {
     zen_provider: ZenProvider,
+    antigravity_providers: HashMap<String, AntigravityProvider>,
     copilot_provider: Option<CopilotProvider>,
     anthropic_provider: Option<AnthropicProvider>,
     openai_provider: Option<OpenAiProvider>,
@@ -281,12 +296,18 @@ impl ProviderManager {
 
         // Load all configured OpenAI-compatible providers
         let mut openai_compat_providers = HashMap::new();
+        let mut antigravity_providers = HashMap::new();
         if let Ok(cfg) = crate::config::ConfigFile::load() {
             for (name, provider_config) in &cfg.providers.entries {
                 if provider_config.as_openai_compat().is_some()
                     && let Ok(provider) = OpenAiCompatProvider::try_new(name)
                 {
                     openai_compat_providers.insert(name.clone(), provider);
+                }
+                if provider_config.as_antigravity().is_some()
+                    && let Ok(provider) = AntigravityProvider::try_new(name)
+                {
+                    antigravity_providers.insert(name.clone(), provider);
                 }
             }
         }
@@ -296,6 +317,7 @@ impl ProviderManager {
 
         Self {
             zen_provider,
+            antigravity_providers,
             copilot_provider,
             anthropic_provider,
             openai_provider,
@@ -310,7 +332,7 @@ impl ProviderManager {
 
     pub(crate) fn current_model_string(&self) -> String {
         match self.current_provider {
-            ModelProvider::OpenAiCompat => {
+            ModelProvider::Antigravity | ModelProvider::OpenAiCompat => {
                 if let Some(custom_name) = &self.current_custom_provider {
                     format!("{}/{}", custom_name, self.current_model_id)
                 } else {
@@ -347,6 +369,24 @@ impl ProviderManager {
         }
 
         match provider {
+            ModelProvider::Antigravity => {
+                if let Some(custom_name) = &custom_provider {
+                    if !self.antigravity_providers.contains_key(custom_name) {
+                        if let Ok(provider) = AntigravityProvider::try_new(custom_name) {
+                            self.antigravity_providers
+                                .insert(custom_name.clone(), provider);
+                        } else {
+                            eprintln!("Antigravity provider '{}' not configured.", custom_name);
+                            return;
+                        }
+                    }
+                    if let Some(p) = self.antigravity_providers.get_mut(custom_name) {
+                        p.set_model(model_id);
+                    }
+                } else {
+                    eprintln!("Antigravity provider requires a custom provider name.");
+                }
+            }
             ModelProvider::OpenCodeZen => self.zen_provider.set_model(model_id),
             ModelProvider::GitHubCopilot => init_and_set!(
                 self.copilot_provider,
@@ -393,6 +433,13 @@ impl ProviderManager {
 
     pub(crate) fn set_thinking_enabled(&mut self, enabled: bool) {
         match self.current_provider {
+            ModelProvider::Antigravity => {
+                if let Some(custom_name) = &self.current_custom_provider
+                    && let Some(p) = self.antigravity_providers.get_mut(custom_name)
+                {
+                    p.set_thinking_enabled(enabled);
+                }
+            }
             ModelProvider::OpenCodeZen => self.zen_provider.set_thinking_enabled(enabled),
             ModelProvider::GitHubCopilot => {
                 if let Some(ref mut p) = self.copilot_provider {
@@ -450,6 +497,26 @@ impl ProviderManager {
         }
 
         match self.current_provider {
+            ModelProvider::Antigravity => {
+                if let Some(custom_name) = &self.current_custom_provider {
+                    match self.antigravity_providers.get_mut(custom_name) {
+                        Some(p) => {
+                            p.set_model(self.current_model_id.clone());
+                            chat::run_chat_loop(p, messages, interrupted, output, services).await
+                        }
+                        None => {
+                            let msg =
+                                format!("Antigravity provider '{}' not configured", custom_name);
+                            crate::output::emit_error(output, &msg);
+                            Err(crate::error::Error::Auth(msg))
+                        }
+                    }
+                } else {
+                    let msg = "Antigravity provider requires a custom provider name";
+                    crate::output::emit_error(output, msg);
+                    Err(crate::error::Error::Auth(msg.to_string()))
+                }
+            }
             ModelProvider::OpenCodeZen => {
                 self.zen_provider.set_model(self.current_model_id.clone());
                 chat::run_chat_loop(&self.zen_provider, messages, interrupted, output, services)
@@ -503,6 +570,24 @@ impl ProviderManager {
         }
 
         match self.current_provider {
+            ModelProvider::Antigravity => {
+                if let Some(custom_name) = &self.current_custom_provider {
+                    match self.antigravity_providers.get_mut(custom_name) {
+                        Some(p) => {
+                            p.set_model(self.current_model_id.clone());
+                            p.prepare_request(messages).await
+                        }
+                        None => Err(crate::error::Error::Auth(format!(
+                            "Antigravity provider '{}' not configured",
+                            custom_name
+                        ))),
+                    }
+                } else {
+                    Err(crate::error::Error::Auth(
+                        "Antigravity provider requires a custom provider name".to_string(),
+                    ))
+                }
+            }
             ModelProvider::OpenCodeZen => {
                 self.zen_provider.set_model(self.current_model_id.clone());
                 self.zen_provider.prepare_request(messages).await
@@ -591,6 +676,26 @@ impl ProviderManager {
 
         // Get summary from current provider
         let response = match self.current_provider {
+            ModelProvider::Antigravity => {
+                if let Some(custom_name) = &self.current_custom_provider {
+                    match self.antigravity_providers.get_mut(custom_name) {
+                        Some(p) => {
+                            p.set_model(self.current_model_id.clone());
+                            p.chat(request_messages, output).await?
+                        }
+                        None => {
+                            return Err(crate::error::Error::Auth(format!(
+                                "Antigravity provider '{}' not configured",
+                                custom_name
+                            )));
+                        }
+                    }
+                } else {
+                    return Err(crate::error::Error::Auth(
+                        "Antigravity provider requires a custom provider name".into(),
+                    ));
+                }
+            }
             ModelProvider::OpenCodeZen => {
                 self.zen_provider.set_model(self.current_model_id.clone());
                 self.zen_provider.chat(request_messages, output).await?
@@ -690,6 +795,29 @@ fn parse_model_spec(spec: &str) -> (ModelProvider, String, Option<String>) {
     if let Some((prefix, model)) = spec.split_once('/') {
         // Check for built-in providers first
         let provider = match prefix {
+            "antigravity" => {
+                // Find first enabled antigravity provider
+                if let Ok(config) = crate::config::ConfigFile::load() {
+                    for (name, provider_config) in &config.providers.entries {
+                        if provider_config.as_antigravity().is_some()
+                            && provider_config.is_enabled()
+                        {
+                            return (
+                                ModelProvider::Antigravity,
+                                model.to_string(),
+                                Some(name.clone()),
+                            );
+                        }
+                    }
+                }
+                // No antigravity configured - use "antigravity" as the name so
+                // the error message is helpful ("provider 'antigravity' not configured")
+                return (
+                    ModelProvider::Antigravity,
+                    model.to_string(),
+                    Some("antigravity".to_string()),
+                );
+            }
             "copilot" | "github-copilot" => {
                 return (ModelProvider::GitHubCopilot, model.to_string(), None);
             }
@@ -698,17 +826,28 @@ fn parse_model_spec(spec: &str) -> (ModelProvider, String, Option<String>) {
             "openrouter" => return (ModelProvider::OpenRouter, model.to_string(), None),
             "zen" => return (ModelProvider::OpenCodeZen, model.to_string(), None),
             _ => {
-                // Check if it's a custom OpenAI-compatible provider
-                if let Ok(config) = crate::config::ConfigFile::load()
-                    && config
+                // Check if it's a custom OpenAI-compatible or Antigravity provider
+                if let Ok(config) = crate::config::ConfigFile::load() {
+                    if config
                         .get_provider(prefix)
                         .is_some_and(|p| p.as_openai_compat().is_some())
-                {
-                    return (
-                        ModelProvider::OpenAiCompat,
-                        model.to_string(),
-                        Some(prefix.to_string()),
-                    );
+                    {
+                        return (
+                            ModelProvider::OpenAiCompat,
+                            model.to_string(),
+                            Some(prefix.to_string()),
+                        );
+                    }
+                    if config
+                        .get_provider(prefix)
+                        .is_some_and(|p| p.as_antigravity().is_some())
+                    {
+                        return (
+                            ModelProvider::Antigravity,
+                            model.to_string(),
+                            Some(prefix.to_string()),
+                        );
+                    }
                 }
                 // Default to Zen if not found
                 ModelProvider::OpenCodeZen

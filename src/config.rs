@@ -131,6 +131,7 @@ fn default_enabled() -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProviderType {
+    Antigravity,
     Claude,
     GithubCopilot,
     Openai,
@@ -143,6 +144,7 @@ impl ProviderType {
     /// Default local identifier for this provider type
     pub(crate) fn default_id(&self) -> &'static str {
         match self {
+            ProviderType::Antigravity => "antigravity",
             ProviderType::Claude => "claude",
             ProviderType::GithubCopilot => "copilot",
             ProviderType::Openai => "openai",
@@ -155,6 +157,7 @@ impl ProviderType {
     /// Display name for UI
     pub(crate) fn display_name(&self) -> &'static str {
         match self {
+            ProviderType::Antigravity => "Antigravity",
             ProviderType::Claude => "Anthropic Claude",
             ProviderType::GithubCopilot => "GitHub Copilot",
             ProviderType::Openai => "OpenAI",
@@ -169,6 +172,7 @@ impl ProviderType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ProviderConfig {
+    Antigravity(AntigravityProviderConfig),
     Claude(ClaudeProviderConfig),
     GithubCopilot(CopilotProviderConfig),
     Openai(OpenAiProviderConfig),
@@ -180,6 +184,7 @@ pub enum ProviderConfig {
 impl ProviderConfig {
     pub(crate) fn is_enabled(&self) -> bool {
         match self {
+            ProviderConfig::Antigravity(c) => c.enabled,
             ProviderConfig::Claude(c) => c.enabled,
             ProviderConfig::GithubCopilot(c) => c.enabled,
             ProviderConfig::Openai(c) => c.enabled,
@@ -191,6 +196,7 @@ impl ProviderConfig {
 
     pub(crate) fn provider_type(&self) -> ProviderType {
         match self {
+            ProviderConfig::Antigravity(_) => ProviderType::Antigravity,
             ProviderConfig::Claude(_) => ProviderType::Claude,
             ProviderConfig::GithubCopilot(_) => ProviderType::GithubCopilot,
             ProviderConfig::Openai(_) => ProviderType::Openai,
@@ -247,6 +253,14 @@ impl ProviderConfig {
             _ => None,
         }
     }
+
+    /// Get the Antigravity config if this is an Antigravity provider
+    pub(crate) fn as_antigravity(&self) -> Option<&AntigravityProviderConfig> {
+        match self {
+            ProviderConfig::Antigravity(c) => Some(c),
+            _ => None,
+        }
+    }
 }
 
 /// New Providers struct using HashMap with flatten
@@ -282,6 +296,22 @@ impl<'de> Deserialize<'de> for Providers {
 }
 
 // Individual provider configs
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct AntigravityProviderConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: u64,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub tier: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaudeProviderConfig {
