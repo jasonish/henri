@@ -748,15 +748,15 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
         Vec::new()
     });
 
+    let working_dir = args.working_dir;
+
     let mut history = FileHistory::new();
-    let mut prompt_ui = PromptUi::new(custom_commands.clone());
+    let mut prompt_ui = PromptUi::new(custom_commands.clone(), working_dir.clone());
     let mut messages: Vec<Message> = Vec::new();
     let mut thinking_enabled = true;
 
     // Initialize thinking mode for Gemini models
     let mut thinking_mode = default_thinking_mode(provider_manager.current_model_id());
-
-    let working_dir = args.working_dir;
 
     // Apply restored session if provided
     if let Some(restored) = args.restored_session {

@@ -49,6 +49,45 @@ pub(crate) fn render_slash_menu(
     frame.render_widget(widget, area);
 }
 
+pub(crate) fn render_completion_menu(
+    frame: &mut Frame,
+    area: Rect,
+    items: &[String],
+    selected: usize,
+) {
+    let bg = Color::Rgb(24, 24, 24);
+
+    let lines: Vec<Line> = items
+        .iter()
+        .enumerate()
+        .map(|(i, path)| {
+            let is_selected = i == selected;
+            let prefix = if is_selected { ">" } else { " " };
+            let is_dir = path.ends_with('/');
+
+            let text = format!("{prefix} {path}");
+            let style = if is_selected {
+                if is_dir {
+                    Style::default().fg(Color::Cyan).bg(bg).bold()
+                } else {
+                    Style::default().fg(Color::Cyan).bg(bg)
+                }
+            } else if is_dir {
+                Style::default().fg(Color::Blue).bg(bg).bold()
+            } else {
+                Style::default().fg(Color::Gray).bg(bg)
+            };
+            Line::raw(text).style(style)
+        })
+        .collect();
+
+    let block = Block::default().style(Style::default().bg(bg));
+    let widget = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(widget, area);
+}
+
 pub(crate) fn render_model_menu(frame: &mut Frame, screen: Rect, menu: &ModelMenuState) {
     let bg = Color::Rgb(32, 32, 32);
     let border_color = Color::Rgb(80, 80, 80);

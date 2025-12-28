@@ -86,6 +86,8 @@ pub(crate) struct App {
     pub(crate) history_index: Option<usize>, // None = not browsing history, Some(i) = viewing history.len()
     pub(crate) input_stash: String,          // stash current input when browsing history
     pub(crate) slash_menu_index: usize,
+    // File completion state
+    pub(crate) file_completer: crate::completion::FileCompleter,
     pub(crate) should_exit: bool,
     pub(crate) should_switch_to_cli: bool,
     pub(crate) shell_tx: mpsc::Sender<ShellEvent>,
@@ -271,6 +273,7 @@ impl App {
             history_index: None,
             input_stash: String::new(),
             slash_menu_index: 0,
+            file_completer: crate::completion::FileCompleter::new(working_dir.clone()),
             should_exit: false,
             should_switch_to_cli: false,
             shell_tx,
@@ -1690,6 +1693,92 @@ impl App {
         self.cursor = self.input.len();
         self.submit_message();
         true
+    }
+
+    /// Check if completion menu is active
+    pub(crate) fn completion_active(&self) -> bool {
+        self.file_completer.is_active()
+    }
+
+    /// Initialize completion matches
+    pub(crate) fn init_completion(&mut self) {
+        if let Some((_start, _end, word)) =
+            crate::completion::get_word_at_cursor(&self.input, self.cursor)
+        {
+            if crate::completion::FileCompleter::should_complete(&word) {
+                self.file_completer.init(&word);
+            } else {
+                self.file_completer.clear();
+            }
+        } else {
+            self.file_completer.clear();
+        }
+    }
+
+    /// Apply the selected completion
+    pub(crate) fn apply_completion(&mut self) -> bool {
+        if !self.completion_active() {
+            return false;
+        }
+
+        if let Some(selected) = self.file_completer.current()
+            && let Some((word_start, word_end, _word)) =
+                crate::completion::get_word_at_cursor(&self.input, self.cursor)
+        {
+            // Replace the word with the completion
+            self.input.drain(word_start..word_end);
+            self.input.insert_str(word_start, selected);
+            self.cursor = word_start + selected.len();
+
+            // Clear completion after applying
+            self.file_completer.clear();
+            return true;
+        }
+
+        self.file_completer.clear();
+        false
+    }
+
+    /// Apply current completion to input but keep menu open (for previewing)
+    pub(crate) fn apply_completion_preview(&mut self) -> bool {
+        if !self.completion_active() {
+            return false;
+        }
+
+        if let Some(selected) = self.file_completer.current()
+            && let Some((word_start, word_end, _word)) =
+                crate::completion::get_word_at_cursor(&self.input, self.cursor)
+        {
+            // Replace the word with the completion (don't clear matches)
+            self.input.drain(word_start..word_end);
+            self.input.insert_str(word_start, selected);
+            self.cursor = word_start + selected.len();
+            return true;
+        }
+
+        false
+    }
+
+    /// Move through completion options
+    pub(crate) fn move_completion(&mut self, delta: isize) -> bool {
+        if !self.completion_active() {
+            return false;
+        }
+
+        self.file_completer.move_selection(delta);
+
+        // Apply the new selection immediately (like bash completion)
+        if let Some(selected) = self.file_completer.current()
+            && let Some((word_start, word_end, _word)) =
+                crate::completion::get_word_at_cursor(&self.input, self.cursor)
+        {
+            self.input.drain(word_start..word_end);
+            self.input.insert_str(word_start, selected);
+            self.cursor = word_start + selected.len();
+            return true;
+        }
+
+        false
     }
 
     pub(crate) fn handle_slash_menu_key(

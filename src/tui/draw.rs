@@ -6,6 +6,8 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
+use crate::completion::COMPLETION_MENU_MAX_VISIBLE;
+
 use super::app::App;
 use super::commands::SLASH_MENU_MAX_VISIBLE;
 use super::layout::{
@@ -16,10 +18,10 @@ use super::layout::{
 use super::messages::Message;
 use super::models::HISTORY_SEARCH_MAX_VISIBLE;
 use super::render::{
-    RenderContext, SPINNER_FRAMES, render_diff_with_selection, render_history_search,
-    render_input_with_selection, render_model_menu, render_settings_menu, render_slash_menu,
-    render_status_line, render_text_with_selection, render_todo_list_with_selection,
-    render_usage_with_selection,
+    RenderContext, SPINNER_FRAMES, render_completion_menu, render_diff_with_selection,
+    render_history_search, render_input_with_selection, render_model_menu, render_settings_menu,
+    render_slash_menu, render_status_line, render_text_with_selection,
+    render_todo_list_with_selection, render_usage_with_selection,
 };
 
 pub(super) fn draw(frame: &mut Frame, app: &mut App) {
@@ -50,6 +52,20 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             .len()
             .min(SLASH_MENU_MAX_VISIBLE)
             .min(u16::MAX as usize) as u16
+    };
+
+    // Completion menu height (only show if no slash menu is active)
+    let completion_menu_height = if slash_menu_height == 0
+        && app.completion_active()
+        && !app.file_completer.matches.is_empty()
+    {
+        app.file_completer
+            .matches
+            .len()
+            .min(COMPLETION_MENU_MAX_VISIBLE)
+            .min(u16::MAX as usize) as u16
+    } else {
+        0
     };
 
     let history_menu_height = if let Some(ref search) = app.history_search {
@@ -102,6 +118,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     if working_indicator_height > 0
         || pending_prompts_height > 0
         || slash_menu_height > 0
+        || completion_menu_height > 0
         || history_menu_height > 0
         || input_height > 0
     {
@@ -117,6 +134,9 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     }
     if slash_menu_height > 0 {
         constraints.push(Constraint::Length(slash_menu_height));
+    }
+    if completion_menu_height > 0 {
+        constraints.push(Constraint::Length(completion_menu_height));
     }
     if history_menu_height > 0 {
         constraints.push(Constraint::Length(history_menu_height));
@@ -137,6 +157,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     if working_indicator_height > 0
         || pending_prompts_height > 0
         || slash_menu_height > 0
+        || completion_menu_height > 0
         || history_menu_height > 0
         || input_height > 0
     {
@@ -159,6 +180,13 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         None
     };
     let slash_area = if slash_menu_height > 0 && idx < layout.len() {
+        let area = layout[idx];
+        idx += 1;
+        Some(area)
+    } else {
+        None
+    };
+    let completion_area = if completion_menu_height > 0 && idx < layout.len() {
         let area = layout[idx];
         idx += 1;
         Some(area)
@@ -276,6 +304,22 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             let view = &slash_items[start..end];
             let selected_in_view = selected.saturating_sub(start);
             render_slash_menu(frame, area, view, selected_in_view);
+        }
+    }
+
+    if let Some(area) = completion_area {
+        let total = app.file_completer.matches.len();
+        if total > 0 {
+            let selected = app.file_completer.index.min(total.saturating_sub(1));
+            let visible = completion_menu_height as usize;
+            let max_start = total.saturating_sub(visible);
+            let start = selected
+                .saturating_sub(visible.saturating_sub(1))
+                .min(max_start);
+            let end = (start + visible).min(total);
+            let view = &app.file_completer.matches[start..end];
+            let selected_in_view = selected.saturating_sub(start);
+            render_completion_menu(frame, area, view, selected_in_view);
         }
     }
 

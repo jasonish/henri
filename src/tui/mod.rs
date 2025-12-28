@@ -575,12 +575,24 @@ async fn run_app(
                                 // Open model selection menu
                                 app.open_model_menu();
                             }
-                            (KeyCode::BackTab, _) => {
-                                // Cycle through favorite models
-                                app.cycle_favorite_model();
+                            (KeyCode::BackTab, mods)
+                                if mods.is_empty() || mods == KeyModifiers::SHIFT =>
+                            {
+                                // Check if completion is active
+                                if app.completion_active() {
+                                    app.move_completion(-1);
+                                } else {
+                                    // Cycle through favorite models
+                                    app.cycle_favorite_model();
+                                }
                             }
                             (KeyCode::Esc, mods) => {
-                                handle_escape(&mut app, &mut last_escape, mods);
+                                // Clear completion menu if active, otherwise normal escape handling
+                                if app.completion_active() {
+                                    app.file_completer.clear();
+                                } else {
+                                    handle_escape(&mut app, &mut last_escape, mods);
+                                }
                             }
                             (KeyCode::Enter, mods) if mods.contains(KeyModifiers::CONTROL) => {
                                 // Ctrl+Enter intentionally no-op per requirements.
@@ -598,31 +610,57 @@ async fn run_app(
                                 app.reset_scroll();
                             }
                             (KeyCode::Enter, _) => {
-                                app.submit_message();
+                                // If completion menu is active, apply selection and close menu
+                                if app.completion_active() {
+                                    app.apply_completion();
+                                } else {
+                                    app.submit_message();
+                                }
                             }
                             (KeyCode::Backspace, _) => {
+                                app.file_completer.clear();
                                 app.backspace();
                             }
-                            (KeyCode::Delete, _) => app.delete_forward(),
-                            (KeyCode::Left, _) => app.move_left(),
-                            (KeyCode::Right, _) => app.move_right(),
+                            (KeyCode::Delete, _) => {
+                                app.file_completer.clear();
+                                app.delete_forward();
+                            }
+                            (KeyCode::Left, _) => {
+                                app.file_completer.clear();
+                                app.move_left();
+                            }
+                            (KeyCode::Right, _) => {
+                                app.file_completer.clear();
+                                app.move_right();
+                            }
                             (KeyCode::Up, mods)
                                 if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                             {
-                                if !app.move_cursor_up() {
+                                if app.completion_active() {
+                                    app.move_completion(-1);
+                                } else if !app.move_cursor_up() {
                                     app.history_up();
                                 }
                             }
                             (KeyCode::Down, mods)
                                 if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                             {
-                                if !app.move_cursor_down() {
+                                if app.completion_active() {
+                                    app.move_completion(1);
+                                } else if !app.move_cursor_down() {
                                     app.history_down();
                                 }
                             }
-                            (KeyCode::Home, _) => app.move_to_start(),
-                            (KeyCode::End, _) => app.move_to_end(),
+                            (KeyCode::Home, _) => {
+                                app.file_completer.clear();
+                                app.move_to_start();
+                            }
+                            (KeyCode::End, _) => {
+                                app.file_completer.clear();
+                                app.move_to_end();
+                            }
                             (KeyCode::Char('a'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                                app.file_completer.clear();
                                 // Check for double Ctrl+A within 2 seconds
                                 let now = Instant::now();
                                 let threshold = Duration::from_secs(2);
@@ -638,6 +676,7 @@ async fn run_app(
                                 }
                             }
                             (KeyCode::Char('e'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                                app.file_completer.clear();
                                 // Check for double Ctrl+E within 2 seconds
                                 let now = Instant::now();
                                 let threshold = Duration::from_secs(2);
@@ -653,27 +692,35 @@ async fn run_app(
                                 }
                             }
                             (KeyCode::Char('b'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                                app.file_completer.clear();
                                 app.move_left()
                             }
                             (KeyCode::Char('f'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                                app.file_completer.clear();
                                 app.move_right()
                             }
                             (KeyCode::Char('b'), mods) if mods.contains(KeyModifiers::ALT) => {
+                                app.file_completer.clear();
                                 app.move_word_left()
                             }
                             (KeyCode::Char('f'), mods) if mods.contains(KeyModifiers::ALT) => {
+                                app.file_completer.clear();
                                 app.move_word_right()
                             }
                             (KeyCode::Char('w'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                                app.file_completer.clear();
                                 app.delete_word_back()
                             }
                             (KeyCode::Char('d'), mods) if mods.contains(KeyModifiers::ALT) => {
+                                app.file_completer.clear();
                                 app.delete_word_forward()
                             }
                             (KeyCode::Char('u'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                                app.file_completer.clear();
                                 app.kill_to_start()
                             }
                             (KeyCode::Char('k'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                                app.file_completer.clear();
                                 app.kill_to_end()
                             }
                             (KeyCode::Char('r'), mods) if mods.contains(KeyModifiers::CONTROL) => {
@@ -696,7 +743,28 @@ async fn run_app(
                             {
                                 let mut buf = [0u8; 4];
                                 let s = ch.encode_utf8(&mut buf);
+                                app.file_completer.clear();
                                 app.insert_str_at_cursor(s);
+                            }
+                            (KeyCode::Tab, mods) if mods.is_empty() => {
+                                // Check if slash menu is active first
+                                if app.slash_menu_active() {
+                                    app.apply_slash_selection();
+                                } else if app.completion_active() {
+                                    // Cycle to next completion
+                                    app.move_completion(1);
+                                } else {
+                                    // Initialize file completion
+                                    app.init_completion();
+                                    // If only one match, apply immediately and clear
+                                    // If multiple matches, apply first one but keep menu open
+                                    if app.file_completer.matches.len() == 1 {
+                                        app.apply_completion();
+                                    } else if !app.file_completer.matches.is_empty() {
+                                        // Apply first match to input (user sees it)
+                                        app.apply_completion_preview();
+                                    }
+                                }
                             }
                             _ => {}
                         }

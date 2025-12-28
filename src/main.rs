@@ -6,6 +6,7 @@ mod chat;
 mod cli;
 mod commands;
 mod compaction;
+mod completion;
 mod config;
 mod custom_commands;
 mod diff;

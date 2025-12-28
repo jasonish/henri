@@ -17,7 +17,8 @@ use crate::tools::TodoStatus;
 
 // Re-export menu rendering functions from menus module
 pub(crate) use super::menus::{
-    render_history_search, render_model_menu, render_settings_menu, render_slash_menu,
+    render_completion_menu, render_history_search, render_model_menu, render_settings_menu,
+    render_slash_menu,
 };
 
 pub(crate) const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

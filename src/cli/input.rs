@@ -63,10 +63,21 @@ pub(crate) struct PromptUi {
     pasted_images: Vec<PastedImage>,
     next_image_id: usize,
     custom_commands: Vec<CustomCommand>,
+    // File completion state
+    file_completer: crate::completion::FileCompleter,
+    working_dir: std::path::PathBuf,
 }
 
 impl PromptUi {
-    pub(crate) fn new(custom_commands: Vec<CustomCommand>) -> Self {
+    pub(crate) fn new(
+        custom_commands: Vec<CustomCommand>,
+        working_dir: std::path::PathBuf,
+    ) -> Self {
+        let working_dir = if working_dir.as_os_str().is_empty() {
+            std::env::current_dir().unwrap_or_default()
+        } else {
+            working_dir
+        };
         Self {
             buffer: String::new(),
             cursor: 0,
@@ -80,6 +91,8 @@ impl PromptUi {
             pasted_images: Vec::new(),
             next_image_id: 1,
             custom_commands,
+            file_completer: crate::completion::FileCompleter::new(working_dir.clone()),
+            working_dir,
         }
     }
 
@@ -103,6 +116,7 @@ impl PromptUi {
         self.menu_index = 0;
         self.pasted_images.clear();
         self.next_image_id = 1;
+        self.file_completer = crate::completion::FileCompleter::new(self.working_dir.clone());
 
         let _raw = RawModeGuard::new()?;
 
@@ -353,8 +367,39 @@ impl PromptUi {
         // Determine menu visibility and size
         let menu_is_visible = self.menu_visible(info);
         let filtered = self.filtered_commands(info);
+
+        // Determine completion menu visibility (only show if slash menu is not visible)
+        let completion_is_visible = !menu_is_visible && self.completion_active();
+        let completion_items: Vec<&String> = if completion_is_visible {
+            let total = self.file_completer.matches.len();
+            let visible = total.min(crate::completion::COMPLETION_MENU_MAX_VISIBLE);
+            let selected = self.file_completer.index.min(total.saturating_sub(1));
+            let max_start = total.saturating_sub(visible);
+            let start = selected
+                .saturating_sub(visible.saturating_sub(1))
+                .min(max_start);
+            let end = (start + visible).min(total);
+            self.file_completer.matches[start..end].iter().collect()
+        } else {
+            Vec::new()
+        };
+        let completion_selected_in_view = if completion_is_visible {
+            let total = self.file_completer.matches.len();
+            let visible = total.min(crate::completion::COMPLETION_MENU_MAX_VISIBLE);
+            let selected = self.file_completer.index.min(total.saturating_sub(1));
+            let max_start = total.saturating_sub(visible);
+            let start = selected
+                .saturating_sub(visible.saturating_sub(1))
+                .min(max_start);
+            selected.saturating_sub(start)
+        } else {
+            0
+        };
+
         let new_menu_lines = if menu_is_visible {
             filtered.len() as u16
+        } else if completion_is_visible {
+            completion_items.len() as u16
         } else {
             0
         };
@@ -466,6 +511,66 @@ impl PromptUi {
             }
         }
 
+        // Render completion menu if visible (and slash menu is not)
+        if completion_is_visible {
+            for (i, path) in completion_items.iter().enumerate() {
+                crossterm::queue!(stdout, Print("\r\n"))?;
+
+                let is_selected = i == completion_selected_in_view;
+                let is_dir = path.ends_with('/');
+
+                let (bg_color, text_color) = if is_selected {
+                    (
+                        Color::Rgb {
+                            r: 30,
+                            g: 30,
+                            b: 30,
+                        },
+                        Color::Cyan,
+                    )
+                } else if is_dir {
+                    (
+                        Color::Rgb {
+                            r: 20,
+                            g: 20,
+                            b: 20,
+                        },
+                        Color::Blue,
+                    )
+                } else {
+                    (
+                        Color::Rgb {
+                            r: 20,
+                            g: 20,
+                            b: 20,
+                        },
+                        Color::Rgb {
+                            r: 150,
+                            g: 150,
+                            b: 150,
+                        },
+                    )
+                };
+
+                let prefix = if is_selected { ">" } else { " " };
+                let path_width = display_width(path);
+                let content_width = 2 + path_width; // prefix + space + path
+                let remaining_space = term_width.saturating_sub(content_width as u16) as usize;
+                let trailing_str: String = " ".repeat(remaining_space);
+
+                crossterm::queue!(
+                    stdout,
+                    SetBackgroundColor(bg_color),
+                    SetForegroundColor(text_color),
+                    Print(prefix),
+                    Print(" "),
+                    Print(*path),
+                    Print(&trailing_str),
+                    ResetColor
+                )?;
+            }
+        }
+
         // Clear any leftover lines from a previously larger menu
         let lines_cleared = if self.rendered_menu_lines > new_menu_lines {
             let lines_to_clear = self.rendered_menu_lines - new_menu_lines;
@@ -543,6 +648,7 @@ impl PromptUi {
         }
 
         let menu_visible = self.menu_visible(info);
+        let completion_visible = self.completion_active();
 
         match key.code {
             KeyCode::Enter => {
@@ -551,6 +657,9 @@ impl PromptUi {
                     let _ = self.complete_command(info);
                     let submission = self.build_command_submission(history);
                     return Ok(Some(submission));
+                } else if completion_visible {
+                    // Apply completion and close menu
+                    self.apply_completion();
                 } else if key
                     .modifiers
                     .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT | KeyModifiers::CONTROL)
@@ -568,8 +677,36 @@ impl PromptUi {
                         let submission = self.build_command_submission(history);
                         return Ok(Some(submission));
                     }
+                } else if completion_visible {
+                    // Cycle to next completion
+                    self.move_completion(1);
                 } else {
-                    self.insert_str("    ");
+                    // Try file completion
+                    self.init_completion();
+                    if self.file_completer.matches.len() == 1 {
+                        // Only one match - apply immediately
+                        self.apply_completion();
+                    } else if !self.file_completer.matches.is_empty() {
+                        // Multiple matches - show menu and apply first
+                        self.apply_completion_preview();
+                    } else {
+                        // No completions - insert spaces
+                        self.insert_str("    ");
+                    }
+                }
+            }
+            KeyCode::BackTab => {
+                if completion_visible {
+                    self.move_completion(-1);
+                } else if let Some((provider, model)) = cycle_favorite() {
+                    info.provider = provider;
+                    info.model = model;
+                    // Redraw status bar in place
+                    let mut stdout = io::stdout();
+                    let lines_up = self.rendered_lines + self.rendered_menu_lines;
+                    crossterm::execute!(stdout, MoveUp(lines_up), MoveToColumn(0))?;
+                    self.render_status_bar(info, *thinking_enabled)?;
+                    crossterm::execute!(stdout, MoveToColumn(0), cursor::MoveDown(lines_up))?;
                 }
             }
             KeyCode::Esc => {
@@ -577,6 +714,9 @@ impl PromptUi {
                     self.buffer.clear();
                     self.cursor = 0;
                     self.menu_index = 0;
+                } else if completion_visible {
+                    // Clear completion menu
+                    self.file_completer.clear();
                 } else if let Some(last) = self.last_esc {
                     // Double-ESC within 500ms clears the buffer
                     if last.elapsed() < Duration::from_millis(500) {
@@ -588,6 +728,7 @@ impl PromptUi {
                 self.last_esc = Some(Instant::now());
             }
             KeyCode::Backspace => {
+                self.file_completer.clear();
                 if key.modifiers.contains(KeyModifiers::ALT) {
                     self.delete_prev_word();
                 } else {
@@ -596,10 +737,12 @@ impl PromptUi {
                 self.menu_index = 0;
             }
             KeyCode::Delete => {
+                self.file_completer.clear();
                 self.delete_forward();
                 self.menu_index = 0;
             }
             KeyCode::Left => {
+                self.file_completer.clear();
                 if key.modifiers.contains(KeyModifiers::ALT) {
                     self.move_prev_word();
                 } else {
@@ -607,20 +750,29 @@ impl PromptUi {
                 }
             }
             KeyCode::Right => {
+                self.file_completer.clear();
                 if key.modifiers.contains(KeyModifiers::ALT) {
                     self.move_next_word();
                 } else {
                     self.move_right();
                 }
             }
-            KeyCode::Home => self.move_line_start(),
-            KeyCode::End => self.move_line_end(),
+            KeyCode::Home => {
+                self.file_completer.clear();
+                self.move_line_start();
+            }
+            KeyCode::End => {
+                self.file_completer.clear();
+                self.move_line_end();
+            }
             KeyCode::Up => {
                 if menu_visible {
                     let count = self.filtered_commands(info).len();
                     if count > 0 {
                         self.menu_index = self.menu_index.checked_sub(1).unwrap_or(count - 1);
                     }
+                } else if completion_visible {
+                    self.move_completion(-1);
                 } else if self.cursor == 0 || !self.buffer.contains('\n') {
                     self.apply_history_up(history)
                 } else {
@@ -633,6 +785,8 @@ impl PromptUi {
                     if count > 0 {
                         self.menu_index = (self.menu_index + 1) % count;
                     }
+                } else if completion_visible {
+                    self.move_completion(1);
                 } else {
                     let at_last_line = !self.buffer[self.cursor..].contains('\n');
                     if at_last_line {
@@ -648,6 +802,8 @@ impl PromptUi {
                     if count > 0 {
                         self.menu_index = self.menu_index.checked_sub(1).unwrap_or(count - 1);
                     }
+                } else if completion_visible {
+                    self.move_completion(-1);
                 } else {
                     self.apply_history_up(history)
                 }
@@ -658,30 +814,41 @@ impl PromptUi {
                     if count > 0 {
                         self.menu_index = (self.menu_index + 1) % count;
                     }
+                } else if completion_visible {
+                    self.move_completion(1);
                 } else {
                     self.apply_history_down(history)
                 }
             }
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.file_completer.clear();
                 self.move_line_start()
             }
             KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.file_completer.clear();
                 self.move_line_end()
             }
             KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.file_completer.clear();
                 self.kill_line_end()
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.file_completer.clear();
                 self.kill_line_start()
             }
             KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.file_completer.clear();
                 self.delete_prev_word();
                 self.menu_index = 0;
             }
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.file_completer.clear();
                 self.move_right()
             }
-            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => self.move_left(),
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.file_completer.clear();
+                self.move_left();
+            }
             KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Clear screen and redraw
                 let mut stdout = io::stdout();
@@ -707,18 +874,6 @@ impl PromptUi {
             }
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return Ok(Some(PromptOutcome::SelectModel));
-            }
-            KeyCode::BackTab => {
-                if let Some((provider, model)) = cycle_favorite() {
-                    info.provider = provider;
-                    info.model = model;
-                    // Redraw status bar in place
-                    let mut stdout = io::stdout();
-                    let lines_up = self.rendered_lines + self.rendered_menu_lines;
-                    crossterm::execute!(stdout, MoveUp(lines_up), MoveToColumn(0))?;
-                    self.render_status_bar(info, *thinking_enabled)?;
-                    crossterm::execute!(stdout, MoveToColumn(0), cursor::MoveDown(lines_up))?;
-                }
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Run fzf history search
@@ -772,16 +927,20 @@ impl PromptUi {
                 self.rendered_menu_lines = 0;
             }
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.file_completer.clear();
                 self.move_prev_word()
             }
             KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.file_completer.clear();
                 self.move_next_word()
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.file_completer.clear();
                 self.delete_next_word();
                 self.menu_index = 0;
             }
             KeyCode::Char(ch) => {
+                self.file_completer.clear();
                 if key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -1196,6 +1355,94 @@ impl PromptUi {
         let mut images = std::mem::take(&mut self.pasted_images);
         images.retain(|img| buffer_snapshot.contains(&img.marker));
         images
+    }
+
+    // File completion methods
+
+    /// Check if completion menu is active
+    fn completion_active(&self) -> bool {
+        self.file_completer.is_active()
+    }
+
+    /// Initialize completion matches
+    fn init_completion(&mut self) {
+        if let Some((_start, _end, word)) =
+            crate::completion::get_word_at_cursor(&self.buffer, self.cursor)
+        {
+            if crate::completion::FileCompleter::should_complete(&word) {
+                self.file_completer.init(&word);
+            } else {
+                self.file_completer.clear();
+            }
+        } else {
+            self.file_completer.clear();
+        }
+    }
+
+    /// Apply the selected completion and close menu
+    fn apply_completion(&mut self) -> bool {
+        if !self.completion_active() {
+            return false;
+        }
+
+        if let Some(selected) = self.file_completer.current()
+            && let Some((word_start, word_end, _word)) =
+                crate::completion::get_word_at_cursor(&self.buffer, self.cursor)
+        {
+            // Replace the word with the completion
+            self.buffer.drain(word_start..word_end);
+            self.buffer.insert_str(word_start, selected);
+            self.cursor = word_start + selected.len();
+
+            // Clear completion after applying
+            self.file_completer.clear();
+            return true;
+        }
+
+        self.file_completer.clear();
+        false
+    }
+
+    /// Apply current completion to input but keep menu open (for previewing)
+    fn apply_completion_preview(&mut self) -> bool {
+        if !self.completion_active() {
+            return false;
+        }
+
+        if let Some(selected) = self.file_completer.current()
+            && let Some((word_start, word_end, _word)) =
+                crate::completion::get_word_at_cursor(&self.buffer, self.cursor)
+        {
+            // Replace the word with the completion (don't clear matches)
+            self.buffer.drain(word_start..word_end);
+            self.buffer.insert_str(word_start, selected);
+            self.cursor = word_start + selected.len();
+            return true;
+        }
+
+        false
+    }
+
+    /// Move through completion options
+    fn move_completion(&mut self, delta: isize) -> bool {
+        if !self.completion_active() {
+            return false;
+        }
+
+        self.file_completer.move_selection(delta);
+
+        // Apply the new selection immediately (like bash completion)
+        if let Some(selected) = self.file_completer.current()
+            && let Some((word_start, word_end, _word)) =
+                crate::completion::get_word_at_cursor(&self.buffer, self.cursor)
+        {
+            self.buffer.drain(word_start..word_end);
+            self.buffer.insert_str(word_start, selected);
+            self.cursor = word_start + selected.len();
+            return true;
+        }
+
+        false
     }
 }
 
