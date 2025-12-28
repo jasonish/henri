@@ -90,76 +90,115 @@ impl AnthropicClient {
             return Ok(state.access_token.clone());
         }
 
-        let body = serde_json::json!({
-            "grant_type": "refresh_token",
-            "refresh_token": state.refresh_token,
-            "client_id": CLIENT_ID,
-        });
+        // Try refresh, potentially retrying with tokens from config if our in-memory
+        // tokens are stale (another client instance may have refreshed them).
+        let mut retry_with_config = false;
+        loop {
+            let body = serde_json::json!({
+                "grant_type": "refresh_token",
+                "refresh_token": state.refresh_token,
+                "client_id": CLIENT_ID,
+            });
 
-        let response = self
-            .client
-            .post(TOKEN_URL)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| Error::Auth(e.to_string()))?;
+            let response = self
+                .client
+                .post(TOKEN_URL)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| Error::Auth(e.to_string()))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = response.text().await.unwrap_or_default();
-            if text.contains("invalid_grant") {
-                return Err(Error::RefreshTokenExpired);
+            if !response.status().is_success() {
+                let status = response.status();
+                let text = response.text().await.unwrap_or_default();
+                if text.contains("invalid_grant") {
+                    // Check if config has newer tokens (another client may have refreshed).
+                    if !retry_with_config
+                        && let Some(updated) = self.reload_tokens_from_config(&state.local_id)
+                        && updated.refresh_token != state.refresh_token
+                    {
+                        state.access_token = updated.access_token;
+                        state.refresh_token = updated.refresh_token;
+                        state.expires_at = updated.expires_at;
+
+                        // Check if the reloaded access token is still valid
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        if now < state.expires_at.saturating_sub(5 * 60 * 1000) {
+                            return Ok(state.access_token.clone());
+                        }
+
+                        // Access token expired, retry refresh with new refresh token
+                        retry_with_config = true;
+                        continue;
+                    }
+                    return Err(Error::RefreshTokenExpired);
+                }
+                return Err(Error::Auth(format!(
+                    "Anthropic token refresh failed: {} - {}",
+                    status, text
+                )));
             }
-            return Err(Error::Auth(format!(
-                "Anthropic token refresh failed: {} - {}",
-                status, text
-            )));
+
+            let text = response
+                .text()
+                .await
+                .map_err(|e| Error::Auth(e.to_string()))?;
+            let json: serde_json::Value =
+                serde_json::from_str(&text).map_err(|e| Error::Auth(e.to_string()))?;
+
+            let access_token = json["access_token"]
+                .as_str()
+                .ok_or_else(|| Error::Auth("Missing access_token".to_string()))?;
+            let expires_in = json["expires_in"]
+                .as_u64()
+                .ok_or_else(|| Error::Auth("Missing expires_in".to_string()))?;
+            let new_refresh = json["refresh_token"]
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| state.refresh_token.clone());
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| Error::Auth(e.to_string()))?
+                .as_millis() as u64;
+
+            state.access_token = access_token.to_string();
+            state.refresh_token = new_refresh;
+            state.expires_at = now + expires_in * 1000;
+
+            if let Ok(mut config) = ConfigFile::load() {
+                // Get the current enabled state from the existing provider
+                let enabled = config
+                    .get_provider(&state.local_id)
+                    .map(|p| p.is_enabled())
+                    .unwrap_or(true);
+                config.set_provider(
+                    state.local_id.clone(),
+                    ProviderConfig::Claude(ClaudeProviderConfig {
+                        enabled,
+                        auth: ClaudeAuth {
+                            refresh_token: state.refresh_token.clone(),
+                            access_token: state.access_token.clone(),
+                            expires_at: state.expires_at,
+                        },
+                    }),
+                );
+                let _ = config.save();
+            }
+
+            return Ok(state.access_token.clone());
         }
+    }
 
-        let text = response
-            .text()
-            .await
-            .map_err(|e| Error::Auth(e.to_string()))?;
-        let json: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| Error::Auth(e.to_string()))?;
-
-        let access_token = json["access_token"]
-            .as_str()
-            .ok_or_else(|| Error::Auth("Missing access_token".to_string()))?;
-        let expires_in = json["expires_in"]
-            .as_u64()
-            .ok_or_else(|| Error::Auth("Missing expires_in".to_string()))?;
-        let new_refresh = json["refresh_token"]
-            .as_str()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| state.refresh_token.clone());
-
-        state.access_token = access_token.to_string();
-        state.refresh_token = new_refresh;
-        state.expires_at = now + expires_in * 1000;
-
-        if let Ok(mut config) = ConfigFile::load() {
-            // Get the current enabled state from the existing provider
-            let enabled = config
-                .get_provider(&state.local_id)
-                .map(|p| p.is_enabled())
-                .unwrap_or(true);
-            config.set_provider(
-                state.local_id.clone(),
-                ProviderConfig::Claude(ClaudeProviderConfig {
-                    enabled,
-                    auth: ClaudeAuth {
-                        refresh_token: state.refresh_token.clone(),
-                        access_token: state.access_token.clone(),
-                        expires_at: state.expires_at,
-                    },
-                }),
-            );
-            let _ = config.save();
-        }
-
-        Ok(state.access_token.clone())
+    fn reload_tokens_from_config(&self, local_id: &str) -> Option<ClaudeAuth> {
+        let config = ConfigFile::load().ok()?;
+        let provider = config.get_provider(local_id)?;
+        let claude = provider.as_claude()?;
+        Some(claude.auth.clone())
     }
 }
 
