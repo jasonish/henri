@@ -14,7 +14,7 @@ CLI mode.
 At least for now, the only way is with Cargo:
 
 ```
-cargo install --git https://github.com/jasonish/henri
+cargo install --locked --git https://github.com/jasonish/henri
 ```
 
 This will install to `~/.cargo/bin`, so be sure to have that in your
