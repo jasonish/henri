@@ -10,16 +10,12 @@ pub(crate) struct DiffResult {
     pub has_changes: bool,
 }
 
-pub(crate) fn unified_diff(path: &Path, old: &str, new: &str, context_lines: usize) -> DiffResult {
+pub(crate) fn unified_diff(_path: &Path, old: &str, new: &str, context_lines: usize) -> DiffResult {
     let diff = similar::TextDiff::from_lines(old, new);
 
     let unified_diff = diff
         .unified_diff()
         .context_radius(context_lines)
-        .header(
-            &format!("a/{}", path.display()),
-            &format!("b/{}", path.display()),
-        )
         .to_string();
 
     let mut lines_added = 0;

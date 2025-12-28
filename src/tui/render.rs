@@ -3,7 +3,7 @@
 
 use ratatui::{prelude::*, widgets::Paragraph};
 
-use super::layout::{TAB_WIDTH, char_display_width, word_display_width};
+use super::layout::{DIFF_GUTTER_WIDTH, TAB_WIDTH, char_display_width, word_display_width};
 use super::markdown::{
     MarkdownStyle, align_markdown_tables, find_markdown_spans, get_markdown_style,
 };
@@ -12,7 +12,7 @@ use super::messages::{
 };
 use super::models::ModelChoice;
 use super::selection::{ContentPosition, InputSelection, PositionMap, Selection};
-use super::syntax::HighlightLookup;
+use super::syntax::{HighlightLookup, HighlightSpan, highlight_code_for_diff};
 use crate::tools::TodoStatus;
 
 // Re-export menu rendering functions from menus module
@@ -1210,13 +1210,47 @@ pub(crate) fn render_text_message(
     render_markdown_with_selection(ctx, &aligned_text, bg_color, None);
 }
 
+/// Information about a diff line for rendering
+struct DiffLineInfo {
+    line_start: usize,
+    diff_color: Color,
+    highlights: Option<Vec<HighlightSpan>>,
+    old_line: Option<usize>,
+    new_line: Option<usize>,
+    skip: bool, // Skip rendering this line (e.g., hunk headers)
+}
+
+/// Parse hunk header like "@@ -1,3 +1,5 @@" to extract starting line numbers
+fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
+    // Format: @@ -old_start[,old_count] +new_start[,new_count] @@
+    let line = line.trim();
+    if !line.starts_with("@@") {
+        return None;
+    }
+    let line = line.strip_prefix("@@")?.trim_start();
+    let line = line.split(" @@").next()?;
+
+    let mut parts = line.split_whitespace();
+
+    let old_part = parts.next()?.strip_prefix('-')?;
+    let old_start: usize = old_part.split(',').next()?.parse().ok()?;
+
+    let new_part = parts.next()?.strip_prefix('+')?;
+    let new_start: usize = new_part.split(',').next()?.parse().ok()?;
+
+    Some((old_start, new_start))
+}
+
 pub(crate) fn render_diff_with_selection(ctx: &mut RenderContext<'_, '_>, diff: &DiffMessage) {
     if ctx.area.width == 0 || ctx.area.height == 0 {
         return;
     }
 
     let width = ctx.area.width as usize;
-    let effective_width = width.saturating_sub(1).max(1);
+
+    // Line number gutter: "  3 + " = 6 chars (3 digits + space + prefix + space)
+    let gutter_width = DIFF_GUTTER_WIDTH as usize;
+    let effective_width = width.saturating_sub(1).saturating_sub(gutter_width).max(1);
 
     let in_selection_range = |msg_idx: usize, byte_idx: usize| -> bool {
         if let Some((start, end)) = ctx.selection.ordered() {
@@ -1238,36 +1272,151 @@ pub(crate) fn render_diff_with_selection(ctx: &mut RenderContext<'_, '_>, diff: 
         }
     };
 
-    let header_text = format!(
-        "{} +{} -{}",
-        diff.path, diff.lines_added, diff.lines_removed
-    );
-
-    let header_len = header_text.len();
     let diff_text = &diff.diff;
+
+    // Pre-compute line info including line numbers
+    let mut old_line_num = 0usize;
+    let mut new_line_num = 0usize;
+
+    let line_infos: Vec<DiffLineInfo> = diff_text
+        .lines()
+        .scan(0usize, |offset, line| {
+            let line_start = *offset;
+            *offset += line.len() + 1;
+
+            let (is_code_line, diff_color, old_line, new_line, skip) = if line.starts_with("@@") {
+                // Parse hunk header to reset line numbers, but skip rendering it
+                if let Some((old_start, new_start)) = parse_hunk_header(line) {
+                    old_line_num = old_start;
+                    new_line_num = new_start;
+                }
+                (false, Color::Cyan, None, None, true)
+            } else if line.starts_with('+') {
+                let nl = new_line_num;
+                new_line_num += 1;
+                (true, Color::Green, None, Some(nl), false)
+            } else if line.starts_with('-') {
+                let ol = old_line_num;
+                old_line_num += 1;
+                (true, Color::Red, Some(ol), None, false)
+            } else if line.starts_with(' ') {
+                let ol = old_line_num;
+                let nl = new_line_num;
+                old_line_num += 1;
+                new_line_num += 1;
+                (true, Color::White, Some(ol), Some(nl), false)
+            } else {
+                (false, Color::White, None, None, false)
+            };
+
+            let highlights = if is_code_line && line.len() > 1 {
+                diff.language.as_ref().map(|lang| {
+                    let code_content = &line[1..];
+                    highlight_code_for_diff(code_content, lang)
+                })
+            } else {
+                None
+            };
+
+            Some(DiffLineInfo {
+                line_start,
+                diff_color,
+                highlights,
+                old_line,
+                new_line,
+                skip,
+            })
+        })
+        .collect();
+
+    // Helper to find line info by offset
+    let get_line_info = |line_start: usize| -> Option<&DiffLineInfo> {
+        line_infos.iter().find(|info| info.line_start == line_start)
+    };
 
     let mut screen_row: i32 = -(ctx.skip_top as i32);
     let mut screen_col: usize = 0;
+    let mut current_line_start = 0;
+    let mut line_gutter_rendered = false;
+    let mut skip_current_line = false;
 
-    let is_diff_line = |line: &str| -> (bool, Color) {
-        if line.starts_with('+') && !line.starts_with("+++") {
-            (true, Color::Green)
-        } else if line.starts_with('-') && !line.starts_with("---") {
-            (true, Color::Red)
-        } else if line.starts_with("@@") {
-            (true, Color::Cyan)
-        } else {
-            (false, Color::White)
-        }
-    };
-
-    let text = &header_text;
-    for (byte_idx, ch) in text.char_indices() {
+    for (byte_idx, ch) in diff_text.char_indices() {
         let ch_width = char_display_width(ch);
+        let pos_in_line = byte_idx - current_line_start;
+
+        // At the start of each line, check if we should skip it and render the gutter
+        if pos_in_line == 0
+            && let Some(info) = get_line_info(current_line_start)
+        {
+            skip_current_line = info.skip;
+
+            if !skip_current_line && screen_row >= 0 && screen_row < ctx.area.height as i32 {
+                line_gutter_rendered = true;
+                let y = ctx.area.y + screen_row as u16;
+                let gutter_style = Style::default().fg(Color::DarkGray);
+
+                // Format: "  3 + " (3 digits + space + prefix + space)
+                let line_num = info.old_line.or(info.new_line);
+                let line_num_str = line_num
+                    .map(|n| format!("{:>3}", n))
+                    .unwrap_or_else(|| "   ".to_string());
+
+                // Derive prefix from diff_color
+                let prefix = match info.diff_color {
+                    Color::Green => '+',
+                    Color::Red => '-',
+                    _ => ' ',
+                };
+
+                // Render line number in gray
+                for (i, gutter_ch) in line_num_str.chars().enumerate() {
+                    let x = ctx.area.x + i as u16;
+                    if let Some(cell) = ctx.frame.buffer_mut().cell_mut((x, y)) {
+                        cell.set_char(gutter_ch);
+                        cell.set_style(gutter_style);
+                    }
+                }
+
+                // Render space
+                if let Some(cell) = ctx.frame.buffer_mut().cell_mut((ctx.area.x + 3, y)) {
+                    cell.set_char(' ');
+                    cell.set_style(gutter_style);
+                }
+
+                // Render prefix with diff color
+                if let Some(cell) = ctx.frame.buffer_mut().cell_mut((ctx.area.x + 4, y)) {
+                    cell.set_char(prefix);
+                    cell.set_style(Style::default().fg(info.diff_color));
+                }
+
+                // Render trailing space
+                if let Some(cell) = ctx.frame.buffer_mut().cell_mut((ctx.area.x + 5, y)) {
+                    cell.set_char(' ');
+                    cell.set_style(gutter_style);
+                }
+
+                screen_col = gutter_width;
+            }
+        }
+
+        // Skip the prefix character (first char of line) - it's rendered in the gutter
+        if pos_in_line == 0 {
+            continue;
+        }
 
         if ch == '\n' {
-            screen_row += 1;
+            if !skip_current_line {
+                screen_row += 1;
+            }
             screen_col = 0;
+            current_line_start = byte_idx + 1;
+            line_gutter_rendered = false;
+            skip_current_line = false;
+            continue;
+        }
+
+        // Skip rendering content for skipped lines
+        if skip_current_line {
             continue;
         }
 
@@ -1275,12 +1424,30 @@ pub(crate) fn render_diff_with_selection(ctx: &mut RenderContext<'_, '_>, diff: 
             continue;
         }
 
-        if screen_col + ch_width > effective_width {
+        // Account for gutter when checking wrap
+        let content_col = screen_col.saturating_sub(gutter_width);
+        if content_col + ch_width > effective_width {
             screen_row += 1;
-            screen_col = 0;
+            screen_col = gutter_width; // Continue after gutter on wrapped lines
+            line_gutter_rendered = true;
         }
 
         if screen_row >= 0 && screen_row < ctx.area.height as i32 {
+            // Render gutter for wrapped lines if not already done
+            if !line_gutter_rendered {
+                let y = ctx.area.y + screen_row as u16;
+                let gutter_style = Style::default().fg(Color::DarkGray);
+                // Wrapped line continuation - just spaces
+                for i in 0..gutter_width {
+                    let x = ctx.area.x + i as u16;
+                    if let Some(cell) = ctx.frame.buffer_mut().cell_mut((x, y)) {
+                        cell.set_char(' ');
+                        cell.set_style(gutter_style);
+                    }
+                }
+                line_gutter_rendered = true;
+            }
+
             let y = ctx.area.y + screen_row as u16;
             let x = ctx.area.x + screen_col as u16;
 
@@ -1288,10 +1455,33 @@ pub(crate) fn render_diff_with_selection(ctx: &mut RenderContext<'_, '_>, diff: 
                 .set(x, y, ContentPosition::new(ctx.message_idx, byte_idx));
 
             let is_selected = in_selection_range(ctx.message_idx, byte_idx);
+
+            // Determine color: syntax highlight if available, otherwise diff color
+            let (diff_color, syntax_color) = if let Some(info) = get_line_info(current_line_start) {
+                let syntax = if pos_in_line > 0 {
+                    if let Some(ref spans) = info.highlights {
+                        let code_offset = pos_in_line - 1;
+                        spans
+                            .iter()
+                            .find(|s| code_offset >= s.start && code_offset < s.end)
+                            .map(|s| s.color)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                (info.diff_color, syntax)
+            } else {
+                (Color::White, None)
+            };
+
+            let fg_color = syntax_color.unwrap_or(diff_color);
+
             let style = if is_selected {
                 Style::default().fg(Color::Black).bg(Color::White)
             } else {
-                Style::default().fg(Color::Cyan).bold()
+                Style::default().fg(fg_color)
             };
 
             if let Some(cell) = ctx.frame.buffer_mut().cell_mut((x, y)) {
@@ -1302,72 +1492,10 @@ pub(crate) fn render_diff_with_selection(ctx: &mut RenderContext<'_, '_>, diff: 
 
         screen_col += ch_width;
 
-        if screen_col == effective_width {
+        if screen_col.saturating_sub(gutter_width) >= effective_width {
             screen_row += 1;
-            screen_col = 0;
-        }
-
-        if screen_row >= ctx.area.height as i32 {
-            break;
-        }
-    }
-
-    screen_row += 1;
-    screen_col = 0;
-
-    let diff_byte_offset = header_len;
-    let mut current_line_start = 0;
-    for (byte_idx, ch) in diff_text.char_indices() {
-        let ch_width = char_display_width(ch);
-
-        if ch == '\n' {
-            screen_row += 1;
-            screen_col = 0;
-            current_line_start = byte_idx + 1;
-            continue;
-        }
-
-        if ch_width == 0 {
-            continue;
-        }
-
-        if screen_col + ch_width > effective_width {
-            screen_row += 1;
-            screen_col = 0;
-        }
-
-        if screen_row >= 0 && screen_row < ctx.area.height as i32 {
-            let y = ctx.area.y + screen_row as u16;
-            let x = ctx.area.x + screen_col as u16;
-
-            ctx.position_map.set(
-                x,
-                y,
-                ContentPosition::new(ctx.message_idx, diff_byte_offset + byte_idx),
-            );
-
-            let is_selected = in_selection_range(ctx.message_idx, diff_byte_offset + byte_idx);
-            let base_style = Style::default().fg(Color::White);
-            let line = &diff_text[current_line_start..byte_idx];
-            let (_, diff_color) = is_diff_line(line);
-
-            let style = if is_selected {
-                Style::default().fg(Color::Black).bg(Color::White)
-            } else {
-                base_style.fg(diff_color)
-            };
-
-            if let Some(cell) = ctx.frame.buffer_mut().cell_mut((x, y)) {
-                cell.set_char(ch);
-                cell.set_style(style);
-            }
-        }
-
-        screen_col += ch_width;
-
-        if screen_col == effective_width {
-            screen_row += 1;
-            screen_col = 0;
+            screen_col = gutter_width;
+            line_gutter_rendered = false;
         }
 
         if screen_row >= ctx.area.height as i32 {

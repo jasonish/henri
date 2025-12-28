@@ -2222,12 +2222,7 @@ impl App {
                 Message::Shell(shell) => shell.display.clone(),
                 Message::Usage(usage) => usage.display_text.clone(),
                 Message::TodoList(todo) => todo.display_text.clone(),
-                Message::FileDiff(diff) => {
-                    format!(
-                        "{} +{} -{}\n{}",
-                        diff.path, diff.lines_added, diff.lines_removed, diff.diff
-                    )
-                }
+                Message::FileDiff(diff) => diff.diff.clone(),
             })
         } else {
             let pending_idx = index - self.messages.len();

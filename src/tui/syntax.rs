@@ -261,6 +261,12 @@ impl HighlightLookup {
     }
 }
 
+/// Highlight code using the available highlighters (tree-sitter or syntect).
+/// This is a public wrapper for use in diff highlighting.
+pub(crate) fn highlight_code_for_diff(code: &str, language: &str) -> Vec<HighlightSpan> {
+    highlight_code(code, Some(language))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

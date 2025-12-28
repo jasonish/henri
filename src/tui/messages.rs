@@ -25,10 +25,12 @@ pub(crate) struct TodoListDisplay {
 }
 
 pub(crate) struct DiffMessage {
-    pub path: String,
+    pub _path: String,
     pub diff: String,
-    pub lines_added: usize,
-    pub lines_removed: usize,
+    pub _lines_added: usize,
+    pub _lines_removed: usize,
+    /// Language for syntax highlighting, derived from file extension
+    pub language: Option<String>,
 }
 
 pub(crate) struct ThinkingMessage {

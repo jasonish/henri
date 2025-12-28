@@ -7,6 +7,7 @@
 - File path completion in TUI and CLI prompts: press Tab on words
   starting with `./`, `../`, or `/` to complete file and directory
   names
+- Enhanced diff display with syntax highlighting and line numbers
 - Allow marking models as favourites
 - `upgrade` subcommand to check for new releases on GitHub
 - `fetch` tool for fetching URLs with automatic HTML-to-Markdown and

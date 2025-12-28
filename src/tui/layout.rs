@@ -157,20 +157,29 @@ fn todo_list_display_height(todo: &TodoListDisplay, width: u16) -> u16 {
     (todo.todos.len() + 1).max(1).min(u16::MAX as usize) as u16
 }
 
+/// Width of the line number gutter in diff display: "  3 + " = 6 chars
+pub(crate) const DIFF_GUTTER_WIDTH: u16 = 6;
+
 fn diff_display_height(diff: &DiffMessage, width: u16) -> u16 {
     if width == 0 {
         return 1;
     }
-    let effective_width = width.saturating_sub(1).max(1);
-    let header_lines = text_message_height(
-        &format!(
-            "{} +{} -{}",
-            diff.path, diff.lines_added, diff.lines_removed
-        ),
-        width,
-    );
-    let diff_lines = text_message_height(&diff.diff, effective_width);
-    header_lines.saturating_add(diff_lines)
+    // Account for gutter width
+    let effective_width = width
+        .saturating_sub(1)
+        .saturating_sub(DIFF_GUTTER_WIDTH)
+        .max(1);
+
+    // Filter out hunk header lines (@@) since they're not rendered
+    // and sum the wrapped lines of each content line
+    let diff_lines: usize = diff
+        .diff
+        .lines()
+        .filter(|line| !line.starts_with("@@"))
+        .map(|line| count_wrapped_lines(line, effective_width as usize))
+        .sum();
+
+    (diff_lines as u16).max(1)
 }
 
 pub(crate) fn text_message_height(display: &str, width: u16) -> u16 {
