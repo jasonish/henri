@@ -654,7 +654,7 @@ pub(crate) fn render_status_line(
         };
 
         let net_text = Line::from(Span::styled(
-            format!("▼{} ▲{}", format_bytes(rx), format_bytes(tx)),
+            format!("↓{} ↑{}", format_bytes(rx), format_bytes(tx)),
             Style::default().fg(Color::DarkGray),
         ));
         let net_widget = Paragraph::new(net_text).alignment(Alignment::Right);
