@@ -502,7 +502,7 @@ pub(crate) fn render_markdown_with_selection(
                     match md_style {
                         MarkdownStyle::Bold => style = style.add_modifier(Modifier::BOLD),
                         MarkdownStyle::InlineCode => {
-                            style = style.fg(Color::Green);
+                            style = style.fg(Color::Cyan);
                         }
                         MarkdownStyle::Normal => {}
                     }
