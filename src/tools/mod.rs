@@ -250,8 +250,8 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
 }
 
 /// Get all available tool definitions (built-in only)
-pub(crate) fn builtin_definitions() -> Vec<ToolDefinition> {
-    vec![
+pub(crate) fn builtin_definitions(todo_enabled: bool) -> Vec<ToolDefinition> {
+    let mut tools = vec![
         Bash.definition(),
         Fetch.definition(),
         FileDelete.definition(),
@@ -261,14 +261,20 @@ pub(crate) fn builtin_definitions() -> Vec<ToolDefinition> {
         Glob.definition(),
         Grep.definition(),
         ListDir.definition(),
-        TodoRead.definition(),
-        TodoWrite.definition(),
-    ]
+    ];
+    if todo_enabled {
+        tools.push(TodoRead.definition());
+        tools.push(TodoWrite.definition());
+    }
+    tools
 }
 
 /// Get all available tool definitions including MCP tools
 pub(crate) async fn all_definitions() -> Vec<ToolDefinition> {
-    let mut defs = builtin_definitions();
+    let todo_enabled = crate::config::ConfigFile::load()
+        .map(|c| c.todo_enabled)
+        .unwrap_or(true);
+    let mut defs = builtin_definitions(todo_enabled);
     let mcp_defs = crate::mcp::manager().all_tool_definitions().await;
     defs.extend(mcp_defs);
     defs
@@ -305,13 +311,25 @@ pub(crate) async fn execute(
         "glob" => return Some(Glob.execute(tool_use_id, input, output, services).await),
         "grep" => return Some(Grep.execute(tool_use_id, input, output, services).await),
         "list_dir" => return Some(ListDir.execute(tool_use_id, input, output, services).await),
-        "todo_read" => return Some(TodoRead.execute(tool_use_id, input, output, services).await),
-        "todo_write" => {
-            return Some(
-                TodoWrite
-                    .execute(tool_use_id, input, output, services)
-                    .await,
-            );
+        "todo_read" | "todo_write" => {
+            let todo_enabled = crate::config::ConfigFile::load()
+                .map(|c| c.todo_enabled)
+                .unwrap_or(true);
+            if !todo_enabled {
+                return Some(ToolResult::error(
+                    tool_use_id,
+                    "Todo tools are disabled in configuration",
+                ));
+            }
+            if name == "todo_read" {
+                return Some(TodoRead.execute(tool_use_id, input, output, services).await);
+            } else {
+                return Some(
+                    TodoWrite
+                        .execute(tool_use_id, input, output, services)
+                        .await,
+                );
+            }
         }
         _ => {}
     }

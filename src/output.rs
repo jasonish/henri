@@ -50,6 +50,10 @@ pub(crate) enum OutputEvent {
         lines_added: usize,
         lines_removed: usize,
     },
+    /// Auto-compaction is starting
+    AutoCompactStarting { current_usage: u64, limit: u64 },
+    /// Auto-compaction completed
+    AutoCompactCompleted { messages_compacted: usize },
 }
 
 /// Trait for listening to output events
@@ -235,4 +239,17 @@ pub(crate) fn emit_error(ctx: &OutputContext, message: &str) {
 /// Emit todo list update
 pub(crate) fn emit_todo_list(ctx: &OutputContext, todos: Vec<crate::tools::TodoItem>) {
     ctx.emit(OutputEvent::TodoList { todos });
+}
+
+/// Emit auto-compaction starting
+pub(crate) fn emit_auto_compact_starting(ctx: &OutputContext, current_usage: u64, limit: u64) {
+    ctx.emit(OutputEvent::AutoCompactStarting {
+        current_usage,
+        limit,
+    });
+}
+
+/// Emit auto-compaction completed
+pub(crate) fn emit_auto_compact_completed(ctx: &OutputContext, messages_compacted: usize) {
+    ctx.emit(OutputEvent::AutoCompactCompleted { messages_compacted });
 }

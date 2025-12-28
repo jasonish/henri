@@ -97,6 +97,7 @@ pub async fn run(
     let show_network_stats = config_file.show_network_stats;
     let show_diffs = config_file.show_diffs;
     let lsp_enabled = config_file.lsp_enabled;
+    let todo_enabled = config_file.todo_enabled;
 
     // Initialize MCP and LSP servers
     config::initialize_servers(&working_dir, lsp_override).await;
@@ -118,6 +119,7 @@ pub async fn run(
             show_network_stats,
             show_diffs,
             lsp_enabled,
+            todo_enabled,
         },
         output,
     );

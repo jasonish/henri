@@ -64,9 +64,9 @@ fn format_todos(todos: &[TodoItem]) -> String {
     let mut lines = Vec::new();
     for item in todos {
         let (indicator, text) = match item.status {
-            TodoStatus::Pending => ("○", &item.content),
-            TodoStatus::InProgress => ("◐", &item.active_form),
-            TodoStatus::Completed => ("●", &item.content),
+            TodoStatus::Pending => ("[ ]", &item.content),
+            TodoStatus::InProgress => ("[-]", &item.active_form),
+            TodoStatus::Completed => ("[✓]", &item.content),
         };
         lines.push(format!("  {} {}", indicator, text));
     }
@@ -248,9 +248,9 @@ mod tests {
             },
         ];
         let formatted = format_todos(&todos);
-        assert!(formatted.contains("● First task")); // completed shows content
-        assert!(formatted.contains("◐ Doing second task")); // in_progress shows active_form
-        assert!(formatted.contains("○ Third task")); // pending shows content
+        assert!(formatted.contains("[✓] First task")); // completed shows content
+        assert!(formatted.contains("[-] Doing second task")); // in_progress shows active_form
+        assert!(formatted.contains("[ ] Third task")); // pending shows content
     }
 
     #[test]
@@ -323,7 +323,7 @@ mod tests {
             )
             .await;
         assert!(!result.is_error);
-        assert!(result.content.contains("○ Read test"));
+        assert!(result.content.contains("[ ] Read test"));
     }
 
     #[tokio::test]

@@ -338,9 +338,9 @@ impl App {
                         let mut lines = vec!["Todo List:".to_string()];
                         for item in &todos {
                             let (indicator, text) = match item.status {
-                                TodoStatus::Pending => ("○", &item.content),
-                                TodoStatus::InProgress => ("◐", &item.active_form),
-                                TodoStatus::Completed => ("●", &item.content),
+                                TodoStatus::Pending => ("[ ]", &item.content),
+                                TodoStatus::InProgress => ("[-]", &item.active_form),
+                                TodoStatus::Completed => ("[✓]", &item.content),
                             };
                             lines.push(format!("  {} {}", indicator, text));
                         }
@@ -406,6 +406,32 @@ impl App {
                 }
                 OutputEvent::ThinkingEnd => {
                     self.is_thinking = false;
+                }
+                OutputEvent::AutoCompactStarting {
+                    current_usage,
+                    limit,
+                } => {
+                    let pct = (current_usage as f64 / limit as f64) * 100.0;
+                    self.messages.push(Message::Text(format!(
+                        "Context at {:.0}% ({}/{}) - auto-compacting...",
+                        pct, current_usage, limit
+                    )));
+                    self.layout_cache.invalidate();
+                    if width > 0 {
+                        self.adjust_scroll_for_content_change(width);
+                    }
+                    self.mark_new_content_if_scrolled();
+                }
+                OutputEvent::AutoCompactCompleted { messages_compacted } => {
+                    self.messages.push(Message::Text(format!(
+                        "Compacted {} messages into summary.",
+                        messages_compacted
+                    )));
+                    self.layout_cache.invalidate();
+                    if width > 0 {
+                        self.adjust_scroll_for_content_change(width);
+                    }
+                    self.mark_new_content_if_scrolled();
                 }
                 OutputEvent::TextEnd
                 | OutputEvent::SpinnerStart(_)

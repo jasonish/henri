@@ -11,6 +11,8 @@ pub(crate) enum SettingOption {
     ShowDiffs(bool),
     /// LSP integration enabled
     LspEnabled(bool),
+    /// Todo tools enabled
+    TodoEnabled(bool),
     /// Default model setting
     DefaultModel(DefaultModel),
     /// Default UI mode (cli or tui)
@@ -30,6 +32,10 @@ impl SettingOption {
             ),
             SettingOption::LspEnabled(enabled) => format!(
                 "LSP Integration: {}",
+                if *enabled { "Enabled" } else { "Disabled" }
+            ),
+            SettingOption::TodoEnabled(enabled) => format!(
+                "Todo Tools: {}",
                 if *enabled { "Enabled" } else { "Disabled" }
             ),
             SettingOption::DefaultModel(dm) => match dm {
@@ -136,6 +142,7 @@ impl SettingsMenuState {
         show_network_stats: bool,
         show_diffs: bool,
         lsp_enabled: bool,
+        todo_enabled: bool,
         default_model: DefaultModel,
         default_ui: UiDefault,
     ) -> Self {
@@ -144,6 +151,7 @@ impl SettingsMenuState {
                 SettingOption::ShowNetworkStats(show_network_stats),
                 SettingOption::ShowDiffs(show_diffs),
                 SettingOption::LspEnabled(lsp_enabled),
+                SettingOption::TodoEnabled(todo_enabled),
                 SettingOption::DefaultModel(default_model),
                 SettingOption::DefaultUi(default_ui),
             ],

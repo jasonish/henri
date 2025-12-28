@@ -460,14 +460,14 @@ impl OutputListener for CliListener {
             OutputEvent::TodoList { todos } => {
                 self.stop_spinner();
                 if todos.is_empty() {
-                    println!("\x1b[2mTodo list cleared.\x1b[0m");
+                    println!("\x1b[90mTodo list cleared.\x1b[0m");
                 } else {
-                    println!("\x1b[2mTodo List:\x1b[0m");
+                    println!("\x1b[1;36mTodo List:\x1b[0m");
                     for item in todos {
                         let (indicator, color) = match item.status {
-                            TodoStatus::Pending => ("○", "\x1b[2m"),     // dim
-                            TodoStatus::InProgress => ("◐", "\x1b[36m"), // cyan
-                            TodoStatus::Completed => ("●", "\x1b[32m"),  // green
+                            TodoStatus::Pending => ("[ ]", "\x1b[90m"), // dark gray
+                            TodoStatus::InProgress => ("[-]", "\x1b[33m"), // yellow
+                            TodoStatus::Completed => ("[✓]", "\x1b[90m"), // dark gray
                         };
                         let text = match item.status {
                             TodoStatus::InProgress => &item.active_form,
@@ -509,6 +509,24 @@ impl OutputListener for CliListener {
             | OutputEvent::Done
             | OutputEvent::Interrupted
             | OutputEvent::WorkingProgress { .. } => {}
+
+            OutputEvent::AutoCompactStarting {
+                current_usage,
+                limit,
+            } => {
+                let pct = (*current_usage as f64 / *limit as f64) * 100.0;
+                println!(
+                    "\n\x1b[33mContext at {:.0}% ({}/{}) - auto-compacting...\x1b[0m",
+                    pct, current_usage, limit
+                );
+            }
+
+            OutputEvent::AutoCompactCompleted { messages_compacted } => {
+                println!(
+                    "\x1b[32mCompacted {} messages into summary.\x1b[0m",
+                    messages_compacted
+                );
+            }
         }
     }
 }

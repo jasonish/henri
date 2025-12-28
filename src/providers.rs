@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use crate::chat;
 use crate::compaction;
 use crate::config::{Config, ConfigFile, ProviderType};
 use crate::error::Result;
@@ -524,84 +523,197 @@ impl ProviderManager {
     }
 
     /// Send a chat request, emitting events via output::emit()
+    ///
+    /// This method handles the full chat loop including:
+    /// - Auto-compaction checks before each provider call
+    /// - Tool execution
+    /// - Looping until the model finishes
     pub async fn chat(
         &mut self,
         messages: &mut Vec<Message>,
         interrupted: &Arc<AtomicBool>,
         output: &crate::output::OutputContext,
     ) -> Result<()> {
-        let services = &self.services;
+        use crate::chat::{ChatIterationResult, run_chat_iteration};
+        use crate::provider::Provider;
 
-        // Helper to chat with an optional provider, emitting error if not configured
-        macro_rules! chat_optional {
-            ($provider:expr, $name:literal) => {
-                match $provider.as_mut() {
+        let services = self.services.clone();
+        let config = crate::config::ConfigFile::load().unwrap_or_default();
+
+        // Start turn for usage tracking (call once at the start)
+        match self.current_provider {
+            ModelProvider::Antigravity => {
+                if let Some(name) = &self.current_custom_provider
+                    && let Some(p) = self.antigravity_providers.get(name)
+                {
+                    p.start_turn();
+                }
+            }
+            ModelProvider::OpenCodeZen => self.zen_provider.start_turn(),
+            ModelProvider::GitHubCopilot => {
+                if let Some(p) = &self.copilot_provider {
+                    p.start_turn();
+                }
+            }
+            ModelProvider::Claude => {
+                if let Some(p) = &self.anthropic_provider {
+                    p.start_turn();
+                }
+            }
+            ModelProvider::OpenAi => {
+                if let Some(p) = &self.openai_provider {
+                    p.start_turn();
+                }
+            }
+            ModelProvider::OpenRouter => {
+                if let Some(p) = &self.openrouter_provider {
+                    p.start_turn();
+                }
+            }
+            ModelProvider::OpenAiCompat => {
+                if let Some(name) = &self.current_custom_provider
+                    && let Some(p) = self.openai_compat_providers.get(name)
+                {
+                    p.start_turn();
+                }
+            }
+        }
+
+        loop {
+            // Check for auto-compaction before each provider call
+            if config.auto_compact.enabled
+                && let Some((usage, limit)) =
+                    self.should_auto_compact(config.auto_compact.threshold)
+            {
+                crate::output::emit_auto_compact_starting(output, usage, limit);
+                // Use quiet output for summarization so it doesn't stream to UI
+                let quiet_output = crate::output::OutputContext::new_quiet();
+                match self
+                    .compact_context(messages, config.auto_compact.preserve_turns, &quiet_output)
+                    .await
+                {
+                    Ok(result) => {
+                        crate::output::emit_auto_compact_completed(
+                            output,
+                            result.messages_compacted,
+                        );
+                    }
+                    Err(e) => {
+                        // Log error but continue - don't fail chat just because compaction failed
+                        crate::output::emit_error(
+                            output,
+                            &format!("Auto-compaction failed: {}", e),
+                        );
+                    }
+                }
+            }
+
+            // Run one chat iteration with the appropriate provider
+            let result = match self.current_provider {
+                ModelProvider::Antigravity => {
+                    if let Some(custom_name) = &self.current_custom_provider.clone() {
+                        match self.antigravity_providers.get_mut(custom_name) {
+                            Some(p) => {
+                                p.set_model(self.current_model_id.clone());
+                                run_chat_iteration(p, messages, interrupted, output, &services)
+                                    .await?
+                            }
+                            None => {
+                                let msg = format!(
+                                    "Antigravity provider '{}' not configured",
+                                    custom_name
+                                );
+                                crate::output::emit_error(output, &msg);
+                                return Err(crate::error::Error::Auth(msg));
+                            }
+                        }
+                    } else {
+                        let msg = "Antigravity provider requires a custom provider name";
+                        crate::output::emit_error(output, msg);
+                        return Err(crate::error::Error::Auth(msg.to_string()));
+                    }
+                }
+                ModelProvider::OpenCodeZen => {
+                    self.zen_provider.set_model(self.current_model_id.clone());
+                    run_chat_iteration(&self.zen_provider, messages, interrupted, output, &services)
+                        .await?
+                }
+                ModelProvider::GitHubCopilot => match self.copilot_provider.as_mut() {
                     Some(p) => {
                         p.set_model(self.current_model_id.clone());
-                        chat::run_chat_loop(p, messages, interrupted, output, services).await
+                        run_chat_iteration(p, messages, interrupted, output, &services).await?
                     }
                     None => {
-                        let msg = concat!($name, " not configured");
+                        let msg = "GitHub Copilot not configured";
                         crate::output::emit_error(output, msg);
-                        Err(crate::error::Error::Auth(msg.to_string()))
+                        return Err(crate::error::Error::Auth(msg.to_string()));
+                    }
+                },
+                ModelProvider::Claude => match self.anthropic_provider.as_mut() {
+                    Some(p) => {
+                        p.set_model(self.current_model_id.clone());
+                        run_chat_iteration(p, messages, interrupted, output, &services).await?
+                    }
+                    None => {
+                        let msg = "Anthropic not configured";
+                        crate::output::emit_error(output, msg);
+                        return Err(crate::error::Error::Auth(msg.to_string()));
+                    }
+                },
+                ModelProvider::OpenAi => match self.openai_provider.as_mut() {
+                    Some(p) => {
+                        p.set_model(self.current_model_id.clone());
+                        run_chat_iteration(p, messages, interrupted, output, &services).await?
+                    }
+                    None => {
+                        let msg = "OpenAI not configured";
+                        crate::output::emit_error(output, msg);
+                        return Err(crate::error::Error::Auth(msg.to_string()));
+                    }
+                },
+                ModelProvider::OpenRouter => match self.openrouter_provider.as_mut() {
+                    Some(p) => {
+                        p.set_model(self.current_model_id.clone());
+                        run_chat_iteration(p, messages, interrupted, output, &services).await?
+                    }
+                    None => {
+                        let msg = "OpenRouter not configured";
+                        crate::output::emit_error(output, msg);
+                        return Err(crate::error::Error::Auth(msg.to_string()));
+                    }
+                },
+                ModelProvider::OpenAiCompat => {
+                    if let Some(custom_name) = &self.current_custom_provider.clone() {
+                        match self.openai_compat_providers.get_mut(custom_name) {
+                            Some(p) => {
+                                p.set_model(self.current_model_id.clone());
+                                run_chat_iteration(p, messages, interrupted, output, &services)
+                                    .await?
+                            }
+                            None => {
+                                let msg = format!(
+                                    "OpenAI Compatible provider '{}' not configured",
+                                    custom_name
+                                );
+                                crate::output::emit_error(output, &msg);
+                                return Err(crate::error::Error::Auth(msg));
+                            }
+                        }
+                    } else {
+                        let msg = "OpenAI Compatible provider requires a custom provider name";
+                        crate::output::emit_error(output, msg);
+                        return Err(crate::error::Error::Auth(msg.to_string()));
                     }
                 }
             };
+
+            match result {
+                ChatIterationResult::Done => break,
+                ChatIterationResult::Continue => continue,
+            }
         }
 
-        match self.current_provider {
-            ModelProvider::Antigravity => {
-                if let Some(custom_name) = &self.current_custom_provider {
-                    match self.antigravity_providers.get_mut(custom_name) {
-                        Some(p) => {
-                            p.set_model(self.current_model_id.clone());
-                            chat::run_chat_loop(p, messages, interrupted, output, services).await
-                        }
-                        None => {
-                            let msg =
-                                format!("Antigravity provider '{}' not configured", custom_name);
-                            crate::output::emit_error(output, &msg);
-                            Err(crate::error::Error::Auth(msg))
-                        }
-                    }
-                } else {
-                    let msg = "Antigravity provider requires a custom provider name";
-                    crate::output::emit_error(output, msg);
-                    Err(crate::error::Error::Auth(msg.to_string()))
-                }
-            }
-            ModelProvider::OpenCodeZen => {
-                self.zen_provider.set_model(self.current_model_id.clone());
-                chat::run_chat_loop(&self.zen_provider, messages, interrupted, output, services)
-                    .await
-            }
-            ModelProvider::GitHubCopilot => chat_optional!(self.copilot_provider, "GitHub Copilot"),
-            ModelProvider::Claude => chat_optional!(self.anthropic_provider, "Anthropic"),
-            ModelProvider::OpenAi => chat_optional!(self.openai_provider, "OpenAI"),
-            ModelProvider::OpenRouter => chat_optional!(self.openrouter_provider, "OpenRouter"),
-            ModelProvider::OpenAiCompat => {
-                if let Some(custom_name) = &self.current_custom_provider {
-                    match self.openai_compat_providers.get_mut(custom_name) {
-                        Some(p) => {
-                            p.set_model(self.current_model_id.clone());
-                            chat::run_chat_loop(p, messages, interrupted, output, services).await
-                        }
-                        None => {
-                            let msg = format!(
-                                "OpenAI Compatible provider '{}' not configured",
-                                custom_name
-                            );
-                            crate::output::emit_error(output, &msg);
-                            Err(crate::error::Error::Auth(msg))
-                        }
-                    }
-                } else {
-                    let msg = "OpenAI Compatible provider requires a custom provider name";
-                    crate::output::emit_error(output, msg);
-                    Err(crate::error::Error::Auth(msg.to_string()))
-                }
-            }
-        }
+        Ok(())
     }
 
     /// Prepare and return the request that would be sent to the current provider's API.
@@ -700,6 +812,42 @@ impl ProviderManager {
     /// Get the custom provider name (if any)
     pub(crate) fn current_custom_provider(&self) -> Option<&str> {
         self.current_custom_provider.as_deref()
+    }
+
+    /// Get the last context usage (input tokens) for the current provider.
+    /// Returns None if usage tracking is not available for this provider.
+    pub(crate) fn get_last_context_usage(&self) -> Option<u64> {
+        let input = match self.current_provider {
+            ModelProvider::Claude => crate::usage::anthropic().last_input(),
+            ModelProvider::OpenCodeZen => crate::usage::zen().last_input(),
+            ModelProvider::OpenAiCompat => crate::usage::openai_compat().last_input(),
+            ModelProvider::OpenAi => crate::usage::openai().last_input(),
+            ModelProvider::OpenRouter => crate::usage::openrouter().last_input(),
+            ModelProvider::Antigravity => crate::usage::antigravity().last_input(),
+            ModelProvider::GitHubCopilot => return None,
+        };
+        // Only return if we actually have usage data
+        if input > 0 { Some(input) } else { None }
+    }
+
+    /// Get the context limit for the current provider and model.
+    /// Returns None if the limit is unknown.
+    pub(crate) fn get_context_limit(&self) -> Option<u64> {
+        crate::provider::context_limit(self.current_provider, &self.current_model_id)
+    }
+
+    /// Check if auto-compaction should be triggered based on current context usage.
+    /// Returns Some((current_usage, limit)) if compaction should trigger, None otherwise.
+    pub(crate) fn should_auto_compact(&self, threshold: f64) -> Option<(u64, u64)> {
+        let current_usage = self.get_last_context_usage()?;
+        let limit = self.get_context_limit()?;
+
+        let usage_ratio = current_usage as f64 / limit as f64;
+        if usage_ratio >= threshold {
+            Some((current_usage, limit))
+        } else {
+            None
+        }
     }
 
     /// Compact the message context by summarizing older messages

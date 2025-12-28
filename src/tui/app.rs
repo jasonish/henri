@@ -65,6 +65,7 @@ pub(crate) struct AppConfig {
     pub(crate) show_network_stats: bool,
     pub(crate) show_diffs: bool,
     pub(crate) lsp_enabled: bool,
+    pub(crate) todo_enabled: bool,
 }
 
 pub(crate) struct App {
@@ -155,6 +156,8 @@ pub(crate) struct App {
     pub(crate) lsp_enabled: bool,
     // Number of connected LSP servers
     pub(crate) lsp_server_count: usize,
+    // Todo tools enabled
+    pub(crate) todo_enabled: bool,
     // Default model setting (last-used or specific model)
     pub(crate) default_model: DefaultModel,
 }
@@ -322,6 +325,7 @@ impl App {
             show_diffs: config.show_diffs,
             lsp_enabled: config.lsp_enabled,
             lsp_server_count: 0,
+            todo_enabled: config.todo_enabled,
             default_model,
         }
     }
@@ -661,6 +665,7 @@ impl App {
             self.show_network_stats,
             self.show_diffs,
             self.lsp_enabled,
+            self.todo_enabled,
             self.default_model.clone(),
             default_ui,
         ));
@@ -712,6 +717,15 @@ impl App {
                         let _ = crate::lsp::reload_from_config(&working_dir).await;
                     });
                     // Note: lsp_server_count will be updated automatically on next tick
+                }
+                SettingOption::TodoEnabled(enabled) => {
+                    *enabled = !*enabled;
+                    self.todo_enabled = *enabled;
+                    // Save to config
+                    if let Ok(mut config) = ConfigFile::load() {
+                        config.todo_enabled = *enabled;
+                        let _ = config.save();
+                    }
                 }
                 SettingOption::DefaultModel(dm) => {
                     // Open the submenu for selecting default model
@@ -1108,7 +1122,7 @@ impl App {
                 self.cursor = 0;
             }
             Command::Compact => {
-                self.start_compaction();
+                self.start_compaction(0);
                 self.input.clear();
                 self.cursor = 0;
             }
@@ -1250,8 +1264,9 @@ impl App {
         self.layout_cache.invalidate();
     }
 
-    /// Start a compaction operation
-    pub(crate) fn start_compaction(&mut self) {
+    /// Start a compaction operation (manual /compact command)
+    /// `preserve_turns`: Number of recent turns to preserve (0 = compact all)
+    pub(crate) fn start_compaction(&mut self, preserve_turns: usize) {
         use crate::compaction;
 
         if self.chat_messages.is_empty() {
@@ -1270,8 +1285,9 @@ impl App {
             return;
         }
 
-        // Segment messages - compact all (preserve_recent_turns = 0)
-        let (to_compact, to_preserve) = compaction::segment_messages(&self.chat_messages, 0);
+        // Segment messages
+        let (to_compact, to_preserve) =
+            compaction::segment_messages(&self.chat_messages, preserve_turns);
 
         if to_compact.is_empty() {
             self.messages
@@ -1285,7 +1301,7 @@ impl App {
         let request_text = compaction::build_summarization_request_text(&to_compact);
         let messages_compacted = to_compact.len();
 
-        // Display the request as a user message (full text)
+        // Display the request as a user message
         self.messages.push(Message::User(UserMessage {
             display_text: request_text.clone(),
         }));
@@ -2596,6 +2612,7 @@ mod tests {
                 show_network_stats: true,
                 show_diffs: true,
                 lsp_enabled: true,
+                todo_enabled: true,
             },
             crate::output::OutputContext::null(),
         );
@@ -2649,6 +2666,7 @@ mod tests {
                 show_network_stats: true,
                 show_diffs: true,
                 lsp_enabled: true,
+                todo_enabled: true,
             },
             crate::output::OutputContext::null(),
         );

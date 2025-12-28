@@ -16,6 +16,14 @@
   fallback)
 - Interrupt handling for bash tool: Ctrl+C now kills running commands
 - Add Antigravity as a model provider
+- Settings toggle for todo tools (`/settings` → "Todo Tools")
+- Auto-compaction: automatically compacts context when usage exceeds
+  threshold (configurable via `auto-compact` in config)
+
+### Changed
+
+- Todo list display now uses markdown-style checkboxes: `[ ]` pending,
+  `[-]` in-progress, `[✓]` completed
 
 ### Fixed
 

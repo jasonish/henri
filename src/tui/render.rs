@@ -980,9 +980,9 @@ pub(crate) fn render_todo_list_with_selection(
         // Each todo item
         for item in &todo.todos {
             let (indicator, text, color) = match item.status {
-                TodoStatus::Pending => ("○", &item.content, Color::DarkGray),
-                TodoStatus::InProgress => ("◐", &item.active_form, Color::Cyan),
-                TodoStatus::Completed => ("●", &item.content, Color::Green),
+                TodoStatus::Pending => ("[ ]", &item.content, Color::DarkGray),
+                TodoStatus::InProgress => ("[-]", &item.active_form, Color::Yellow),
+                TodoStatus::Completed => ("[✓]", &item.content, Color::DarkGray),
             };
 
             // "  " indent (2 spaces)
@@ -991,7 +991,7 @@ pub(crate) fn render_todo_list_with_selection(
                 fg: None,
                 bold: false,
             });
-            // Status indicator (○/◐/● - 3 bytes each)
+            // Status indicator ([ ]/[-]/[✓])
             segments.push(StyledSegment {
                 len: indicator.len(),
                 fg: Some(color),

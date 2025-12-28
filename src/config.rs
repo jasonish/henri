@@ -49,6 +49,45 @@ pub(crate) struct UiConfig {
     pub default: UiDefault,
 }
 
+/// Auto-compaction configuration section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct AutoCompactConfig {
+    /// Whether auto-compaction is enabled. Defaults to true.
+    #[serde(default = "default_auto_compact_enabled")]
+    pub enabled: bool,
+    /// Context usage threshold (0.0-1.0) at which to trigger compaction.
+    /// Defaults to 0.75 (75%).
+    #[serde(default = "default_auto_compact_threshold")]
+    pub threshold: f64,
+    /// Number of recent turns to preserve when auto-compacting.
+    /// Defaults to 2.
+    #[serde(default = "default_auto_compact_preserve_turns")]
+    pub preserve_turns: usize,
+}
+
+impl Default for AutoCompactConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_auto_compact_enabled(),
+            threshold: default_auto_compact_threshold(),
+            preserve_turns: default_auto_compact_preserve_turns(),
+        }
+    }
+}
+
+fn default_auto_compact_enabled() -> bool {
+    true
+}
+
+fn default_auto_compact_threshold() -> f64 {
+    0.75
+}
+
+fn default_auto_compact_preserve_turns() -> usize {
+    2
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct ConfigFile {
     #[serde(default)]
@@ -78,6 +117,12 @@ pub(crate) struct ConfigFile {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub favorite_models: Vec<String>,
+    /// Auto-compaction settings
+    #[serde(default, rename = "auto-compact")]
+    pub auto_compact: AutoCompactConfig,
+    /// Enable the todo_read/todo_write tools (default: true)
+    #[serde(default = "default_todo_enabled", rename = "todo-enabled")]
+    pub todo_enabled: bool,
 }
 
 fn default_show_network_stats() -> bool {
@@ -85,6 +130,10 @@ fn default_show_network_stats() -> bool {
 }
 
 fn default_show_diffs() -> bool {
+    true
+}
+
+fn default_todo_enabled() -> bool {
     true
 }
 
