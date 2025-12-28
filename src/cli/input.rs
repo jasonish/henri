@@ -104,7 +104,7 @@ impl PromptUi {
         mut cycle_favorite: F,
     ) -> io::Result<PromptOutcome>
     where
-        F: FnMut() -> Option<(String, String)>,
+        F: FnMut() -> Option<(String, String, bool)>,
     {
         self.buffer.clear();
         self.cursor = 0;
@@ -627,7 +627,7 @@ impl PromptUi {
         cycle_favorite: &mut F,
     ) -> io::Result<Option<PromptOutcome>>
     where
-        F: FnMut() -> Option<(String, String)>,
+        F: FnMut() -> Option<(String, String, bool)>,
     {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             if self.buffer.is_empty() && self.pasted_images.is_empty() {
@@ -698,7 +698,7 @@ impl PromptUi {
             KeyCode::BackTab => {
                 if completion_visible {
                     self.move_completion(-1);
-                } else if let Some((provider, model)) = cycle_favorite() {
+                } else if let Some((provider, model, _provider_changed)) = cycle_favorite() {
                     info.provider = provider;
                     info.model = model;
                     // Redraw status bar in place

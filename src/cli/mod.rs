@@ -179,13 +179,14 @@ fn handle_command(
     }
 }
 
-/// Interactive model selection using inquire
-fn select_model(provider_manager: &mut ProviderManager) {
+/// Interactive model selection using inquire.
+/// Returns `true` if the provider changed (requiring thinking block cleanup).
+fn select_model(provider_manager: &mut ProviderManager) -> bool {
     let choices = build_model_choices();
 
     if choices.is_empty() {
         println!("No models available.");
-        return;
+        return false;
     }
 
     // Find current selection index
@@ -203,7 +204,7 @@ fn select_model(provider_manager: &mut ProviderManager) {
     {
         Ok(choice) => {
             let model_str = choice.short_display();
-            provider_manager.set_model(
+            let provider_changed = provider_manager.set_model(
                 choice.provider,
                 choice.model_id.clone(),
                 choice.custom_provider.clone(),
@@ -217,16 +218,18 @@ fn select_model(provider_manager: &mut ProviderManager) {
                 model_str,
                 choice.provider.display_name()
             );
+            provider_changed
         }
         Err(_) => {
             println!("Selection cancelled.");
+            false
         }
     }
 }
 
 /// Cycle through favorite models (triggered by Shift+Tab)
-/// Returns the new (provider_display, model_id) if successful
-fn cycle_favorite_model(provider_manager: &mut ProviderManager) -> Option<(String, String)> {
+/// Returns (provider_display, model_id, provider_changed) if successful
+fn cycle_favorite_model(provider_manager: &mut ProviderManager) -> Option<(String, String, bool)> {
     let choices = build_model_choices();
     let favorites: Vec<_> = choices.iter().filter(|c| c.is_favorite).collect();
 
@@ -251,7 +254,7 @@ fn cycle_favorite_model(provider_manager: &mut ProviderManager) -> Option<(Strin
     let model_str = next_model.short_display();
 
     // Update provider manager
-    provider_manager.set_model(
+    let provider_changed = provider_manager.set_model(
         next_model.provider,
         next_model.model_id.clone(),
         next_model.custom_provider.clone(),
@@ -265,7 +268,11 @@ fn cycle_favorite_model(provider_manager: &mut ProviderManager) -> Option<(Strin
         .custom_provider
         .clone()
         .unwrap_or_else(|| next_model.provider.display_name().to_string());
-    Some((provider_display, next_model.model_id.clone()))
+    Some((
+        provider_display,
+        next_model.model_id.clone(),
+        provider_changed,
+    ))
 }
 
 /// Settings menu options
@@ -767,7 +774,9 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
         if args.model.is_none()
             && let Some(provider) = ModelProvider::from_id(&restored.provider)
         {
-            provider_manager.set_model(provider, restored.model_id, None);
+            // Note: We don't strip thinking blocks here because we're restoring
+            // the exact provider that generated the signatures
+            let _ = provider_manager.set_model(provider, restored.model_id, None);
         }
     } else {
         clear_todos();
@@ -775,18 +784,28 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
 
     loop {
         let mut prompt_info = build_prompt(&provider_manager);
+        // Track if provider changed during cycle_favorite so we can strip thinking blocks
+        let mut provider_changed_in_cycle = false;
         let outcome = prompt_ui.read(
             &mut prompt_info,
             &mut thinking_enabled,
             &mut history,
             || {
                 let result = cycle_favorite_model(&mut provider_manager);
-                if result.is_some() {
+                if let Some((_, _, changed)) = &result {
+                    if *changed {
+                        provider_changed_in_cycle = true;
+                    }
                     thinking_mode = default_thinking_mode(provider_manager.current_model_id());
                 }
                 result
             },
         )?;
+
+        // Strip thinking blocks if provider changed during Shift+Tab cycling
+        if provider_changed_in_cycle {
+            crate::provider::strip_thinking_blocks(&mut messages);
+        }
 
         match outcome {
             PromptOutcome::Interrupted => {
@@ -795,7 +814,10 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
             }
             PromptOutcome::Eof => return Ok(ExitStatus::Quit),
             PromptOutcome::SelectModel => {
-                select_model(&mut provider_manager);
+                if select_model(&mut provider_manager) {
+                    // Provider changed - strip thinking blocks as signatures are provider-specific
+                    crate::provider::strip_thinking_blocks(&mut messages);
+                }
                 thinking_mode = default_thinking_mode(provider_manager.current_model_id());
             }
 
@@ -836,7 +858,10 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                             crate::usage::network_stats().clear();
                         }
                         CommandResult::SelectModel => {
-                            select_model(&mut provider_manager);
+                            if select_model(&mut provider_manager) {
+                                // Provider changed - strip thinking blocks as signatures are provider-specific
+                                crate::provider::strip_thinking_blocks(&mut messages);
+                            }
                             thinking_mode =
                                 default_thinking_mode(provider_manager.current_model_id());
                         }

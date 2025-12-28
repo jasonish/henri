@@ -364,12 +364,18 @@ impl App {
                 self.current_model = Some(choice.clone());
 
                 // Update the provider manager to use the new model
+                let mut provider_changed = false;
                 if let Some(ref mut pm) = self.provider_manager {
-                    pm.set_model(
+                    provider_changed = pm.set_model(
                         choice.provider,
                         choice.model_id.to_string(),
                         choice.custom_provider.clone(),
                     );
+                }
+
+                // Strip thinking blocks if provider changed (signatures are provider-specific)
+                if provider_changed {
+                    crate::provider::strip_thinking_blocks(&mut self.chat_messages);
                 }
 
                 // Update thinking_available based on the new model
@@ -618,12 +624,18 @@ impl App {
         self.current_model = Some(next_model.clone());
 
         // Update provider manager
+        let mut provider_changed = false;
         if let Some(ref mut pm) = self.provider_manager {
-            pm.set_model(
+            provider_changed = pm.set_model(
                 next_model.provider,
                 next_model.model_id.clone(),
                 next_model.custom_provider.clone(),
             );
+        }
+
+        // Strip thinking blocks if provider changed (signatures are provider-specific)
+        if provider_changed {
+            crate::provider::strip_thinking_blocks(&mut self.chat_messages);
         }
 
         // Update thinking availability and mode

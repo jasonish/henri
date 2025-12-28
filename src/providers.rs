@@ -386,12 +386,21 @@ impl ProviderManager {
         }
     }
 
+    /// Set the current model.
+    ///
+    /// Returns `true` if the provider changed (not just the model within the same provider).
+    /// When the provider changes, callers should strip thinking blocks from messages using
+    /// `crate::provider::strip_thinking_blocks()` because thinking signatures are not valid
+    /// across providers.
     pub(crate) fn set_model(
         &mut self,
         provider: ModelProvider,
         model_id: String,
         custom_provider: Option<String>,
-    ) {
+    ) -> bool {
+        let provider_changed =
+            self.current_provider != provider || self.current_custom_provider != custom_provider;
+
         self.current_provider = provider;
         self.current_model_id = model_id.clone();
         self.current_custom_provider = custom_provider.clone();
@@ -420,7 +429,7 @@ impl ProviderManager {
                                 .insert(custom_name.clone(), provider);
                         } else {
                             eprintln!("Antigravity provider '{}' not configured.", custom_name);
-                            return;
+                            return provider_changed;
                         }
                     }
                     if let Some(p) = self.antigravity_providers.get_mut(custom_name) {
@@ -461,7 +470,7 @@ impl ProviderManager {
                                 "OpenAI Compatible provider '{}' not configured.",
                                 custom_name
                             );
-                            return;
+                            return provider_changed;
                         }
                     }
                     if let Some(p) = self.openai_compat_providers.get_mut(custom_name) {
@@ -472,6 +481,7 @@ impl ProviderManager {
                 }
             }
         }
+        provider_changed
     }
 
     pub(crate) fn set_thinking_enabled(&mut self, enabled: bool) {

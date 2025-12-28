@@ -19,6 +19,8 @@
 
 ### Fixed
 
+- Switching providers mid-conversation (e.g., from antigravity to claude) no
+  longer fails with "Invalid signature in thinking block" errors
 - Claude provider token refresh failing after idle periods when another client
   instance (e.g., rate limit check) had already refreshed the tokens
 

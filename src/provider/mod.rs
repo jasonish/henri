@@ -158,3 +158,18 @@ pub(crate) fn context_limit(provider: crate::providers::ModelProvider, model: &s
         ModelProvider::OpenRouter => openrouter::OpenRouterProvider::context_limit(model),
     }
 }
+
+/// Strip thinking blocks from messages.
+///
+/// Thinking blocks contain provider-specific signatures that are not valid across providers.
+/// When switching providers mid-conversation, thinking blocks from the old provider will
+/// cause API errors (e.g., "Invalid signature in thinking block").
+///
+/// This function removes thinking blocks entirely, preserving the rest of the conversation.
+pub(crate) fn strip_thinking_blocks(messages: &mut [Message]) {
+    for message in messages.iter_mut() {
+        if let MessageContent::Blocks(blocks) = &mut message.content {
+            blocks.retain(|block| !matches!(block, ContentBlock::Thinking { .. }));
+        }
+    }
+}
