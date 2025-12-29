@@ -184,6 +184,26 @@ impl ZenProvider {
         }
     }
 
+    /// Returns the available thinking modes for the given model.
+    pub(crate) fn thinking_modes(model: &str) -> &'static [&'static str] {
+        if model == "gemini-3-flash" {
+            &["off", "minimal", "low", "medium", "high"]
+        } else if model == "gemini-3-pro" {
+            &["off", "low", "high"]
+        } else {
+            &["off", "on"]
+        }
+    }
+
+    /// Returns the default thinking state for the given model.
+    pub(crate) fn default_thinking_state(model: &str) -> crate::providers::ThinkingState {
+        if matches!(model, "gemini-3-pro" | "gemini-3-flash") {
+            crate::providers::ThinkingState::new(true, Some("low".to_string()))
+        } else {
+            crate::providers::ThinkingState::new(true, None)
+        }
+    }
+
     pub(crate) fn models() -> &'static [&'static str] {
         &ZEN_MODEL_NAMES
     }

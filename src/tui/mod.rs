@@ -18,7 +18,6 @@ mod settings;
 mod syntax;
 #[cfg(feature = "tree-sitter")]
 mod syntax_treesitter;
-mod thinking_mode;
 
 use std::io::{self, Read, Write};
 use std::process::Command;
@@ -435,7 +434,7 @@ async fn run_app(
                         provider_manager.set_thinking_enabled(app.thinking_enabled);
 
                         // Set thinking mode for Gemini models
-                        if let Some(mode_str) = app.thinking_mode.to_gemini_mode() {
+                        if let Some(mode_str) = app.thinking_mode.as_deref() {
                             provider_manager.set_thinking_mode(Some(mode_str.to_string()));
                         } else {
                             provider_manager.set_thinking_mode(None);
@@ -532,23 +531,23 @@ async fn run_app(
                             }
                             (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
                                 if app.thinking_available {
-                                    // For Gemini models, cycle through available thinking modes
                                     if let Some(ref model) = app.current_model {
-                                        if model.model_id.starts_with("gemini-") {
-                                            app.thinking_mode =
-                                                thinking_mode::ThinkingMode::next_for_model(
-                                                    app.thinking_mode,
-                                                    &model.model_id,
-                                                );
-                                            // Update thinking_enabled based on mode
-                                            app.thinking_enabled =
-                                                app.thinking_mode != thinking_mode::ThinkingMode::Off;
-                                        } else {
-                                            // For other models, just toggle on/off
-                                            app.thinking_enabled = !app.thinking_enabled;
-                                        }
+                                        let current = crate::providers::ThinkingState::new(
+                                            app.thinking_enabled,
+                                            app.thinking_mode.clone(),
+                                        );
+                                        let next = crate::providers::cycle_thinking_state(
+                                            model.provider,
+                                            &model.model_id,
+                                            &current,
+                                        );
+                                        app.thinking_enabled = next.enabled;
+                                        app.thinking_mode = next.mode;
                                     } else {
                                         app.thinking_enabled = !app.thinking_enabled;
+                                        if !app.thinking_enabled {
+                                            app.thinking_mode = None;
+                                        }
                                     }
                                 }
                             }

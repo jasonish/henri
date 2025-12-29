@@ -141,7 +141,7 @@ pub(crate) struct App {
     // Thinking mode toggle state
     pub(crate) thinking_enabled: bool,
     pub(crate) thinking_available: bool,
-    pub(crate) thinking_mode: super::thinking_mode::ThinkingMode,
+    pub(crate) thinking_mode: Option<String>,
     pub(crate) is_cleared: bool,
     pub(crate) input_scroll: u16, // lines scrolled within the input box (0 = top visible)
     // Pending content to show in external pager (bat)
@@ -188,8 +188,8 @@ impl App {
         // Initialize thinking mode based on the current model
         let thinking_mode = current_model
             .as_ref()
-            .map(|m| super::thinking_mode::ThinkingMode::default_for_model(&m.model_id))
-            .unwrap_or(super::thinking_mode::ThinkingMode::Off);
+            .map(|m| crate::providers::default_thinking_state(m.provider, &m.model_id).mode)
+            .unwrap_or(None);
 
         // Load config file to check for configured providers and default model
         let config_file = ConfigFile::load().unwrap_or_default();
@@ -388,7 +388,9 @@ impl App {
 
                 // Update thinking_mode based on the new model
                 self.thinking_mode =
-                    super::thinking_mode::ThinkingMode::default_for_model(&choice.model_id);
+                    crate::providers::default_thinking_state(choice.provider, &choice.model_id)
+                        .mode;
+                self.thinking_enabled = self.thinking_mode.as_deref() != Some("off");
 
                 self.messages
                     .push(Message::Text(format!("Model set to: {}", model_str)));
@@ -646,7 +648,9 @@ impl App {
         self.thinking_available =
             super::supports_thinking(next_model.provider, &next_model.model_id);
         self.thinking_mode =
-            super::thinking_mode::ThinkingMode::default_for_model(&next_model.model_id);
+            crate::providers::default_thinking_state(next_model.provider, &next_model.model_id)
+                .mode;
+        self.thinking_enabled = self.thinking_mode.as_deref() != Some("off");
 
         // Show model change message
         self.messages

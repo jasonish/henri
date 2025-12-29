@@ -538,7 +538,7 @@ pub(crate) fn render_status_line(
     exit_prompt: Option<ExitPrompt>,
     thinking_enabled: bool,
     thinking_available: bool,
-    thinking_mode: super::thinking_mode::ThinkingMode,
+    thinking_mode: Option<String>,
     show_network_stats: bool,
     lsp_server_count: usize,
 ) {
@@ -580,25 +580,12 @@ pub(crate) fn render_status_line(
         .unwrap_or_else(|| ("none".to_string(), "no model".to_string()));
 
     let thinking_status = if thinking_available {
-        // For Gemini models, show the thinking mode; for others, show on/off
-        let is_gemini = current_model
-            .as_ref()
-            .map(|m| m.model_id.starts_with("gemini-"))
-            .unwrap_or(false);
-
-        let (thinking_text, thinking_color) = if is_gemini {
-            // Show the thinking mode for Gemini
-            let mode_display = format!("thinking {}", thinking_mode.display());
-            let color = if thinking_mode == super::thinking_mode::ThinkingMode::Off {
-                Color::Yellow
-            } else {
-                Color::Green
-            };
-            (mode_display, color)
-        } else if thinking_enabled {
-            ("thinking on".to_string(), Color::Green)
-        } else {
+        let (thinking_text, thinking_color) = if !thinking_enabled {
             ("thinking off".to_string(), Color::Yellow)
+        } else if let Some(mode) = thinking_mode.as_deref() {
+            (format!("thinking {}", mode), Color::Green)
+        } else {
+            ("thinking on".to_string(), Color::Green)
         };
 
         Some(vec![

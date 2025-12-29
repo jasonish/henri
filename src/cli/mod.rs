@@ -20,7 +20,7 @@ use crate::error;
 use crate::history::FileHistory;
 use crate::output;
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
-use crate::providers::{ModelProvider, ProviderManager, build_model_choices};
+use crate::providers::{ModelProvider, ProviderManager, ThinkingState, build_model_choices};
 use crate::session;
 use crate::tools::todo::clear_todos;
 use crate::usage;
@@ -229,7 +229,9 @@ fn select_model(provider_manager: &mut ProviderManager) -> bool {
 
 /// Cycle through favorite models (triggered by Shift+Tab)
 /// Returns (provider_display, model_id, provider_changed) if successful
-fn cycle_favorite_model(provider_manager: &mut ProviderManager) -> Option<(String, String, bool)> {
+fn cycle_favorite_model(
+    provider_manager: &mut ProviderManager,
+) -> Option<(String, String, bool, Option<String>)> {
     let choices = build_model_choices();
     let favorites: Vec<_> = choices.iter().filter(|c| c.is_favorite).collect();
 
@@ -268,10 +270,16 @@ fn cycle_favorite_model(provider_manager: &mut ProviderManager) -> Option<(Strin
         .custom_provider
         .clone()
         .unwrap_or_else(|| next_model.provider.display_name().to_string());
+    let mut thinking_mode = None;
+    if provider_changed {
+        thinking_mode = provider_manager.default_thinking().mode;
+    }
+
     Some((
         provider_display,
         next_model.model_id.clone(),
         provider_changed,
+        thinking_mode,
     ))
 }
 
@@ -657,21 +665,6 @@ fn build_prompt(provider_manager: &ProviderManager) -> PromptInfo {
     }
 }
 
-/// Get the default thinking mode for Gemini models
-fn default_thinking_mode(model_id: &str) -> Option<String> {
-    if model_id.starts_with("gemini-") {
-        if model_id == "gemini-3-flash" {
-            Some("medium".to_string())
-        } else if model_id == "gemini-3-pro" {
-            Some("low".to_string())
-        } else {
-            None
-        }
-    } else {
-        None
-    }
-}
-
 /// Arguments specific to the CLI interface
 pub(crate) struct CliArgs {
     pub model: Option<String>,
@@ -712,12 +705,14 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
         let mut messages = vec![Message::user(&prompt)];
         let interrupted = Arc::new(AtomicBool::new(false));
 
-        // Set thinking mode for Gemini models
-        let model_id = provider_manager.current_model_id().to_string();
-        if let Some(mode) = default_thinking_mode(&model_id) {
+        // Set thinking mode for the current model
+        let thinking_state = provider_manager.default_thinking();
+        if let Some(mode) = thinking_state.mode.clone() {
             provider_manager.set_thinking_mode(Some(mode));
-            provider_manager.set_thinking_enabled(true);
+        } else {
+            provider_manager.set_thinking_mode(None);
         }
+        provider_manager.set_thinking_enabled(thinking_state.enabled);
 
         match run_chat_loop(&mut provider_manager, &mut messages, &interrupted, &output).await {
             Ok(()) => {
@@ -760,15 +755,12 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
     let mut history = FileHistory::new();
     let mut prompt_ui = PromptUi::new(custom_commands.clone(), working_dir.clone());
     let mut messages: Vec<Message> = Vec::new();
-    let mut thinking_enabled = true;
-
-    // Initialize thinking mode for Gemini models
-    let mut thinking_mode = default_thinking_mode(provider_manager.current_model_id());
+    let mut thinking_state = provider_manager.default_thinking();
 
     // Apply restored session if provided
     if let Some(restored) = args.restored_session {
         messages = restored.messages;
-        thinking_enabled = restored.thinking_enabled;
+        thinking_state.enabled = restored.thinking_enabled;
 
         // Restore provider/model if no CLI override
         if args.model.is_none()
@@ -788,15 +780,15 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
         let mut provider_changed_in_cycle = false;
         let outcome = prompt_ui.read(
             &mut prompt_info,
-            &mut thinking_enabled,
+            &mut thinking_state.enabled,
+            &mut thinking_state.mode,
             &mut history,
             || {
                 let result = cycle_favorite_model(&mut provider_manager);
-                if let Some((_, _, changed)) = &result {
-                    if *changed {
-                        provider_changed_in_cycle = true;
-                    }
-                    thinking_mode = default_thinking_mode(provider_manager.current_model_id());
+                if let Some((_, _, changed, _)) = &result
+                    && *changed
+                {
+                    provider_changed_in_cycle = true;
                 }
                 result
             },
@@ -812,13 +804,21 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                 output.emit(output::OutputEvent::Info("^C".into()));
                 continue;
             }
+            PromptOutcome::ContinueWithMode(mode) => {
+                let mut next = provider_manager.cycle_thinking(&thinking_state);
+                if let Some(mode) = mode {
+                    next = ThinkingState::new(mode != "off", Some(mode));
+                }
+                thinking_state = next;
+                continue;
+            }
             PromptOutcome::Eof => return Ok(ExitStatus::Quit),
             PromptOutcome::SelectModel => {
                 if select_model(&mut provider_manager) {
                     // Provider changed - strip thinking blocks as signatures are provider-specific
                     crate::provider::strip_thinking_blocks(&mut messages);
                 }
-                thinking_mode = default_thinking_mode(provider_manager.current_model_id());
+                thinking_state = provider_manager.default_thinking();
             }
 
             PromptOutcome::Submitted {
@@ -847,7 +847,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                                     messages: messages.clone(),
                                     provider: provider_manager.current_provider(),
                                     model_id: provider_manager.current_model_id().to_string(),
-                                    thinking_enabled,
+                                    thinking_enabled: thinking_state.enabled,
                                 })
                             };
                             return Ok(ExitStatus::SwitchToTui(session));
@@ -862,8 +862,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                                 // Provider changed - strip thinking blocks as signatures are provider-specific
                                 crate::provider::strip_thinking_blocks(&mut messages);
                             }
-                            thinking_mode =
-                                default_thinking_mode(provider_manager.current_model_id());
+                            thinking_state = provider_manager.default_thinking();
                         }
                         CommandResult::Continue => {}
                         CommandResult::Status => {
@@ -939,7 +938,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                                         &messages,
                                         &provider_manager.current_provider(),
                                         provider_manager.current_model_id(),
-                                        thinking_enabled,
+                                        thinking_state.enabled,
                                     ) {
                                         eprintln!("Warning: Failed to save session: {}", e);
                                     }
@@ -1061,8 +1060,8 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                 messages.push(message);
 
                 // Set thinking state
-                provider_manager.set_thinking_enabled(thinking_enabled);
-                provider_manager.set_thinking_mode(thinking_mode.clone());
+                provider_manager.set_thinking_enabled(thinking_state.enabled);
+                provider_manager.set_thinking_mode(thinking_state.mode.clone());
 
                 let interrupted = Arc::new(AtomicBool::new(false));
 
@@ -1091,7 +1090,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                             &messages,
                             &provider_manager.current_provider(),
                             provider_manager.current_model_id(),
-                            thinking_enabled,
+                            thinking_state.enabled,
                         ) {
                             eprintln!("Warning: Failed to save session: {}", e);
                         }

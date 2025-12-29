@@ -37,6 +37,7 @@ pub(crate) enum PromptOutcome {
     Interrupted,
     Eof,
     SelectModel,
+    ContinueWithMode(Option<String>),
 }
 
 pub(crate) struct PastedImage {
@@ -100,11 +101,12 @@ impl PromptUi {
         &mut self,
         info: &mut PromptInfo,
         thinking_enabled: &mut bool,
+        thinking_mode: &mut Option<String>,
         history: &mut FileHistory,
         mut cycle_favorite: F,
     ) -> io::Result<PromptOutcome>
     where
-        F: FnMut() -> Option<(String, String, bool)>,
+        F: FnMut() -> Option<(String, String, bool, Option<String>)>,
     {
         self.buffer.clear();
         self.cursor = 0;
@@ -120,7 +122,7 @@ impl PromptUi {
 
         let _raw = RawModeGuard::new()?;
 
-        self.render_status_bar(info, *thinking_enabled)?;
+        self.render_status_bar(info, *thinking_enabled, thinking_mode.as_deref())?;
         crossterm::execute!(io::stdout(), Print("\r\n"))?;
 
         self.render(info)?;
@@ -136,6 +138,7 @@ impl PromptUi {
                             history,
                             info,
                             thinking_enabled,
+                            thinking_mode,
                             &mut cycle_favorite,
                         )? {
                             self.finalize_display()?;
@@ -152,7 +155,7 @@ impl PromptUi {
                         // Full redraw on resize to avoid rendering artifacts
                         let mut stdout = io::stdout();
                         crossterm::execute!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-                        self.render_status_bar(info, *thinking_enabled)?;
+                        self.render_status_bar(info, *thinking_enabled, thinking_mode.as_deref())?;
                         crossterm::execute!(stdout, Print("\r\n"))?;
                         self.rendered_lines = 1;
                         self.last_cursor_row = 0;
@@ -165,7 +168,12 @@ impl PromptUi {
         }
     }
 
-    fn render_status_bar(&self, info: &PromptInfo, thinking_enabled: bool) -> io::Result<()> {
+    fn render_status_bar(
+        &self,
+        info: &PromptInfo,
+        thinking_enabled: bool,
+        thinking_mode: Option<&str>,
+    ) -> io::Result<()> {
         let mut stdout = io::stdout();
 
         crossterm::execute!(
@@ -196,11 +204,13 @@ impl PromptUi {
         // Display thinking status
         if info.show_thinking_status {
             let (thinking_status, thinking_color) = if !info.thinking_available {
-                ("thinking n/a", Color::DarkGrey)
-            } else if thinking_enabled {
-                ("thinking on", Color::Green)
+                ("thinking n/a".to_string(), Color::DarkGrey)
+            } else if !thinking_enabled {
+                ("thinking off".to_string(), Color::Yellow)
+            } else if let Some(mode) = thinking_mode {
+                (format!("thinking {}", mode), Color::Green)
             } else {
-                ("thinking off", Color::Yellow)
+                ("thinking on".to_string(), Color::Green)
             };
             crossterm::execute!(
                 stdout,
@@ -624,10 +634,11 @@ impl PromptUi {
         history: &mut FileHistory,
         info: &mut PromptInfo,
         thinking_enabled: &mut bool,
+        thinking_mode: &mut Option<String>,
         cycle_favorite: &mut F,
     ) -> io::Result<Option<PromptOutcome>>
     where
-        F: FnMut() -> Option<(String, String, bool)>,
+        F: FnMut() -> Option<(String, String, bool, Option<String>)>,
     {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             if self.buffer.is_empty() && self.pasted_images.is_empty() {
@@ -698,15 +709,28 @@ impl PromptUi {
             KeyCode::BackTab => {
                 if completion_visible {
                     self.move_completion(-1);
-                } else if let Some((provider, model, _provider_changed)) = cycle_favorite() {
+                } else if let Some((provider, model, _provider_changed, thinking_mode_update)) =
+                    cycle_favorite()
+                {
                     info.provider = provider;
                     info.model = model;
+                    if let Some(mode) = thinking_mode_update {
+                        *thinking_mode = Some(mode.clone());
+                        // Redraw status bar in place
+                        let mut stdout = io::stdout();
+                        let lines_up = self.rendered_lines + self.rendered_menu_lines;
+                        crossterm::execute!(stdout, MoveUp(lines_up), MoveToColumn(0))?;
+                        self.render_status_bar(info, *thinking_enabled, thinking_mode.as_deref())?;
+                        crossterm::execute!(stdout, MoveToColumn(0), cursor::MoveDown(lines_up))?;
+                        return Ok(Some(PromptOutcome::ContinueWithMode(Some(mode))));
+                    }
                     // Redraw status bar in place
                     let mut stdout = io::stdout();
                     let lines_up = self.rendered_lines + self.rendered_menu_lines;
                     crossterm::execute!(stdout, MoveUp(lines_up), MoveToColumn(0))?;
-                    self.render_status_bar(info, *thinking_enabled)?;
+                    self.render_status_bar(info, *thinking_enabled, thinking_mode.as_deref())?;
                     crossterm::execute!(stdout, MoveToColumn(0), cursor::MoveDown(lines_up))?;
+                    return Ok(Some(PromptOutcome::ContinueWithMode(None)));
                 }
             }
             KeyCode::Esc => {
@@ -853,7 +877,7 @@ impl PromptUi {
                 // Clear screen and redraw
                 let mut stdout = io::stdout();
                 crossterm::execute!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
-                self.render_status_bar(info, *thinking_enabled)?;
+                self.render_status_bar(info, *thinking_enabled, thinking_mode.as_deref())?;
                 crossterm::execute!(stdout, Print("\r\n"))?;
                 self.rendered_lines = 1;
                 self.last_cursor_row = 0;
@@ -861,15 +885,7 @@ impl PromptUi {
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if info.thinking_available && info.show_thinking_status {
-                    *thinking_enabled = !*thinking_enabled;
-                    // Redraw status bar in place
-                    let mut stdout = io::stdout();
-                    // Move up past input lines to status bar line
-                    let lines_up = self.rendered_lines + self.rendered_menu_lines;
-                    crossterm::execute!(stdout, MoveUp(lines_up), MoveToColumn(0))?;
-                    self.render_status_bar(info, *thinking_enabled)?;
-                    // Move back down to input area
-                    crossterm::execute!(stdout, MoveToColumn(0), cursor::MoveDown(lines_up))?;
+                    return Ok(Some(PromptOutcome::ContinueWithMode(None)));
                 }
             }
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -911,7 +927,7 @@ impl PromptUi {
                 crossterm::execute!(stdout, PushKeyboardEnhancementFlags(keyboard_flags)).ok();
 
                 // Redraw status bar
-                self.render_status_bar(info, *thinking_enabled)?;
+                self.render_status_bar(info, *thinking_enabled, thinking_mode.as_deref())?;
                 crossterm::execute!(stdout, Print("\r\n"))?;
 
                 // Apply selected entry if any

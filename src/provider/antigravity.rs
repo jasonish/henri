@@ -29,11 +29,10 @@ const ANTIGRAVITY_ENDPOINTS: &[&str] = &[
 
 // Available models
 const ANTIGRAVITY_MODELS: &[&str] = &[
-    "gemini-2.5-flash",
     "gemini-3-flash",
     "gemini-3-pro-high",
-    "claude-sonnet-4-5",
-    "claude-opus-4-5",
+    "claude-sonnet-4-5-thinking",
+    "claude-opus-4-5-thinking",
 ];
 
 struct AuthState {
@@ -104,6 +103,7 @@ pub(crate) struct AntigravityProvider {
     state: Mutex<AuthState>,
     model: String,
     thinking_enabled: bool,
+    thinking_mode: Option<String>,
 }
 
 impl AntigravityProvider {
@@ -138,15 +138,49 @@ impl AntigravityProvider {
             }),
             model: "gemini-3-flash".to_string(),
             thinking_enabled: true,
+            thinking_mode: None,
         })
     }
 
     pub(crate) fn set_thinking_enabled(&mut self, enabled: bool) {
         self.thinking_enabled = enabled;
+        if !enabled {
+            self.thinking_mode = None;
+        }
+    }
+
+    pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
+        self.thinking_mode = mode;
     }
 
     pub(crate) fn set_model(&mut self, model: String) {
         self.model = model;
+    }
+
+    /// Returns the available thinking modes for the given model.
+    pub(crate) fn thinking_modes(model: &str) -> &'static [&'static str] {
+        if model.starts_with("claude-") {
+            &["off", "low", "medium", "high"]
+        } else if model == "gemini-3-flash" {
+            &["minimal", "low", "medium", "high"]
+        } else if model.starts_with("gemini-") {
+            &["low", "high"]
+        } else {
+            &["off", "on"]
+        }
+    }
+
+    /// Returns the default thinking state for the given model.
+    pub(crate) fn default_thinking_state(model: &str) -> crate::providers::ThinkingState {
+        if model.starts_with("claude-") {
+            crate::providers::ThinkingState::new(true, Some("medium".to_string()))
+        } else if model.starts_with("gemini-3-pro") {
+            crate::providers::ThinkingState::new(true, Some("high".to_string()))
+        } else if model.starts_with("gemini-3-flash") {
+            crate::providers::ThinkingState::new(true, Some("medium".to_string()))
+        } else {
+            crate::providers::ThinkingState::new(true, None)
+        }
     }
 
     pub(crate) fn models() -> &'static [&'static str] {
@@ -154,10 +188,12 @@ impl AntigravityProvider {
     }
 
     pub(crate) fn context_limit(model: &str) -> Option<u64> {
-        if model.contains("flash") {
+        if model.starts_with("claude-") {
+            Some(200_000)
+        } else if model.starts_with("gemini-") {
             Some(1_000_000)
         } else {
-            Some(2_000_000)
+            None
         }
     }
 
@@ -415,10 +451,25 @@ impl AntigravityProvider {
             ]
         });
 
-        // Add thinking config if enabled
-        if self.thinking_enabled {
+        if self.model.starts_with("claude-") {
+            let budget = match self.thinking_mode.as_deref() {
+                Some("low") => 4000,
+                Some("medium") => 16000,
+                Some("high") => 32000,
+                _ => 0,
+            };
+            if budget > 0 {
+                request["generationConfig"]["thinkingConfig"] = serde_json::json!({
+                    "includeThoughts": true,
+                    "thinkingBudget": budget,
+                });
+            }
+        } else if self.model.starts_with("gemini-")
+            && let Some(level) = &self.thinking_mode
+        {
             request["generationConfig"]["thinkingConfig"] = serde_json::json!({
-                "thinkingBudget": 8000
+                "thinkingLevel": level,
+                "includeThoughts": true
             });
         }
 
@@ -434,19 +485,11 @@ impl AntigravityProvider {
         // Generate request ID: agent-{uuid}
         let request_id = format!("agent-{}", uuid::Uuid::new_v4());
 
-        // Map model to internal name (Claude models need -thinking suffix)
-        let internal_model =
-            if self.model.starts_with("claude-") && !self.model.ends_with("-thinking") {
-                format!("{}-thinking", self.model)
-            } else {
-                self.model.clone()
-            };
-
         serde_json::json!({
             "project": project_id,
             "userAgent": "antigravity",
             "requestId": request_id,
-            "model": internal_model,
+            "model": &self.model,
             "request": inner_request
         })
     }

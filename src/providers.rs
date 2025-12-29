@@ -71,6 +71,78 @@ impl ModelProvider {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ThinkingState {
+    pub enabled: bool,
+    pub mode: Option<String>,
+}
+
+impl ThinkingState {
+    pub(crate) fn new(enabled: bool, mode: Option<String>) -> Self {
+        Self { enabled, mode }
+    }
+
+    pub(crate) fn label(&self) -> &str {
+        if !self.enabled {
+            "off"
+        } else if let Some(mode) = self.mode.as_deref() {
+            mode
+        } else {
+            "on"
+        }
+    }
+}
+
+fn thinking_state_from_label(label: &str) -> ThinkingState {
+    match label {
+        "off" => ThinkingState::new(false, None),
+        "on" => ThinkingState::new(true, None),
+        _ => ThinkingState::new(true, Some(label.to_string())),
+    }
+}
+
+fn next_thinking_label<'a>(current: &'a str, modes: &'a [&'a str]) -> &'a str {
+    if modes.is_empty() {
+        return current;
+    }
+
+    let fallback_idx = modes.len().saturating_sub(1);
+    let current_idx = modes
+        .iter()
+        .position(|m| *m == current)
+        .unwrap_or(fallback_idx);
+    let next_idx = (current_idx + 1) % modes.len();
+    modes[next_idx]
+}
+
+pub(crate) fn default_thinking_state(provider: ModelProvider, model_id: &str) -> ThinkingState {
+    match provider {
+        ModelProvider::Antigravity => AntigravityProvider::default_thinking_state(model_id),
+        ModelProvider::OpenCodeZen => ZenProvider::default_thinking_state(model_id),
+        _ => ThinkingState::new(true, None),
+    }
+}
+
+pub(crate) fn cycle_thinking_state(
+    provider: ModelProvider,
+    model_id: &str,
+    current: &ThinkingState,
+) -> ThinkingState {
+    let modes: &[&str] = match provider {
+        ModelProvider::Antigravity => AntigravityProvider::thinking_modes(model_id),
+        ModelProvider::OpenCodeZen => ZenProvider::thinking_modes(model_id),
+        ModelProvider::GitHubCopilot
+        | ModelProvider::Claude
+        | ModelProvider::OpenAi
+        | ModelProvider::OpenAiCompat
+        | ModelProvider::OpenRouter => &["off", "on"],
+    };
+
+    let current_label = current.label();
+    let next_label = next_thinking_label(current_label, modes);
+    thinking_state_from_label(next_label)
+}
+
 /// A model choice representing a provider/model combination
 #[derive(Clone, Debug)]
 pub(crate) struct ModelChoice {
@@ -483,6 +555,14 @@ impl ProviderManager {
         provider_changed
     }
 
+    pub(crate) fn cycle_thinking(&self, current: &ThinkingState) -> ThinkingState {
+        cycle_thinking_state(self.current_provider, &self.current_model_id, current)
+    }
+
+    pub(crate) fn default_thinking(&self) -> ThinkingState {
+        default_thinking_state(self.current_provider, &self.current_model_id)
+    }
+
     pub(crate) fn set_thinking_enabled(&mut self, enabled: bool) {
         match self.current_provider {
             ModelProvider::Antigravity => {
@@ -514,11 +594,19 @@ impl ProviderManager {
         }
     }
 
-    /// Set the thinking mode for Zen provider's Gemini models
-    /// mode should be one of: "minimal", "low", "medium", "high", or None for default
+    /// Set the thinking mode for providers that support it
+    /// mode should be one of: "off", "minimal", "low", "medium", "high", or None for default
     pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
-        if self.current_provider == ModelProvider::OpenCodeZen {
-            self.zen_provider.set_thinking_mode(mode);
+        match self.current_provider {
+            ModelProvider::Antigravity => {
+                if let Some(custom_name) = &self.current_custom_provider
+                    && let Some(p) = self.antigravity_providers.get_mut(custom_name)
+                {
+                    p.set_thinking_mode(mode);
+                }
+            }
+            ModelProvider::OpenCodeZen => self.zen_provider.set_thinking_mode(mode),
+            _ => {}
         }
     }
 

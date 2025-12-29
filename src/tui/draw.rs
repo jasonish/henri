@@ -351,7 +351,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         app.exit_prompt,
         app.thinking_enabled,
         app.thinking_available,
-        app.thinking_mode,
+        app.thinking_mode.clone(),
         app.show_network_stats,
         app.lsp_server_count,
     );
