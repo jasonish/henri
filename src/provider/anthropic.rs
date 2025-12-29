@@ -223,10 +223,18 @@ struct ThinkingConfig {
 }
 
 #[derive(Serialize)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Serialize)]
 struct AnthropicTool {
     name: String,
     description: String,
     input_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -426,15 +434,23 @@ impl AnthropicProvider {
 
     /// Build the request struct for the Anthropic API
     async fn build_request(&self, messages: &[Message]) -> AnthropicRequest {
-        let tools: Vec<AnthropicTool> = tools::all_definitions()
+        let mut tools: Vec<AnthropicTool> = tools::all_definitions()
             .await
             .into_iter()
             .map(|t| AnthropicTool {
                 name: t.name,
                 description: t.description,
                 input_schema: t.input_schema,
+                cache_control: None,
             })
             .collect();
+
+        // Add cache control to the last tool to enable prompt caching
+        if let Some(last) = tools.last_mut() {
+            last.cache_control = Some(CacheControl {
+                kind: "ephemeral".to_string(),
+            });
+        }
 
         let thinking = if self.thinking_enabled {
             Some(ThinkingConfig {
@@ -455,9 +471,16 @@ impl AnthropicProvider {
             system.push(serde_json::json!({"type": "text", "text": part}));
         }
 
+        // Add cache control to the last system block to enable prompt caching
+        if let Some(last) = system.last_mut() {
+            last["cache_control"] = serde_json::json!({"type": "ephemeral"});
+        }
+
+        let built_messages = self.build_messages(messages);
+
         AnthropicRequest {
             model: self.model.clone(),
-            messages: self.build_messages(messages),
+            messages: built_messages,
             system,
             max_tokens: 16000,
             stream: true,

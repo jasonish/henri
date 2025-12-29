@@ -4,6 +4,8 @@
 
 ### Added
 
+- Prompt caching for Anthropic provider: system prompt and tool
+  definitions are now cached to reduce token usage and latency
 - File path completion in TUI and CLI prompts: press Tab on words
   starting with `./`, `../`, or `/` to complete file and directory
   names
