@@ -119,6 +119,7 @@ pub(crate) fn default_thinking_state(provider: ModelProvider, model_id: &str) ->
     match provider {
         ModelProvider::Antigravity => AntigravityProvider::default_thinking_state(model_id),
         ModelProvider::OpenCodeZen => ZenProvider::default_thinking_state(model_id),
+        ModelProvider::Claude => AnthropicProvider::default_thinking_state(),
         _ => ThinkingState::new(true, None),
     }
 }
@@ -131,8 +132,8 @@ pub(crate) fn cycle_thinking_state(
     let modes: &[&str] = match provider {
         ModelProvider::Antigravity => AntigravityProvider::thinking_modes(model_id),
         ModelProvider::OpenCodeZen => ZenProvider::thinking_modes(model_id),
+        ModelProvider::Claude => AnthropicProvider::thinking_modes(),
         ModelProvider::GitHubCopilot
-        | ModelProvider::Claude
         | ModelProvider::OpenAi
         | ModelProvider::OpenAiCompat
         | ModelProvider::OpenRouter => &["off", "on"],
@@ -476,21 +477,6 @@ impl ProviderManager {
         self.current_model_id = model_id.clone();
         self.current_custom_provider = custom_provider.clone();
 
-        // Helper to initialize and set model on an optional provider
-        macro_rules! init_and_set {
-            ($provider:expr, $init:expr, $name:literal) => {{
-                if $provider.is_none() {
-                    match $init {
-                        Ok(p) => $provider = Some(p),
-                        Err(e) => eprintln!("Note: {} initialization failed: {}", $name, e),
-                    }
-                }
-                if let Some(ref mut p) = $provider {
-                    p.set_model(model_id);
-                }
-            }};
-        }
-
         match provider {
             ModelProvider::Antigravity => {
                 if let Some(custom_name) = &custom_provider {
@@ -511,24 +497,26 @@ impl ProviderManager {
                 }
             }
             ModelProvider::OpenCodeZen => self.zen_provider.set_model(model_id),
-            ModelProvider::GitHubCopilot => init_and_set!(
-                self.copilot_provider,
-                CopilotProvider::try_new(),
-                "GitHub Copilot"
-            ),
-            ModelProvider::Claude => init_and_set!(
-                self.anthropic_provider,
-                AnthropicProvider::try_new(),
-                "Anthropic"
-            ),
-            ModelProvider::OpenAi => {
-                init_and_set!(self.openai_provider, OpenAiProvider::try_new(), "OpenAI")
+            ModelProvider::GitHubCopilot => {
+                if let Some(ref mut p) = self.copilot_provider {
+                    p.set_model(model_id);
+                }
             }
-            ModelProvider::OpenRouter => init_and_set!(
-                self.openrouter_provider,
-                OpenRouterProvider::try_new("openrouter"),
-                "OpenRouter"
-            ),
+            ModelProvider::Claude => {
+                if let Some(ref mut p) = self.anthropic_provider {
+                    p.set_model(model_id);
+                }
+            }
+            ModelProvider::OpenAi => {
+                if let Some(ref mut p) = self.openai_provider {
+                    p.set_model(model_id);
+                }
+            }
+            ModelProvider::OpenRouter => {
+                if let Some(ref mut p) = self.openrouter_provider {
+                    p.set_model(model_id);
+                }
+            }
             ModelProvider::OpenAiCompat => {
                 if let Some(custom_name) = &custom_provider {
                     // Try to get or initialize the specific custom provider
@@ -578,18 +566,13 @@ impl ProviderManager {
                     p.set_thinking_enabled(enabled);
                 }
             }
-            ModelProvider::Claude => {
-                if let Some(ref mut p) = self.anthropic_provider {
-                    p.set_thinking_enabled(enabled);
-                }
-            }
             ModelProvider::OpenAi => {
                 if let Some(ref mut p) = self.openai_provider {
                     p.set_thinking_enabled(enabled);
                 }
             }
-            ModelProvider::OpenRouter | ModelProvider::OpenAiCompat => {
-                // OpenAI-compat providers always display reasoning if provided
+            ModelProvider::OpenRouter | ModelProvider::OpenAiCompat | ModelProvider::Claude => {
+                // These providers use set_thinking_mode instead, or always display reasoning
             }
         }
     }
@@ -606,6 +589,11 @@ impl ProviderManager {
                 }
             }
             ModelProvider::OpenCodeZen => self.zen_provider.set_thinking_mode(mode),
+            ModelProvider::Claude => {
+                if let Some(ref mut p) = self.anthropic_provider {
+                    p.set_thinking_mode(mode);
+                }
+            }
             _ => {}
         }
     }

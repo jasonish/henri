@@ -1,11 +1,22 @@
 # Changelog
 
-## [0.2.0] - 2025-12-28
+## [Unreleased]
 
 ### Added
 
 - Prompt caching for Anthropic provider: system prompt and tool
   definitions are now cached to reduce token usage and latency
+
+### Changed
+
+- Claude thinking now supports budget levels (off/low/medium/high) instead
+  of simple on/off toggle
+- Claude default model updated to claude-haiku-4-5
+
+## [0.2.0] - 2025-12-28
+
+### Added
+
 - File path completion in TUI and CLI prompts: press Tab on words
   starting with `./`, `../`, or `/` to complete file and directory
   names

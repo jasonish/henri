@@ -28,6 +28,8 @@ pub(crate) const ANTHROPIC_BETA: &str = "oauth-2025-04-20,claude-code-20250219,i
 
 const ANTHROPIC_MODELS: &[&str] = &["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"];
 
+const DEFAULT_MODEL: &str = ANTHROPIC_MODELS[2];
+
 struct AuthState {
     local_id: String,
     access_token: String,
@@ -306,24 +308,34 @@ enum PendingBlock {
 pub(crate) struct AnthropicProvider {
     client: AnthropicClient,
     model: String,
-    thinking_enabled: bool,
+    thinking_mode: Option<String>,
 }
 
 impl AnthropicProvider {
     pub(crate) fn try_new() -> Result<Self> {
         Ok(Self {
             client: AnthropicClient::try_new()?,
-            model: "claude-3-7-sonnet-20250219".to_string(),
-            thinking_enabled: true,
+            model: DEFAULT_MODEL.to_string(),
+            thinking_mode: Some("medium".to_string()),
         })
     }
 
-    pub(crate) fn set_thinking_enabled(&mut self, enabled: bool) {
-        self.thinking_enabled = enabled;
+    pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
+        self.thinking_mode = mode;
     }
 
     pub(crate) fn set_model(&mut self, model: String) {
         self.model = model;
+    }
+
+    /// Returns the available thinking modes for Claude models.
+    pub(crate) fn thinking_modes() -> &'static [&'static str] {
+        &["off", "low", "medium", "high"]
+    }
+
+    /// Returns the default thinking state for Claude models.
+    pub(crate) fn default_thinking_state() -> crate::providers::ThinkingState {
+        crate::providers::ThinkingState::new(true, Some("medium".to_string()))
     }
 
     pub(crate) fn models() -> &'static [&'static str] {
@@ -452,13 +464,20 @@ impl AnthropicProvider {
             });
         }
 
-        let thinking = if self.thinking_enabled {
-            Some(ThinkingConfig {
+        let thinking = match self.thinking_mode.as_deref() {
+            Some("low") => Some(ThinkingConfig {
                 kind: "enabled".to_string(),
-                budget_tokens: 10000,
-            })
-        } else {
-            None
+                budget_tokens: 4000,
+            }),
+            Some("medium") => Some(ThinkingConfig {
+                kind: "enabled".to_string(),
+                budget_tokens: 16000,
+            }),
+            Some("high") => Some(ThinkingConfig {
+                kind: "enabled".to_string(),
+                budget_tokens: 32000,
+            }),
+            _ => None,
         };
 
         // Claude-specific identity
