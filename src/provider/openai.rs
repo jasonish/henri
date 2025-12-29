@@ -74,7 +74,6 @@ struct OpenAiState {
 pub(crate) struct OpenAiProvider {
     client: Client,
     state: Mutex<OpenAiState>,
-    instructions: Mutex<Option<String>>,
     model: String,
     project_id: Option<String>,
     client_id: String,
@@ -154,7 +153,6 @@ impl OpenAiProvider {
                 refresh_token: openai.refresh_token,
                 expires_at: openai.expires_at,
             }),
-            instructions: Mutex::new(None),
             model: OPENAI_DEFAULT_MODEL.to_string(),
             project_id: openai.project_id,
             client_id: openai.client_id,
@@ -179,13 +177,16 @@ impl OpenAiProvider {
     fn build_codex_input(&self, messages: &[Message]) -> Vec<CodexInputItem> {
         let mut input_items = Vec::new();
 
-        let user_instructions = prompts::system_prompt().join("\n\n");
+        let mut system = prompts::system_prompt();
+        system.push(
+            "You do not have an `apply_patch` tool, instead use the `file_edit` tool.".to_string(),
+        );
         input_items.push(CodexInputItem {
             kind: "message".to_string(),
             role: Some("user".to_string()),
             content: Some(vec![serde_json::json!({
                 "type": "input_text",
-                "text": user_instructions
+                "text": system.join("\n\n"),
             })]),
             ..Default::default()
         });
@@ -351,23 +352,17 @@ impl OpenAiProvider {
     }
 
     async fn codex_instructions(&self) -> String {
-        if let Some(cached) = self.instructions.lock().await.clone() {
-            cached
-        } else {
-            let (base_model, _) = split_openai_model(&self.model);
-            let instructions = match base_model.to_lowercase().as_ref() {
-                "gpt-5.2" => CODEX_PROMPT_GPT_5_2,
-                "gpt-5.2-codex" => CODEX_PROMPT_GPT_5_2_CODEX,
-                "gpt-5.1-codex" => CODEX_PROMPT_GPT_5_CODEX,
-                "gpt-5.1" => CODEX_PROMPT_GPT_5_1,
-                "gpt-5.1-codex-mini" => CODEX_PROMPT_GPT_5_CODEX,
-                "gpt-5.1-codex-max" => CODEX_PROMPT_GPT_5_1_CODEX_MAX,
-                _ => "",
-            };
-            let instructions = instructions.trim();
-            *self.instructions.lock().await = Some(instructions.to_string());
-            instructions.to_string()
-        }
+        let (base_model, _) = split_openai_model(&self.model);
+        let instructions = match base_model.to_lowercase().as_ref() {
+            "gpt-5.2" => CODEX_PROMPT_GPT_5_2,
+            "gpt-5.2-codex" => CODEX_PROMPT_GPT_5_2_CODEX,
+            "gpt-5.1-codex" => CODEX_PROMPT_GPT_5_CODEX,
+            "gpt-5.1" => CODEX_PROMPT_GPT_5_1,
+            "gpt-5.1-codex-mini" => CODEX_PROMPT_GPT_5_CODEX,
+            "gpt-5.1-codex-max" => CODEX_PROMPT_GPT_5_1_CODEX_MAX,
+            _ => "",
+        };
+        instructions.trim().to_string()
     }
 
     async fn ensure_access_token(&self) -> Result<String> {
@@ -454,15 +449,6 @@ impl OpenAiProvider {
 
     async fn build_request(&self, messages: &[Message]) -> CodexRequest {
         let instructions = self.codex_instructions().await;
-        self.build_request_with_instructions(messages, instructions)
-            .await
-    }
-
-    async fn build_request_with_instructions(
-        &self,
-        messages: &[Message],
-        instructions: String,
-    ) -> CodexRequest {
         let input = self.build_codex_input(messages);
 
         let tools: Vec<OpenAiTool> = tools::all_definitions()
