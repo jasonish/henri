@@ -461,9 +461,9 @@ impl ProviderManager {
     /// Set the current model.
     ///
     /// Returns `true` if the provider changed (not just the model within the same provider).
-    /// When the provider changes, callers should strip thinking blocks from messages using
-    /// `crate::provider::strip_thinking_blocks()` because thinking signatures are not valid
-    /// across providers.
+    /// When the provider changes, callers should transform thinking blocks using
+    /// `crate::provider::transform_thinking_for_provider_switch()` because thinking signatures
+    /// are not valid across providers.
     pub(crate) fn set_model(
         &mut self,
         provider: ModelProvider,

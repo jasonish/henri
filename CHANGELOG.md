@@ -9,6 +9,9 @@
 
 ### Changed
 
+- When switching providers, thinking blocks are now transformed to
+  `<thinking>` tagged text instead of being stripped entirely,
+  preserving reasoning context for the new model
 - Claude thinking now supports budget levels (off/low/medium/high) instead
   of simple on/off toggle
 - Claude default model updated to claude-haiku-4-5

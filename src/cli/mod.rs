@@ -794,9 +794,9 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
             },
         )?;
 
-        // Strip thinking blocks if provider changed during Shift+Tab cycling
+        // Transform thinking blocks if provider changed during Shift+Tab cycling
         if provider_changed_in_cycle {
-            crate::provider::strip_thinking_blocks(&mut messages);
+            crate::provider::transform_thinking_for_provider_switch(&mut messages);
         }
 
         match outcome {
@@ -815,8 +815,8 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
             PromptOutcome::Eof => return Ok(ExitStatus::Quit),
             PromptOutcome::SelectModel => {
                 if select_model(&mut provider_manager) {
-                    // Provider changed - strip thinking blocks as signatures are provider-specific
-                    crate::provider::strip_thinking_blocks(&mut messages);
+                    // Provider changed - transform thinking blocks as signatures are provider-specific
+                    crate::provider::transform_thinking_for_provider_switch(&mut messages);
                 }
                 thinking_state = provider_manager.default_thinking();
             }
@@ -859,8 +859,10 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                         }
                         CommandResult::SelectModel => {
                             if select_model(&mut provider_manager) {
-                                // Provider changed - strip thinking blocks as signatures are provider-specific
-                                crate::provider::strip_thinking_blocks(&mut messages);
+                                // Provider changed - transform thinking blocks as signatures are provider-specific
+                                crate::provider::transform_thinking_for_provider_switch(
+                                    &mut messages,
+                                );
                             }
                             thinking_state = provider_manager.default_thinking();
                         }

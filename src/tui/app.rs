@@ -377,9 +377,11 @@ impl App {
                     );
                 }
 
-                // Strip thinking blocks if provider changed (signatures are provider-specific)
+                // Transform thinking blocks if provider changed (signatures are provider-specific)
                 if provider_changed {
-                    crate::provider::strip_thinking_blocks(&mut self.chat_messages);
+                    crate::provider::transform_thinking_for_provider_switch(
+                        &mut self.chat_messages,
+                    );
                 }
 
                 // Update thinking_available based on the new model
@@ -639,9 +641,9 @@ impl App {
             );
         }
 
-        // Strip thinking blocks if provider changed (signatures are provider-specific)
+        // Transform thinking blocks if provider changed (signatures are provider-specific)
         if provider_changed {
-            crate::provider::strip_thinking_blocks(&mut self.chat_messages);
+            crate::provider::transform_thinking_for_provider_switch(&mut self.chat_messages);
         }
 
         // Update thinking availability and mode

@@ -159,17 +159,24 @@ pub(crate) fn context_limit(provider: crate::providers::ModelProvider, model: &s
     }
 }
 
-/// Strip thinking blocks from messages.
+/// Transform thinking blocks to plain text when switching providers.
 ///
 /// Thinking blocks contain provider-specific signatures that are not valid across providers.
 /// When switching providers mid-conversation, thinking blocks from the old provider will
 /// cause API errors (e.g., "Invalid signature in thinking block").
 ///
-/// This function removes thinking blocks entirely, preserving the rest of the conversation.
-pub(crate) fn strip_thinking_blocks(messages: &mut [Message]) {
+/// This function transforms thinking blocks to plain text wrapped in `<thinking>` tags,
+/// preserving the reasoning content while discarding the provider-specific signature.
+pub(crate) fn transform_thinking_for_provider_switch(messages: &mut [Message]) {
     for message in messages.iter_mut() {
         if let MessageContent::Blocks(blocks) = &mut message.content {
-            blocks.retain(|block| !matches!(block, ContentBlock::Thinking { .. }));
+            for block in blocks.iter_mut() {
+                if let ContentBlock::Thinking { thinking, .. } = block {
+                    *block = ContentBlock::Text {
+                        text: format!("<thinking>\n{}\n</thinking>", thinking),
+                    };
+                }
+            }
         }
     }
 }
