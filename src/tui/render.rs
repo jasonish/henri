@@ -1392,6 +1392,28 @@ pub(crate) fn render_diff_with_selection(ctx: &mut RenderContext<'_, '_>, diff: 
         }
 
         if ch == '\n' {
+            // Fill the rest of the line with background color for added/removed lines
+            if !skip_current_line
+                && screen_row >= 0
+                && screen_row < ctx.area.height as i32
+                && let Some(info) = get_line_info(current_line_start)
+            {
+                let diff_bg = match info.diff_color {
+                    Color::Green => Some(Color::Rgb(0, 20, 0)),
+                    Color::Red => Some(Color::Rgb(20, 0, 0)),
+                    _ => None,
+                };
+                if let Some(bg) = diff_bg {
+                    let y = ctx.area.y + screen_row as u16;
+                    // Fill from current position to end of line
+                    for col in screen_col..width {
+                        let x = ctx.area.x + col as u16;
+                        if let Some(cell) = ctx.frame.buffer_mut().cell_mut((x, y)) {
+                            cell.set_style(Style::default().bg(bg));
+                        }
+                    }
+                }
+            }
             if !skip_current_line {
                 screen_row += 1;
             }
@@ -1465,10 +1487,22 @@ pub(crate) fn render_diff_with_selection(ctx: &mut RenderContext<'_, '_>, diff: 
 
             let fg_color = syntax_color.unwrap_or(diff_color);
 
+            // Determine background color for diff lines
+            let diff_bg = match diff_color {
+                Color::Green => Some(Color::Rgb(0, 20, 0)), // Subtle dark green
+                Color::Red => Some(Color::Rgb(20, 0, 0)),   // Subtle dark red
+                _ => None,
+            };
+
             let style = if is_selected {
                 Style::default().fg(Color::Black).bg(Color::White)
             } else {
-                Style::default().fg(fg_color)
+                let base = Style::default().fg(fg_color);
+                if let Some(bg) = diff_bg {
+                    base.bg(bg)
+                } else {
+                    base
+                }
             };
 
             if let Some(cell) = ctx.frame.buffer_mut().cell_mut((x, y)) {
@@ -1487,6 +1521,29 @@ pub(crate) fn render_diff_with_selection(ctx: &mut RenderContext<'_, '_>, diff: 
 
         if screen_row >= ctx.area.height as i32 {
             break;
+        }
+    }
+
+    // Fill the rest of the last line with background color if needed
+    if !skip_current_line
+        && screen_row >= 0
+        && screen_row < ctx.area.height as i32
+        && screen_col > gutter_width
+        && let Some(info) = get_line_info(current_line_start)
+    {
+        let diff_bg = match info.diff_color {
+            Color::Green => Some(Color::Rgb(0, 20, 0)),
+            Color::Red => Some(Color::Rgb(20, 0, 0)),
+            _ => None,
+        };
+        if let Some(bg) = diff_bg {
+            let y = ctx.area.y + screen_row as u16;
+            for col in screen_col..width {
+                let x = ctx.area.x + col as u16;
+                if let Some(cell) = ctx.frame.buffer_mut().cell_mut((x, y)) {
+                    cell.set_style(Style::default().bg(bg));
+                }
+            }
         }
     }
 }

@@ -9,6 +9,9 @@
 
 ### Changed
 
+- Diff display now uses subtle background colors (dark green/red) for
+  added/removed lines instead of changing foreground colors, preserving
+  syntax highlighting visibility
 - When switching providers, thinking blocks are now transformed to
   `<thinking>` tagged text instead of being stripped entirely,
   preserving reasoning context for the new model
