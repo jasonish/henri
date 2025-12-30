@@ -684,7 +684,14 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
         output::OutputContext::new_cli(listener)
     };
 
-    let config = match Config::load(args.model.clone()) {
+    // If no model specified on CLI, try to use the one from the restored session
+    let model = args.model.clone().or_else(|| {
+        args.restored_session
+            .as_ref()
+            .map(|s| format!("{}/{}", s.provider, s.model_id))
+    });
+
+    let config = match Config::load(model) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -761,15 +768,6 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
     if let Some(restored) = args.restored_session {
         messages = restored.messages;
         thinking_state.enabled = restored.thinking_enabled;
-
-        // Restore provider/model if no CLI override
-        if args.model.is_none()
-            && let Some(provider) = ModelProvider::from_id(&restored.provider)
-        {
-            // Note: We don't strip thinking blocks here because we're restoring
-            // the exact provider that generated the signatures
-            let _ = provider_manager.set_model(provider, restored.model_id, None);
-        }
     } else {
         clear_todos();
     }

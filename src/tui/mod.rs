@@ -103,6 +103,13 @@ pub async fn run(
 
     let services = crate::services::Services::new();
 
+    // If no model specified on CLI, try to use the one from the restored session
+    let model = model.or_else(|| {
+        restored_session
+            .as_ref()
+            .map(|s| format!("{}/{}", s.provider, s.model_id))
+    });
+
     // Initialize provider manager from config
     let provider_manager = Config::load(model)
         .ok()

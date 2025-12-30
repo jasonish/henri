@@ -19,6 +19,13 @@
   of simple on/off toggle
 - Claude default model updated to claude-haiku-4-5
 
+### Fixed
+
+- Session restore now uses the saved model when no model is specified
+  on the command line (both TUI and CLI modes)
+- The `-c` flag now works correctly with subcommands: both `henri -c cli`
+  and `henri cli -c` will resume the previous session
+
 ## [0.2.0] - 2025-12-28
 
 ### Added

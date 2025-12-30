@@ -239,7 +239,7 @@ async fn main() -> std::io::Result<()> {
     };
 
     let mut continue_session = args.continue_session;
-    // Check if Cli/Tui subcommand overrides continue_session
+    // Check if Cli/Tui subcommand also has continue_session flag set
     match &args.command {
         Some(Command::Cli {
             continue_session: c,
@@ -249,7 +249,7 @@ async fn main() -> std::io::Result<()> {
             continue_session: c,
             ..
         }) => {
-            continue_session = *c;
+            continue_session = continue_session || *c;
         }
         _ => {}
     }
