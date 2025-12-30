@@ -490,6 +490,14 @@ async fn run_app(
                             continue;
                         }
 
+                        // MCP menu takes priority when active
+                        if app.mcp_menu_active()
+                            && app.handle_mcp_menu_key(key.code, key.modifiers)
+                        {
+                            needs_redraw = true;
+                            continue;
+                        }
+
                         // History search takes priority when active
                         if app.history_search_active()
                             && app.handle_history_search_key(key.code, key.modifiers)

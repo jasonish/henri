@@ -35,7 +35,7 @@ use super::models::{
 };
 use super::render::ExitPrompt;
 use super::selection::{InputSelection, PositionMap, Selection};
-use super::settings::{DefaultModelMenuState, SettingOption, SettingsMenuState};
+use super::settings::{DefaultModelMenuState, McpMenuState, SettingOption, SettingsMenuState};
 use crate::commands::{Command, DynamicSlashCommand};
 use crate::custom_commands::CustomCommand;
 
@@ -97,6 +97,7 @@ pub(crate) struct App {
     pub(crate) current_model: Option<ModelChoice>,
     pub(crate) model_menu: Option<ModelMenuState>,
     pub(crate) settings_menu: Option<SettingsMenuState>,
+    pub(crate) mcp_menu: Option<McpMenuState>,
     // History search
     pub(crate) history_search: Option<HistorySearchState>,
     // Chat state
@@ -285,6 +286,7 @@ impl App {
             current_model,
             model_menu: None,
             settings_menu: None,
+            mcp_menu: None,
             history_search: None,
             provider_manager,
             chat_messages,
@@ -885,6 +887,122 @@ impl App {
         }
     }
 
+    pub(crate) fn open_mcp_menu(&mut self) {
+        // Get current MCP server statuses asynchronously
+        // For now, spawn a task to fetch and update
+        let statuses = futures::executor::block_on(crate::mcp::manager().server_statuses());
+        self.mcp_menu = Some(McpMenuState::new(statuses));
+    }
+
+    pub(crate) fn close_mcp_menu(&mut self) {
+        self.mcp_menu = None;
+    }
+
+    pub(crate) fn mcp_menu_active(&self) -> bool {
+        self.mcp_menu.is_some()
+    }
+
+    /// Refresh MCP menu server statuses
+    pub(crate) fn refresh_mcp_menu(&mut self) {
+        if let Some(menu) = &mut self.mcp_menu {
+            let statuses = futures::executor::block_on(crate::mcp::manager().server_statuses());
+            let selected = menu.selected_index;
+            menu.servers = statuses;
+            menu.selected_index = selected.min(menu.servers.len().saturating_sub(1));
+            menu.is_loading = false;
+        }
+    }
+
+    pub(crate) fn toggle_selected_mcp_server(&mut self) {
+        let Some(menu) = &mut self.mcp_menu else {
+            return;
+        };
+        let Some(server) = menu.servers.get(menu.selected_index) else {
+            return;
+        };
+
+        let name = server.name.clone();
+        let was_running = server.is_running;
+        menu.is_loading = true;
+
+        // Perform the toggle operation
+        let result = if was_running {
+            futures::executor::block_on(crate::mcp::stop_server(&name))
+        } else {
+            futures::executor::block_on(crate::mcp::start_server(&name))
+        };
+
+        // Refresh menu state
+        self.refresh_mcp_menu();
+
+        // Show result message
+        match result {
+            Ok(()) => {
+                let action = if was_running { "stopped" } else { "started" };
+                self.messages
+                    .push(Message::Text(format!("MCP server '{}' {}", name, action)));
+            }
+            Err(e) => {
+                self.messages.push(Message::Error(format!(
+                    "Failed to toggle MCP server: {}",
+                    e
+                )));
+            }
+        }
+        self.layout_cache.invalidate();
+    }
+
+    pub(crate) fn handle_mcp_menu_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        _modifiers: crossterm::event::KeyModifiers,
+    ) -> bool {
+        use crossterm::event::KeyCode;
+
+        let Some(menu) = &mut self.mcp_menu else {
+            return false;
+        };
+
+        // Don't allow interaction while loading
+        if menu.is_loading {
+            return code == KeyCode::Esc;
+        }
+
+        match code {
+            KeyCode::Esc => {
+                self.close_mcp_menu();
+                true
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if !menu.servers.is_empty() {
+                    self.toggle_selected_mcp_server();
+                }
+                true
+            }
+            KeyCode::Up => {
+                if !menu.servers.is_empty() {
+                    if menu.selected_index > 0 {
+                        menu.selected_index -= 1;
+                    } else {
+                        menu.selected_index = menu.servers.len().saturating_sub(1);
+                    }
+                }
+                true
+            }
+            KeyCode::Down => {
+                if !menu.servers.is_empty() {
+                    if menu.selected_index + 1 < menu.servers.len() {
+                        menu.selected_index += 1;
+                    } else {
+                        menu.selected_index = 0;
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn submit_message(&mut self) {
         self.is_cleared = false;
 
@@ -986,6 +1104,11 @@ impl App {
             }
             Command::Settings => {
                 self.open_settings_menu();
+                self.input.clear();
+                self.cursor = 0;
+            }
+            Command::Mcp => {
+                self.open_mcp_menu();
                 self.input.clear();
                 self.cursor = 0;
             }

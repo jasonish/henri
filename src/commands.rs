@@ -31,6 +31,7 @@ pub(crate) enum Command {
     DumpConversation,
     DumpPrompt,
     Help,
+    Mcp,
     Model,
     Quit,
     Settings,
@@ -176,6 +177,12 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         command: Command::Help,
         name: "help",
         description: "Show available commands",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Mcp,
+        name: "mcp",
+        description: "Manage MCP server connections",
         availability: Availability::Always,
     },
     SlashCommand {

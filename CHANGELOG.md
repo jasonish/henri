@@ -4,6 +4,8 @@
 
 ### Added
 
+- `/mcp` command to manage MCP server connections - servers can be
+  started/stopped on demand via interactive menu in both TUI and CLI
 - `/help` command now works in both CLI and TUI modes with colored output
   showing available commands, shell commands, and keyboard shortcuts
 - `/new` command as alias for `/clear` to start a new conversation
@@ -15,6 +17,8 @@
 
 ### Changed
 
+- MCP servers are now disabled by default on startup - use `/mcp` to
+  enable them as needed
 - Simplified startup message to "Type /help for help."
 - `Message::Text` in TUI now renders as markdown, enabling formatted help output
 - CLI: Custom commands from slash menu now fill in with a trailing space
@@ -37,6 +41,7 @@
 
 ### Fixed
 
+- MCP server stderr output no longer corrupts TUI display
 - TUI now displays tool error messages instead of just showing the
   failure indicator (✗) with no explanation
 - Session restore now uses the saved model when no model is specified

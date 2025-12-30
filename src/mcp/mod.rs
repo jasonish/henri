@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
+use std::process::Stdio;
 use std::sync::Arc;
 
 use rmcp::RoleClient;
@@ -31,15 +32,80 @@ struct McpClient {
     tools: Vec<Tool>,
 }
 
+/// Status of an MCP server
+#[derive(Debug, Clone)]
+pub(crate) struct McpServerStatus {
+    pub name: String,
+    pub is_running: bool,
+    pub tool_count: usize,
+}
+
 /// Manager for multiple MCP server connections
 pub(crate) struct McpManager {
+    /// Running MCP server clients
     clients: RwLock<Vec<McpClient>>,
+    /// Configured servers (not necessarily running)
+    configured_servers: RwLock<Vec<McpServerConfig>>,
 }
 
 impl McpManager {
     pub(crate) fn new() -> Self {
         Self {
             clients: RwLock::new(Vec::new()),
+            configured_servers: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Register configured MCP servers without starting them
+    pub(crate) async fn register_servers(&self, servers: Vec<McpServerConfig>) {
+        let mut configured = self.configured_servers.write().await;
+        *configured = servers;
+    }
+
+    /// Get status of all configured servers
+    pub(crate) async fn server_statuses(&self) -> Vec<McpServerStatus> {
+        let configured = self.configured_servers.read().await;
+        let clients = self.clients.read().await;
+
+        configured
+            .iter()
+            .map(|config| {
+                let client = clients.iter().find(|c| c.name == config.name);
+                McpServerStatus {
+                    name: config.name.clone(),
+                    is_running: client.is_some(),
+                    tool_count: client.map(|c| c.tools.len()).unwrap_or(0),
+                }
+            })
+            .collect()
+    }
+
+    /// Start an MCP server by name (must be registered first)
+    pub(crate) async fn start_server_by_name(&self, name: &str) -> Result<()> {
+        let configured = self.configured_servers.read().await;
+        let config = configured
+            .iter()
+            .find(|c| c.name == name)
+            .ok_or_else(|| crate::error::Error::Mcp(format!("Server '{}' not found", name)))?
+            .clone();
+        drop(configured);
+
+        self.start_server(&config).await
+    }
+
+    /// Stop an MCP server by name
+    pub(crate) async fn stop_server(&self, name: &str) -> Result<()> {
+        let mut clients = self.clients.write().await;
+        if let Some(pos) = clients.iter().position(|c| c.name == name) {
+            let client = clients.remove(pos);
+            // The service will be dropped and connections closed
+            drop(client);
+            Ok(())
+        } else {
+            Err(crate::error::Error::Mcp(format!(
+                "Server '{}' not running",
+                name
+            )))
         }
     }
 
@@ -50,11 +116,6 @@ impl McpManager {
             return Ok(());
         }
 
-        println!(
-            "[MCP] Starting server: {} ({} {:?})",
-            config.name, config.command, config.args
-        );
-
         let mut cmd = Command::new(&config.command);
         for arg in &config.args {
             cmd.arg(arg);
@@ -64,7 +125,10 @@ impl McpManager {
             cmd.env(key, value);
         }
 
-        let transport = TokioChildProcess::new(cmd)
+        // Use builder to redirect stderr to null to avoid corrupting the TUI
+        let (transport, _stderr) = TokioChildProcess::builder(cmd)
+            .stderr(Stdio::null())
+            .spawn()
             .map_err(|e| crate::error::Error::Mcp(format!("Failed to spawn MCP server: {}", e)))?;
 
         let service = ().serve(transport).await.map_err(|e| {
@@ -78,18 +142,6 @@ impl McpManager {
             .map_err(|e| crate::error::Error::Mcp(format!("Failed to list tools: {}", e)))?;
 
         let tools = tools_result.tools;
-        println!(
-            "[MCP] Server '{}' provides {} tools:",
-            config.name,
-            tools.len()
-        );
-        for tool in &tools {
-            println!(
-                "[MCP]   - {}: {}",
-                tool.name,
-                tool.description.as_deref().unwrap_or("")
-            );
-        }
 
         let client = McpClient {
             name: config.name.clone(),
@@ -220,13 +272,18 @@ pub(crate) fn manager() -> Arc<McpManager> {
         .clone()
 }
 
-/// Initialize MCP servers from configuration
-pub(crate) async fn initialize(servers: Vec<McpServerConfig>) -> Result<()> {
+/// Register MCP servers from configuration (but don't start them)
+pub(crate) async fn register_servers(servers: Vec<McpServerConfig>) {
     let mgr = manager();
-    for config in servers {
-        if let Err(e) = mgr.start_server(&config).await {
-            eprintln!("[MCP] Failed to start server '{}': {}", config.name, e);
-        }
-    }
-    Ok(())
+    mgr.register_servers(servers).await;
+}
+
+/// Start a specific MCP server by name
+pub(crate) async fn start_server(name: &str) -> Result<()> {
+    manager().start_server_by_name(name).await
+}
+
+/// Stop a specific MCP server by name
+pub(crate) async fn stop_server(name: &str) -> Result<()> {
+    manager().stop_server(name).await
 }

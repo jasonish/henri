@@ -544,3 +544,96 @@ pub(crate) fn render_history_search(
         }
     }
 }
+
+pub(crate) fn render_mcp_menu(
+    frame: &mut Frame,
+    screen: Rect,
+    menu: &super::settings::McpMenuState,
+) {
+    let bg = Color::Rgb(32, 32, 32);
+    let border_color = Color::Rgb(80, 80, 80);
+
+    // Calculate popup dimensions
+    let popup_width = 60.min(screen.width.saturating_sub(4));
+    let content_lines = if menu.servers.is_empty() {
+        1
+    } else {
+        menu.servers.len()
+    };
+    let popup_height = (content_lines as u16 + 2).min(screen.height.saturating_sub(4));
+
+    // Center the popup
+    let popup_x = (screen.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (screen.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    if menu.servers.is_empty() {
+        lines.push(
+            Line::raw(" No MCP servers configured").style(Style::default().fg(Color::DarkGray)),
+        );
+    } else {
+        for (i, server) in menu.servers.iter().enumerate() {
+            let is_selected = i == menu.selected_index;
+            let prefix = if is_selected { ">" } else { " " };
+            let status_icon = if server.is_running { "●" } else { "○" };
+            let status_color = if server.is_running {
+                Color::Green
+            } else {
+                Color::DarkGray
+            };
+            let tool_info = if server.is_running {
+                format!(" ({} tools)", server.tool_count)
+            } else {
+                String::new()
+            };
+
+            let style = if is_selected {
+                Style::default().fg(Color::Cyan).bg(Color::Rgb(48, 48, 48))
+            } else {
+                Style::default().fg(Color::White).bg(bg)
+            };
+
+            let status_style = if is_selected {
+                Style::default().fg(status_color).bg(Color::Rgb(48, 48, 48))
+            } else {
+                Style::default().fg(status_color).bg(bg)
+            };
+
+            let muted_style = if is_selected {
+                Style::default()
+                    .fg(Color::Rgb(128, 128, 128))
+                    .bg(Color::Rgb(48, 48, 48))
+            } else {
+                Style::default().fg(Color::Rgb(128, 128, 128)).bg(bg)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!("{} ", prefix), style),
+                Span::styled(format!("{} ", status_icon), status_style),
+                Span::styled(&server.name, style),
+                Span::styled(tool_info, muted_style),
+            ]));
+        }
+    }
+
+    let title = if menu.is_loading {
+        " MCP Servers (loading...) "
+    } else {
+        " MCP Servers (Space/Enter to toggle) "
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(title)
+        .title_style(Style::default().fg(Color::Yellow))
+        .style(Style::default().bg(bg));
+
+    let widget = Paragraph::new(lines).block(block);
+    frame.render_widget(widget, popup_area);
+}

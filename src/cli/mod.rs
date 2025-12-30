@@ -41,6 +41,7 @@ enum CommandResult {
     CountTokens,
     CustomPrompt(String),
     Settings,
+    Mcp,
 }
 
 fn handle_command(
@@ -200,6 +201,7 @@ fn handle_command(
             CommandResult::Continue
         }
         Command::Settings => CommandResult::Settings,
+        Command::Mcp => CommandResult::Mcp,
         Command::Custom { name, args } => {
             if let Some(custom) = custom_commands.iter().find(|c| c.name == name) {
                 let prompt = custom_commands::substitute_variables(&custom.prompt, &args);
@@ -498,6 +500,72 @@ async fn show_settings_menu(working_dir: &std::path::Path) {
                 }
                 Err(_) => println!("Selection cancelled."),
             }
+        }
+    }
+}
+
+/// Interactive MCP server management menu using inquire
+async fn show_mcp_menu() {
+    let statuses = crate::mcp::manager().server_statuses().await;
+
+    if statuses.is_empty() {
+        println!("No MCP servers configured.");
+        println!("\nTo add MCP servers, edit your config file at:");
+        println!("  ~/.config/henri/config.toml");
+        println!("\nExample configuration:");
+        println!("  [mcp]");
+        println!("  [[mcp.servers]]");
+        println!("  name = \"my-server\"");
+        println!("  command = \"npx\"");
+        println!("  args = [\"-y\", \"@anthropic/mcp-server\"]");
+        return;
+    }
+
+    // Build choices with status indicators
+    let choices: Vec<String> = statuses
+        .iter()
+        .map(|s| {
+            let icon = if s.is_running { "●" } else { "○" };
+            let status = if s.is_running {
+                format!("running ({} tools)", s.tool_count)
+            } else {
+                "stopped".to_string()
+            };
+            format!("{} {} - {}", icon, s.name, status)
+        })
+        .collect();
+
+    let selection = match Select::new("MCP Servers (Space/Enter to toggle):", choices.clone())
+        .with_page_size(output::menu_page_size())
+        .prompt()
+    {
+        Ok(choice) => choice,
+        Err(_) => {
+            println!("Selection cancelled.");
+            return;
+        }
+    };
+
+    // Find which server was selected
+    let idx = choices.iter().position(|c| c == &selection).unwrap_or(0);
+    let server = &statuses[idx];
+    let name = &server.name;
+    let was_running = server.is_running;
+
+    // Toggle the server
+    let result = if was_running {
+        crate::mcp::stop_server(name).await
+    } else {
+        crate::mcp::start_server(name).await
+    };
+
+    match result {
+        Ok(()) => {
+            let action = if was_running { "stopped" } else { "started" };
+            println!("MCP server '{}' {}", name, action);
+        }
+        Err(e) => {
+            println!("Failed to toggle MCP server: {}", e);
         }
     }
 }
@@ -1014,6 +1082,9 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                         }
                         CommandResult::Settings => {
                             show_settings_menu(&working_dir).await;
+                        }
+                        CommandResult::Mcp => {
+                            show_mcp_menu().await;
                         }
                     }
 

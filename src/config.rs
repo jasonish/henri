@@ -663,10 +663,13 @@ impl Config {
 /// - `Some(true)` forces LSP enabled (--lsp)
 /// - `Some(false)` forces LSP disabled (--no-lsp)
 /// - `None` uses the config file's `lsp_enabled` setting
+///
+/// Note: MCP servers are registered but not started by default.
+/// Use the /mcp command or MCP menu to start them.
 pub async fn initialize_servers(working_dir: &Path, lsp_override: Option<bool>) {
     let config_file = ConfigFile::load().unwrap_or_default();
 
-    // Initialize MCP servers
+    // Register MCP servers (but don't start them - they're disabled by default)
     if let Some(mcp_config) = &config_file.mcp {
         let servers: Vec<crate::mcp::McpServerConfig> = mcp_config
             .servers
@@ -679,7 +682,7 @@ pub async fn initialize_servers(working_dir: &Path, lsp_override: Option<bool>) 
                 env: s.env.clone(),
             })
             .collect();
-        let _ = crate::mcp::initialize(servers).await;
+        crate::mcp::register_servers(servers).await;
     }
 
     // Determine if LSP is enabled: command-line override takes precedence

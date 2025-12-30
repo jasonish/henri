@@ -164,3 +164,23 @@ impl SettingsMenuState {
         self.default_model_submenu.is_some()
     }
 }
+
+/// State for the MCP server toggle menu
+pub(crate) struct McpMenuState {
+    /// List of server statuses
+    pub servers: Vec<crate::mcp::McpServerStatus>,
+    /// Currently selected server index
+    pub selected_index: usize,
+    /// Whether an operation is in progress (starting/stopping a server)
+    pub is_loading: bool,
+}
+
+impl McpMenuState {
+    pub(crate) fn new(servers: Vec<crate::mcp::McpServerStatus>) -> Self {
+        Self {
+            servers,
+            selected_index: 0,
+            is_loading: false,
+        }
+    }
+}

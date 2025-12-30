@@ -365,6 +365,11 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(ref menu) = app.settings_menu {
         render_settings_menu(frame, size, menu);
     }
+
+    // Render MCP menu as overlay if active
+    if let Some(ref menu) = app.mcp_menu {
+        super::menus::render_mcp_menu(frame, size, menu);
+    }
 }
 
 /// Render pending prompts (queued output) in a fixed section
