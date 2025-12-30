@@ -506,66 +506,61 @@ async fn show_settings_menu(working_dir: &std::path::Path) {
 
 /// Interactive MCP server management menu using inquire
 async fn show_mcp_menu() {
+    use inquire::MultiSelect;
+
     let statuses = crate::mcp::manager().server_statuses().await;
 
     if statuses.is_empty() {
         println!("No MCP servers configured.");
-        println!("\nTo add MCP servers, edit your config file at:");
-        println!("  ~/.config/henri/config.toml");
-        println!("\nExample configuration:");
-        println!("  [mcp]");
-        println!("  [[mcp.servers]]");
-        println!("  name = \"my-server\"");
-        println!("  command = \"npx\"");
-        println!("  args = [\"-y\", \"@anthropic/mcp-server\"]");
+        println!("\nTo add MCP servers, run:");
+        println!("  henri mcp add <name> <command...>");
+        println!("\nExample:");
+        println!("  henri mcp add my-server npx -y @anthropic/mcp-server");
         return;
     }
 
-    // Build choices with status indicators
-    let choices: Vec<String> = statuses
+    // Build choices - just server names
+    let choices: Vec<&str> = statuses.iter().map(|s| s.name.as_str()).collect();
+
+    // Pre-select currently running servers
+    let defaults: Vec<usize> = statuses
         .iter()
-        .map(|s| {
-            let icon = if s.is_running { "●" } else { "○" };
-            let status = if s.is_running {
-                format!("running ({} tools)", s.tool_count)
-            } else {
-                "stopped".to_string()
-            };
-            format!("{} {} - {}", icon, s.name, status)
-        })
+        .enumerate()
+        .filter(|(_, s)| s.is_running)
+        .map(|(i, _)| i)
         .collect();
 
-    let selection = match Select::new("MCP Servers (Space/Enter to toggle):", choices.clone())
+    let selected = match MultiSelect::new("MCP Servers:", choices.clone())
+        .with_default(&defaults)
         .with_page_size(output::menu_page_size())
         .prompt()
     {
-        Ok(choice) => choice,
+        Ok(sel) => sel,
         Err(_) => {
-            println!("Selection cancelled.");
+            println!("Cancelled.");
             return;
         }
     };
 
-    // Find which server was selected
-    let idx = choices.iter().position(|c| c == &selection).unwrap_or(0);
-    let server = &statuses[idx];
-    let name = &server.name;
-    let was_running = server.is_running;
+    // Determine which servers to start/stop
+    let selected_names: std::collections::HashSet<&str> = selected.into_iter().collect();
 
-    // Toggle the server
-    let result = if was_running {
-        crate::mcp::stop_server(name).await
-    } else {
-        crate::mcp::start_server(name).await
-    };
+    for status in &statuses {
+        let is_selected = selected_names.contains(status.name.as_str());
+        let name = &status.name;
 
-    match result {
-        Ok(()) => {
-            let action = if was_running { "stopped" } else { "started" };
-            println!("MCP server '{}' {}", name, action);
-        }
-        Err(e) => {
-            println!("Failed to toggle MCP server: {}", e);
+        if is_selected && !status.is_running {
+            // Start server
+            match crate::mcp::start_server(name).await {
+                Ok(()) => println!("Started '{}'", name),
+                Err(e) => println!("Failed to start '{}': {}", name, e),
+            }
+        } else if !is_selected && status.is_running {
+            // Stop server
+            match crate::mcp::stop_server(name).await {
+                Ok(()) => println!("Stopped '{}'", name),
+                Err(e) => println!("Failed to stop '{}': {}", name, e),
+            }
         }
     }
 }

@@ -1058,10 +1058,12 @@ impl PromptUi {
             self.buffer = format!("/{}", cmd.name);
             self.cursor = self.buffer.len();
             self.menu_index = 0;
-            // Auto-execute /model and /settings commands
+            // Auto-execute /model, /settings, and /mcp commands
             matches!(
                 cmd.command,
-                crate::commands::Command::Model | crate::commands::Command::Settings
+                crate::commands::Command::Model
+                    | crate::commands::Command::Settings
+                    | crate::commands::Command::Mcp
             )
         } else {
             false

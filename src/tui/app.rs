@@ -60,6 +60,13 @@ pub(crate) struct CompactionState {
     pub(crate) original_messages: Vec<ProviderMessage>,
 }
 
+/// Result of an MCP server toggle operation
+pub(crate) struct McpToggleResult {
+    pub(crate) server_name: String,
+    pub(crate) was_running: bool,
+    pub(crate) result: Result<(), String>,
+}
+
 /// Configuration options for the TUI application
 pub(crate) struct AppConfig {
     pub(crate) show_network_stats: bool,
@@ -98,6 +105,7 @@ pub(crate) struct App {
     pub(crate) model_menu: Option<ModelMenuState>,
     pub(crate) settings_menu: Option<SettingsMenuState>,
     pub(crate) mcp_menu: Option<McpMenuState>,
+    pub(crate) mcp_toggle_rx: Option<tokio::sync::oneshot::Receiver<McpToggleResult>>,
     // History search
     pub(crate) history_search: Option<HistorySearchState>,
     // Chat state
@@ -157,6 +165,8 @@ pub(crate) struct App {
     pub(crate) lsp_enabled: bool,
     // Number of connected LSP servers
     pub(crate) lsp_server_count: usize,
+    // Number of running MCP servers
+    pub(crate) mcp_server_count: usize,
     // Todo tools enabled
     pub(crate) todo_enabled: bool,
     // Default model setting (last-used or specific model)
@@ -287,6 +297,7 @@ impl App {
             model_menu: None,
             settings_menu: None,
             mcp_menu: None,
+            mcp_toggle_rx: None,
             history_search: None,
             provider_manager,
             chat_messages,
@@ -328,6 +339,7 @@ impl App {
             show_diffs: config.show_diffs,
             lsp_enabled: config.lsp_enabled,
             lsp_server_count: 0,
+            mcp_server_count: 0,
             todo_enabled: config.todo_enabled,
             default_model,
         }
@@ -888,8 +900,6 @@ impl App {
     }
 
     pub(crate) fn open_mcp_menu(&mut self) {
-        // Get current MCP server statuses asynchronously
-        // For now, spawn a task to fetch and update
         let statuses = futures::executor::block_on(crate::mcp::manager().server_statuses());
         self.mcp_menu = Some(McpMenuState::new(statuses));
     }
@@ -914,33 +924,60 @@ impl App {
     }
 
     pub(crate) fn toggle_selected_mcp_server(&mut self) {
+        // Don't start a new toggle if one is already in progress
+        if self.mcp_toggle_rx.is_some() {
+            return;
+        }
+
         let Some(menu) = &mut self.mcp_menu else {
             return;
         };
-        let Some(server) = menu.servers.get(menu.selected_index) else {
+        let Some(server) = menu.servers.get_mut(menu.selected_index) else {
             return;
         };
 
         let name = server.name.clone();
         let was_running = server.is_running;
+
+        // Optimistically update the UI state immediately
+        server.is_running = !was_running;
         menu.is_loading = true;
 
-        // Perform the toggle operation
-        let result = if was_running {
-            futures::executor::block_on(crate::mcp::stop_server(&name))
-        } else {
-            futures::executor::block_on(crate::mcp::start_server(&name))
-        };
+        // Spawn the toggle operation as an async task
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.mcp_toggle_rx = Some(rx);
 
-        // Refresh menu state
+        tokio::spawn(async move {
+            let result = if was_running {
+                crate::mcp::stop_server(&name).await
+            } else {
+                crate::mcp::start_server(&name).await
+            };
+            let _ = tx.send(McpToggleResult {
+                server_name: name,
+                was_running,
+                result: result.map_err(|e| e.to_string()),
+            });
+        });
+    }
+
+    /// Handle the result of an MCP toggle operation
+    pub(crate) fn handle_mcp_toggle_result(&mut self, result: McpToggleResult) {
+        // Refresh menu state with actual server status
         self.refresh_mcp_menu();
 
         // Show result message
-        match result {
+        match result.result {
             Ok(()) => {
-                let action = if was_running { "stopped" } else { "started" };
-                self.messages
-                    .push(Message::Text(format!("MCP server '{}' {}", name, action)));
+                let action = if result.was_running {
+                    "stopped"
+                } else {
+                    "started"
+                };
+                self.messages.push(Message::Text(format!(
+                    "MCP server '{}' {}",
+                    result.server_name, action
+                )));
             }
             Err(e) => {
                 self.messages.push(Message::Error(format!(
@@ -963,16 +1000,18 @@ impl App {
             return false;
         };
 
-        // Don't allow interaction while loading
+        // Always allow Escape to close the menu, even while loading
+        if code == KeyCode::Esc {
+            self.close_mcp_menu();
+            return true;
+        }
+
+        // Don't allow other interactions while loading
         if menu.is_loading {
-            return code == KeyCode::Esc;
+            return true; // Consume the key but do nothing
         }
 
         match code {
-            KeyCode::Esc => {
-                self.close_mcp_menu();
-                true
-            }
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if !menu.servers.is_empty() {
                     self.toggle_selected_mcp_server();
@@ -999,6 +1038,8 @@ impl App {
                 }
                 true
             }
+            // Consume all other keys to prevent them from reaching the input
+            KeyCode::Char(_) | KeyCode::Backspace => true,
             _ => false,
         }
     }
@@ -1859,6 +1900,13 @@ impl App {
 
         if matches!(selected.command, Command::Settings) {
             self.open_settings_menu();
+            self.input.clear();
+            self.cursor = 0;
+            return true;
+        }
+
+        if matches!(selected.command, Command::Mcp) {
+            self.open_mcp_menu();
             self.input.clear();
             self.cursor = 0;
             return true;

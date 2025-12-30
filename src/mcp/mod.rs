@@ -80,6 +80,11 @@ impl McpManager {
             .collect()
     }
 
+    /// Get the count of running MCP servers
+    pub(crate) async fn running_server_count(&self) -> usize {
+        self.clients.read().await.len()
+    }
+
     /// Start an MCP server by name (must be registered first)
     pub(crate) async fn start_server_by_name(&self, name: &str) -> Result<()> {
         let configured = self.configured_servers.read().await;
@@ -286,4 +291,9 @@ pub(crate) async fn start_server(name: &str) -> Result<()> {
 /// Stop a specific MCP server by name
 pub(crate) async fn stop_server(name: &str) -> Result<()> {
     manager().stop_server(name).await
+}
+
+/// Get the count of running MCP servers
+pub(crate) async fn running_server_count() -> usize {
+    manager().running_server_count().await
 }

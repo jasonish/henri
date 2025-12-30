@@ -580,7 +580,7 @@ pub(crate) fn render_mcp_menu(
         for (i, server) in menu.servers.iter().enumerate() {
             let is_selected = i == menu.selected_index;
             let prefix = if is_selected { ">" } else { " " };
-            let status_icon = if server.is_running { "●" } else { "○" };
+            let checkbox = if server.is_running { "[x]" } else { "[ ]" };
             let status_color = if server.is_running {
                 Color::Green
             } else {
@@ -614,7 +614,7 @@ pub(crate) fn render_mcp_menu(
 
             lines.push(Line::from(vec![
                 Span::styled(format!("{} ", prefix), style),
-                Span::styled(format!("{} ", status_icon), status_style),
+                Span::styled(format!("{} ", checkbox), status_style),
                 Span::styled(&server.name, style),
                 Span::styled(tool_info, muted_style),
             ]));

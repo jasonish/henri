@@ -4,6 +4,9 @@
 
 ### Added
 
+- `henri mcp add <name> <command...>` and `henri mcp remove [name]` CLI
+  commands to manage MCP server configuration
+- Status line shows `[MCP: X]` indicator when MCP servers are running
 - `/mcp` command to manage MCP server connections - servers can be
   started/stopped on demand via interactive menu in both TUI and CLI
 - `/help` command now works in both CLI and TUI modes with colored output
@@ -17,6 +20,10 @@
 
 ### Changed
 
+- `/mcp` now auto-triggers on tab completion (like `/model` and `/settings`)
+- CLI `/mcp` menu now uses MultiSelect for toggling multiple servers at once
+- TUI MCP menu uses markdown-style checkboxes `[x]`/`[ ]`
+- TUI MCP toggle is now non-blocking with optimistic UI updates
 - MCP servers are now disabled by default on startup - use `/mcp` to
   enable them as needed
 - Simplified startup message to "Type /help for help."

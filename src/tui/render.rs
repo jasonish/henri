@@ -541,6 +541,7 @@ pub(crate) fn render_status_line(
     thinking_mode: Option<String>,
     show_network_stats: bool,
     lsp_server_count: usize,
+    mcp_server_count: usize,
 ) {
     // If there's an exit prompt, show that instead of the normal status
     if let Some(prompt) = exit_prompt {
@@ -614,6 +615,16 @@ pub(crate) fn render_status_line(
         status_spans.push(Span::styled(" [", Style::default().fg(Color::DarkGray)));
         status_spans.push(Span::styled(
             format!("LSP: {}", lsp_server_count),
+            Style::default().fg(Color::Green),
+        ));
+        status_spans.push(Span::styled("]", Style::default().fg(Color::DarkGray)));
+    }
+
+    // Add MCP status if servers are running
+    if mcp_server_count > 0 {
+        status_spans.push(Span::styled(" [", Style::default().fg(Color::DarkGray)));
+        status_spans.push(Span::styled(
+            format!("MCP: {}", mcp_server_count),
             Style::default().fg(Color::Green),
         ));
         status_spans.push(Span::styled("]", Style::default().fg(Color::DarkGray)));

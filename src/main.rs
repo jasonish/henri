@@ -142,6 +142,11 @@ enum Command {
         #[command(subcommand)]
         command: ProviderCommand,
     },
+    /// Manage MCP servers
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
     /// Test built-in tools directly (for debugging/learning)
     ToolCall {
         #[command(subcommand)]
@@ -157,6 +162,23 @@ enum ProviderCommand {
     Add,
     /// Remove a configured provider
     Remove,
+}
+
+#[derive(Subcommand, Debug)]
+enum McpCommand {
+    /// Add an MCP server
+    Add {
+        /// Name for the MCP server
+        name: String,
+        /// Command and arguments to run the MCP server
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
+    /// Remove an MCP server
+    Remove {
+        /// Name of the MCP server to remove (interactive selection if not provided)
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -193,6 +215,14 @@ async fn main() -> std::io::Result<()> {
                 }
                 ProviderCommand::Remove => {
                     return handle_provider_remove_command().await;
+                }
+            },
+            Command::Mcp { command } => match command {
+                McpCommand::Add { name, command } => {
+                    return handle_mcp_add_command(name.clone(), command.clone());
+                }
+                McpCommand::Remove { name } => {
+                    return handle_mcp_remove_command(name.clone());
                 }
             },
             Command::ToolCall { tool } => match tool {
@@ -541,5 +571,114 @@ async fn handle_upgrade_command() -> std::io::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn handle_mcp_add_command(name: String, command: Vec<String>) -> std::io::Result<()> {
+    if command.is_empty() {
+        eprintln!("Error: command is required");
+        std::process::exit(1);
+    }
+
+    // Load config
+    let mut config = match config::ConfigFile::load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Check if server with this name already exists
+    let mcp_config = config.mcp.get_or_insert_with(Default::default);
+    if mcp_config.servers.iter().any(|s| s.name == name) {
+        eprintln!("Error: MCP server '{}' already exists", name);
+        std::process::exit(1);
+    }
+
+    // Split command into command and args
+    let (cmd, args) = command.split_first().unwrap();
+
+    // Add the new server
+    mcp_config.servers.push(config::McpServerConfig {
+        name: name.clone(),
+        command: cmd.clone(),
+        args: args.to_vec(),
+        env: std::collections::HashMap::new(),
+        enabled: true,
+    });
+
+    // Save configuration
+    if let Err(e) = config.save() {
+        eprintln!("Failed to save configuration: {}", e);
+        std::process::exit(1);
+    }
+
+    println!("✓ MCP server '{}' added successfully.", name);
+    Ok(())
+}
+
+fn handle_mcp_remove_command(name: Option<String>) -> std::io::Result<()> {
+    use inquire::Select;
+
+    // Load config
+    let mut config = match config::ConfigFile::load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Failed to load configuration: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let mcp_config = match &mut config.mcp {
+        Some(cfg) if !cfg.servers.is_empty() => cfg,
+        _ => {
+            println!("No MCP servers configured.");
+            return Ok(());
+        }
+    };
+
+    // Determine which server to remove
+    let server_name = match name {
+        Some(n) => {
+            // Verify the server exists
+            if !mcp_config.servers.iter().any(|s| s.name == n) {
+                eprintln!("Error: MCP server '{}' not found", n);
+                std::process::exit(1);
+            }
+            n
+        }
+        None => {
+            // Interactive selection
+            let server_names: Vec<String> =
+                mcp_config.servers.iter().map(|s| s.name.clone()).collect();
+
+            match Select::new("Select an MCP server to remove:", server_names)
+                .with_page_size(output::menu_page_size())
+                .prompt()
+            {
+                Ok(selected) => selected,
+                Err(inquire::InquireError::OperationCanceled) => {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+                Err(e) => {
+                    eprintln!("Selection failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    };
+
+    // Remove the server
+    mcp_config.servers.retain(|s| s.name != server_name);
+
+    // Save configuration
+    if let Err(e) = config.save() {
+        eprintln!("Failed to save configuration: {}", e);
+        std::process::exit(1);
+    }
+
+    println!("✓ MCP server '{}' removed successfully.", server_name);
     Ok(())
 }

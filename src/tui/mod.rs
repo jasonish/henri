@@ -381,6 +381,13 @@ async fn run_app(
                     tick_updated = true;
                 }
 
+                // Update MCP server count
+                let mcp_count = crate::mcp::running_server_count().await;
+                if app.mcp_server_count != mcp_count {
+                    app.mcp_server_count = mcp_count;
+                    tick_updated = true;
+                }
+
                 // Check if chat task completed and restore state
                 if let Some(ref mut result_rx) = app.chat_result_rx {
                     match result_rx.try_recv() {
@@ -422,6 +429,26 @@ async fn run_app(
                         }
                         Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
                             // Result not ready yet, keep waiting
+                        }
+                    }
+                }
+
+                // Check if MCP toggle completed
+                if let Some(ref mut result_rx) = app.mcp_toggle_rx {
+                    match result_rx.try_recv() {
+                        Ok(result) => {
+                            app.mcp_toggle_rx = None;
+                            app.handle_mcp_toggle_result(result);
+                            tick_updated = true;
+                        }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                            // Task failed
+                            app.mcp_toggle_rx = None;
+                            app.refresh_mcp_menu();
+                            tick_updated = true;
+                        }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                            // Result not ready yet
                         }
                     }
                 }

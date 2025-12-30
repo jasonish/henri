@@ -354,6 +354,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         app.thinking_mode.clone(),
         app.show_network_stats,
         app.lsp_server_count,
+        app.mcp_server_count,
     );
 
     // Render model menu as overlay if active
