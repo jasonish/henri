@@ -29,6 +29,8 @@
 
 ### Fixed
 
+- TUI now displays tool error messages instead of just showing the
+  failure indicator (✗) with no explanation
 - Session restore now uses the saved model when no model is specified
   on the command line (both TUI and CLI modes)
 - The `-c` flag now works correctly with subcommands: both `henri -c cli`

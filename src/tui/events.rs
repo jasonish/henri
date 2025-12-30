@@ -135,7 +135,7 @@ impl App {
                 }
                 OutputEvent::ToolResult {
                     is_error,
-                    error_preview: _,
+                    error_preview,
                 } => {
                     // Find the last tool calls message and update it
                     // Skip if the last tool call was a todo tool (they don't create call messages)
@@ -146,6 +146,10 @@ impl App {
                         if !last_tool.contains("todo_") {
                             if is_error {
                                 *last_tool = last_tool.replace("▶", "✗");
+                                // Add error preview as a new line
+                                if let Some(preview) = error_preview {
+                                    msg.calls.push(format!("  ✗ Error: {}", preview));
+                                }
                             } else {
                                 *last_tool = last_tool.replace("▶", "✓");
                             }
