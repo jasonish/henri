@@ -149,6 +149,12 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         availability: Availability::Always,
     },
     SlashCommand {
+        command: Command::Clear,
+        name: "new",
+        description: "Start a new conversation (alias for /clear)",
+        availability: Availability::Always,
+    },
+    SlashCommand {
         command: Command::Compact,
         name: "compact",
         description: "Summarize older messages to reduce context",
@@ -170,7 +176,7 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         command: Command::Help,
         name: "help",
         description: "Show available commands",
-        availability: Availability::CliOnly,
+        availability: Availability::Always,
     },
     SlashCommand {
         command: Command::Cli,

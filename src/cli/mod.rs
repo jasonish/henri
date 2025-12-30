@@ -11,6 +11,7 @@ pub(crate) use input::{PastedImage, PromptInfo, PromptOutcome, PromptUi};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use colored::Colorize;
 use inquire::Select;
 
 use crate::commands::{self, Command, ExitStatus, ModeTransferSession};
@@ -88,7 +89,9 @@ fn handle_command(
             CommandResult::Continue
         }
         Command::Help => {
-            output.emit(output::OutputEvent::Info("Available commands:".into()));
+            output.emit(output::OutputEvent::Info(
+                "Available commands:".cyan().bold().to_string(),
+            ));
             for slash_cmd in commands::COMMANDS {
                 match slash_cmd.availability {
                     commands::Availability::TuiOnly => continue,
@@ -99,24 +102,57 @@ fn handle_command(
                     }
                     _ => {}
                 }
+                let cmd_name = format!("/{:<32}", slash_cmd.name);
                 output.emit(output::OutputEvent::Info(format!(
-                    "  /{:<32} - {}",
-                    slash_cmd.name, slash_cmd.description
+                    "  {} - {}",
+                    cmd_name.green(),
+                    slash_cmd.description
                 )));
             }
             if !custom_commands.is_empty() {
-                output.emit(output::OutputEvent::Info("\nCustom commands:".into()));
+                output.emit(output::OutputEvent::Info(
+                    "\nCustom commands:".cyan().bold().to_string(),
+                ));
                 for custom_cmd in custom_commands {
+                    let cmd_name = format!("/{:<32}", custom_cmd.name);
                     output.emit(output::OutputEvent::Info(format!(
-                        "  /{:<32} - {}",
-                        custom_cmd.name, custom_cmd.description
+                        "  {} - {}",
+                        cmd_name.green(),
+                        custom_cmd.description
                     )));
                 }
             }
-            output.emit(output::OutputEvent::Info("\nCLI commands:".into()));
             output.emit(output::OutputEvent::Info(
-                "  !<cmd>  - Run a shell command (e.g., !ls -la)".into(),
+                "\nShell commands:".cyan().bold().to_string(),
             ));
+            let shell_cmd = format!("{:<33}", "!<cmd>");
+            output.emit(output::OutputEvent::Info(format!(
+                "  {} - Run a shell command (e.g., !ls -la)",
+                shell_cmd.green()
+            )));
+            output.emit(output::OutputEvent::Info(
+                "\nKeyboard shortcuts:".cyan().bold().to_string(),
+            ));
+            let shortcut = format!("{:<33}", "Ctrl+M");
+            output.emit(output::OutputEvent::Info(format!(
+                "  {} - Switch model",
+                shortcut.yellow()
+            )));
+            let shortcut = format!("{:<33}", "Ctrl+T");
+            output.emit(output::OutputEvent::Info(format!(
+                "  {} - Toggle thinking",
+                shortcut.yellow()
+            )));
+            let shortcut = format!("{:<33}", "Shift+Tab");
+            output.emit(output::OutputEvent::Info(format!(
+                "  {} - Cycle favorite models",
+                shortcut.yellow()
+            )));
+            let shortcut = format!("{:<33}", "Ctrl+R");
+            output.emit(output::OutputEvent::Info(format!(
+                "  {} - Search history",
+                shortcut.yellow()
+            )));
             output.emit(output::OutputEvent::Info(
                 "\nType any other text to chat with the AI.".into(),
             ));
@@ -746,9 +782,10 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
         output.emit(output::OutputEvent::Info(
             "Welcome to Henri, your Golden Retriever coding assistant! 🐕\n".into(),
         ));
+        output.emit(output::OutputEvent::Info("Type /help for help.\n".into()));
     } else {
         output.emit(output::OutputEvent::Info(
-            "Welcome to Henri! 🐕\n\nYou are currently using the free 'zen/grok-code' model. It's great for getting started!\nFor more powerful models (Claude, GPT-4), try connecting your accounts:\n\n  henri provider add      # Authenticate with GitHub Copilot, etc.\n\nType /help for more commands.\n".into(),
+            "Welcome to Henri! 🐕\n\nYou are currently using the free 'zen/grok-code' model. It's great for getting started!\nFor more powerful models (Claude, GPT-4), try connecting your accounts:\n\n  henri provider add      # Authenticate with GitHub Copilot, etc.\n\nType /help for help.\n".into(),
         ));
     }
 

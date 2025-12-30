@@ -209,9 +209,10 @@ impl App {
             messages.push(Message::Text(
                 "Welcome to Henri, your Golden Retriever coding assistant! 🐕".into(),
             ));
+            messages.push(Message::Text("Type /help for help.".into()));
         } else {
             messages.push(Message::Text(
-                "Welcome to Henri! 🐕\n\nYou are currently using the free 'zen/grok-code' model. It's great for getting started!\nFor more powerful models (Claude, GPT-4), try connecting your accounts:\n\n  henri provider add      # Authenticate with GitHub Copilot, etc.\n\nType /help for more commands.".into(),
+                "Welcome to Henri! 🐕\n\nYou are currently using the free 'zen/grok-code' model. It's great for getting started!\nFor more powerful models (Claude, GPT-4), try connecting your accounts:\n\n  henri provider add      # Authenticate with GitHub Copilot, etc.\n\nType /help for help.".into(),
             ));
         }
 
@@ -893,14 +894,24 @@ impl App {
         }
 
         // Handle slash commands
-        if let Some(cmd_str) = trimmed.strip_prefix('/')
-            && let Some(cmd) = crate::commands::parse(cmd_str, &self.custom_commands)
-        {
-            // Save custom commands to history (but not built-in commands)
-            if matches!(cmd, Command::Custom { .. }) {
-                self.add_to_history(trimmed.clone());
+        if let Some(cmd_str) = trimmed.strip_prefix('/') {
+            if let Some(cmd) = crate::commands::parse(cmd_str, &self.custom_commands) {
+                // Save custom commands to history (but not built-in commands)
+                if matches!(cmd, Command::Custom { .. }) {
+                    self.add_to_history(trimmed.clone());
+                }
+                self.handle_slash_command(cmd);
+            } else {
+                // Unknown command - show error
+                self.messages.push(Message::Error(format!(
+                    "Unknown command: /{}. Type /help for available commands.",
+                    cmd_str.split_whitespace().next().unwrap_or(cmd_str)
+                )));
+                self.layout_cache.invalidate();
+                self.input.clear();
+                self.cursor = 0;
+                self.reset_scroll();
             }
-            self.handle_slash_command(cmd);
             return;
         }
 
@@ -1133,10 +1144,51 @@ impl App {
                 self.cursor = 0;
             }
             // CLI-only commands - should not be reachable in TUI mode
-            Command::Help | Command::Status => {
+            Command::Status => {
                 self.messages.push(Message::Error(
                     "This command is only available in CLI mode.".into(),
                 ));
+                self.layout_cache.invalidate();
+                self.input.clear();
+                self.cursor = 0;
+                self.reset_scroll();
+            }
+            Command::Help => {
+                // Build help text from available commands
+                let mut help_lines = vec!["**Available commands:**".to_string()];
+                for cmd in crate::commands::COMMANDS {
+                    // Skip CLI-only commands
+                    if matches!(cmd.availability, crate::commands::Availability::CliOnly) {
+                        continue;
+                    }
+                    help_lines.push(format!("  `/{}`  {}", cmd.name, cmd.description));
+                }
+
+                // Add custom commands if any
+                if !self.custom_commands.is_empty() {
+                    help_lines.push(String::new());
+                    help_lines.push("**Custom commands:**".to_string());
+                    for custom in &self.custom_commands {
+                        help_lines.push(format!("  `/{}`  {}", custom.name, custom.description));
+                    }
+                }
+
+                // Add shell commands
+                help_lines.push(String::new());
+                help_lines.push("**Shell commands:**".to_string());
+                help_lines.push("  `!<cmd>`  Run a shell command (e.g., !ls -la)".to_string());
+
+                // Add keyboard shortcuts
+                help_lines.push(String::new());
+                help_lines.push("**Keyboard shortcuts:**".to_string());
+                help_lines.push("  `Ctrl+M`  Switch model".to_string());
+                help_lines.push("  `Ctrl+T`  Toggle thinking".to_string());
+                help_lines.push("  `Shift+Tab`  Cycle favorite models".to_string());
+                help_lines.push("  `Ctrl+R`  Search history".to_string());
+                help_lines.push("  `Ctrl+G`  Edit in external editor".to_string());
+                help_lines.push("  `Shift+Enter` or `Alt+Enter`  Insert newline".to_string());
+
+                self.messages.push(Message::Text(help_lines.join("\n")));
                 self.layout_cache.invalidate();
                 self.input.clear();
                 self.cursor = 0;

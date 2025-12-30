@@ -524,7 +524,7 @@ fn render_message(
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,
             };
-            render_text_with_selection(&mut ctx, &content, None, None);
+            super::render::render_markdown_with_selection(&mut ctx, &content, None, None);
         }
         Message::Error(err) => {
             let content = format_error_message(err);

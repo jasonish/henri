@@ -4,12 +4,19 @@
 
 ### Added
 
+- `/help` command now works in both CLI and TUI modes with colored output
+  showing available commands, shell commands, and keyboard shortcuts
+- `/new` command as alias for `/clear` to start a new conversation
+- Unknown slash commands in TUI now show an error message instead of being
+  sent to the model
 - Prompt caching for Anthropic provider: system prompt and tool
   definitions are now cached to reduce token usage and latency
 - CLI: Syntax highlighting for code blocks and diffs in streaming output
 
 ### Changed
 
+- Simplified startup message to "Type /help for help."
+- `Message::Text` in TUI now renders as markdown, enabling formatted help output
 - CLI: Custom commands from slash menu now fill in with a trailing space
   on Enter, allowing arguments to be typed (matching TUI behavior)
 - Diff display now uses subtle background colors (dark green/red) for
