@@ -26,6 +26,7 @@
 
 - Refactored syntax highlighting into shared `syntax` module used by both
   TUI and CLI
+- Removed tree-sitter syntax highlighting, now using syntect only
 
 ### Fixed
 
