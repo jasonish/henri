@@ -4,6 +4,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, TimeZone, Utc};
+use colored::Colorize;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -58,25 +59,18 @@ impl RateLimits {
         let filled = ((util * width as f64).round() as usize).min(width);
         let empty = width - filled;
 
-        let color = if util < 0.5 {
-            "\x1b[32m" // Green
+        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+        if util < 0.5 {
+            bar.green().to_string()
         } else if util < 0.8 {
-            "\x1b[33m" // Yellow
+            bar.yellow().to_string()
         } else {
-            "\x1b[31m" // Red
-        };
-
-        format!(
-            "{}{}{}{}",
-            color,
-            "█".repeat(filled),
-            "░".repeat(empty),
-            "\x1b[0m"
-        )
+            bar.red().to_string()
+        }
     }
 
     pub(crate) fn display(&self) {
-        println!("\n\x1b[1mAnthropic Rate Limits\x1b[0m");
+        println!("\n{}", "Anthropic Rate Limits".bold());
         println!();
 
         if let (Some(util), Some(reset)) = (self.unified_5h_utilization, self.unified_5h_reset) {
@@ -332,7 +326,7 @@ impl Usage {
 
         // Print in dim style with blank line before
         println!();
-        println!("\x1b[2m[{}]\x1b[0m", summary);
+        println!("{}", format!("[{}]", summary).dimmed());
     }
 }
 

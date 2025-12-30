@@ -445,7 +445,7 @@ impl OutputListener for CliListener {
             OutputEvent::ToolCall { description, .. } => {
                 self.stop_spinner();
 
-                print!("\x1b[2m▶ {}\x1b[0m", description);
+                print!("{}", format!("▶ {}", description).dimmed());
                 io::stdout().flush().ok();
             }
 
@@ -458,11 +458,7 @@ impl OutputListener for CliListener {
                     return;
                 }
 
-                let (indicator, color) = if *is_error {
-                    ("✗", "31")
-                } else {
-                    ("✓", "32")
-                };
+                let indicator = if *is_error { "✗" } else { "✓" };
 
                 // Only show error details if there's actually a non-empty preview
                 if *is_error
@@ -470,11 +466,17 @@ impl OutputListener for CliListener {
                     && !preview.trim().is_empty()
                 {
                     println!(
-                        "\n\x1b[2m\x1b[{}m{}\x1b[0m\x1b[2m Error: {}\x1b[0m",
-                        color, indicator, preview
+                        "\n{} {}",
+                        indicator.red().dimmed(),
+                        format!("Error: {}", preview).dimmed()
                     );
                 } else {
-                    println!(" \x1b[2m\x1b[{}m{}\x1b[0m", color, indicator);
+                    let colored_indicator = if *is_error {
+                        indicator.red().dimmed()
+                    } else {
+                        indicator.green().dimmed()
+                    };
+                    println!(" {}", colored_indicator);
                 }
             }
 
@@ -525,20 +527,16 @@ impl OutputListener for CliListener {
             OutputEvent::TodoList { todos } => {
                 self.stop_spinner();
                 if todos.is_empty() {
-                    println!("\x1b[90mTodo list cleared.\x1b[0m");
+                    println!("{}", "Todo list cleared.".bright_black());
                 } else {
-                    println!("\x1b[1;36mTodo List:\x1b[0m");
+                    println!("{}", "Todo List:".bold().cyan());
                     for item in todos {
-                        let (indicator, color) = match item.status {
-                            TodoStatus::Pending => ("[ ]", "\x1b[90m"), // dark gray
-                            TodoStatus::InProgress => ("[-]", "\x1b[33m"), // yellow
-                            TodoStatus::Completed => ("[✓]", "\x1b[90m"), // dark gray
+                        let (indicator, text) = match item.status {
+                            TodoStatus::Pending => ("[ ]", item.content.bright_black()),
+                            TodoStatus::InProgress => ("[-]", item.active_form.yellow()),
+                            TodoStatus::Completed => ("[✓]", item.content.bright_black()),
                         };
-                        let text = match item.status {
-                            TodoStatus::InProgress => &item.active_form,
-                            _ => &item.content,
-                        };
-                        println!("{}  {} {}\x1b[0m", color, indicator, text);
+                        println!("  {} {}", indicator, text);
                     }
                 }
             }
@@ -552,7 +550,7 @@ impl OutputListener for CliListener {
             } => {
                 self.stop_spinner();
                 // Print checkmark on same line as tool call, then diff on new line
-                println!(" \x1b[2m\x1b[32m✓\x1b[0m");
+                println!(" {}", "✓".green().dimmed());
                 self.diff_shown.store(true, Ordering::SeqCst);
                 render_diff_with_syntax(diff, language.as_deref());
             }
@@ -569,15 +567,19 @@ impl OutputListener for CliListener {
             } => {
                 let pct = (*current_usage as f64 / *limit as f64) * 100.0;
                 println!(
-                    "\n\x1b[33mContext at {:.0}% ({}/{}) - auto-compacting...\x1b[0m",
-                    pct, current_usage, limit
+                    "\n{}",
+                    format!(
+                        "Context at {:.0}% ({}/{}) - auto-compacting...",
+                        pct, current_usage, limit
+                    )
+                    .yellow()
                 );
             }
 
             OutputEvent::AutoCompactCompleted { messages_compacted } => {
                 println!(
-                    "\x1b[32mCompacted {} messages into summary.\x1b[0m",
-                    messages_compacted
+                    "{}",
+                    format!("Compacted {} messages into summary.", messages_compacted).green()
                 );
             }
         }

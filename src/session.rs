@@ -8,6 +8,7 @@
 
 use base64::Engine;
 use chrono::{DateTime, Utc};
+use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -631,22 +632,28 @@ pub(crate) fn format_age(saved_at: &DateTime<Utc>) -> String {
 /// Replay session messages for display purposes.
 /// Shows a rich view matching the live session appearance.
 pub(crate) fn replay_session(state: &SessionState) {
-    use colored::Colorize;
-
     // Show session metadata
     println!(
-        "\x1b[2mModel: {} (thinking {})\x1b[0m",
-        state.meta.model_id,
-        if state.meta.thinking_enabled {
-            "enabled"
-        } else {
-            "disabled"
-        }
+        "{}",
+        format!(
+            "Model: {} (thinking {})",
+            state.meta.model_id,
+            if state.meta.thinking_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        )
+        .dimmed()
     );
     println!(
-        "\x1b[2mSaved: {} · Messages: {}\x1b[0m\n",
-        format_age(&state.meta.saved_at),
-        state.messages.len()
+        "{}\n",
+        format!(
+            "Saved: {} · Messages: {}",
+            format_age(&state.meta.saved_at),
+            state.messages.len()
+        )
+        .dimmed()
     );
 
     let replay_messages = extract_replay_messages(state);
@@ -654,13 +661,13 @@ pub(crate) fn replay_session(state: &SessionState) {
     for msg in replay_messages {
         match msg.role {
             Role::User => {
-                print!("\x1b[1;32m❯\x1b[0m ");
+                print!("{} ", "❯".bold().green());
                 for segment in msg.segments {
                     match segment {
                         ReplaySegment::UserText { text, has_images } => {
                             println!("{}", text);
                             if has_images {
-                                println!("\x1b[2m  [images attached]\x1b[0m");
+                                println!("{}", "  [images attached]".dimmed());
                             }
                         }
                         ReplaySegment::Summary {
@@ -668,11 +675,11 @@ pub(crate) fn replay_session(state: &SessionState) {
                             messages_compacted,
                         } => {
                             println!(
-                                "\x1b[2m── Compacted {} messages ──\x1b[0m",
-                                messages_compacted
+                                "{}",
+                                format!("── Compacted {} messages ──", messages_compacted).dimmed()
                             );
                             for line in summary.lines() {
-                                println!("\x1b[2;3m  {}\x1b[0m", line);
+                                println!("{}", format!("  {}", line).dimmed().italic());
                             }
                         }
                         _ => {}
@@ -700,30 +707,22 @@ pub(crate) fn replay_session(state: &SessionState) {
                                 ToolStatus::Success => "✓",
                                 ToolStatus::Error => "✗",
                             };
-                            let color = match status {
-                                ToolStatus::Success => "32",
-                                ToolStatus::Error => "31",
-                                ToolStatus::Pending => "2",
+                            let colored_indicator = match status {
+                                ToolStatus::Success => indicator.green().dimmed(),
+                                ToolStatus::Error => indicator.red().dimmed(),
+                                ToolStatus::Pending => indicator.dimmed(),
                             };
-                            println!(
-                                "\x1b[2m\x1b[{}m{}\x1b[0m\x1b[2m {}\x1b[0m",
-                                color, indicator, description
-                            );
+                            println!("{} {}", colored_indicator, description.dimmed());
                         }
                         ReplaySegment::ToolResult {
                             is_error,
                             error_preview,
                         } => {
-                            let (indicator, color) = if is_error {
-                                ("✗", "31")
-                            } else {
-                                ("✓", "32")
-                            };
-
                             if is_error && let Some(preview) = error_preview {
                                 println!(
-                                    "\x1b[2m\x1b[{}m{}\x1b[0m\x1b[2m Error: {}\x1b[0m",
-                                    color, indicator, preview
+                                    "{} {}",
+                                    "✗".red().dimmed(),
+                                    format!("Error: {}", preview).dimmed()
                                 );
                             }
                         }
