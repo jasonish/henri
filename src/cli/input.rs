@@ -664,10 +664,22 @@ impl PromptUi {
         match key.code {
             KeyCode::Enter => {
                 if menu_visible {
-                    // Complete the selected command and submit
-                    let _ = self.complete_command(info);
-                    let submission = self.build_command_submission(history);
-                    return Ok(Some(submission));
+                    // Check if this is a custom command
+                    let filtered = self.filtered_commands(info);
+                    if let Some(cmd) = filtered.get(self.menu_index) {
+                        if matches!(cmd.command, crate::commands::Command::Custom { .. }) {
+                            // For custom commands, fill in with space to allow arguments
+                            self.buffer = format!("/{} ", cmd.name);
+                            self.cursor = self.buffer.len();
+                            self.menu_index = 0;
+                            // Don't submit - let user add arguments
+                        } else {
+                            // For built-in commands, complete and submit
+                            let _ = self.complete_command(info);
+                            let submission = self.build_command_submission(history);
+                            return Ok(Some(submission));
+                        }
+                    }
                 } else if completion_visible {
                     // Apply completion and close menu
                     self.apply_completion();

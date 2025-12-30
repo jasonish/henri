@@ -131,6 +131,7 @@ impl Tool for FileEdit {
                 diff: diff.unified_diff,
                 lines_added: diff.lines_added,
                 lines_removed: diff.lines_removed,
+                language: crate::syntax::language_from_path(&input.file_path),
             });
         }
 

@@ -3,8 +3,6 @@
 
 //! Output event handling for the TUI App.
 
-use std::path::Path;
-
 use crate::output::OutputEvent;
 use crate::tools::TodoStatus;
 
@@ -12,33 +10,6 @@ use super::app::App;
 use super::messages::{
     DiffMessage, Message, TextMessage, ThinkingMessage, TodoListDisplay, ToolCallsMessage,
 };
-
-/// Extract language identifier from file path extension
-fn language_from_path(path: &str) -> Option<String> {
-    let ext = Path::new(path).extension()?.to_str()?;
-    // Map extensions to language identifiers
-    let lang = match ext.to_lowercase().as_str() {
-        "rs" => "rust",
-        "py" => "python",
-        "js" | "mjs" | "cjs" => "javascript",
-        "ts" | "mts" | "cts" => "typescript",
-        "tsx" => "tsx",
-        "jsx" => "javascript",
-        "sh" | "bash" | "zsh" => "bash",
-        "c" | "h" => "c",
-        "cpp" | "cc" | "cxx" | "hpp" | "hxx" => "cpp",
-        "go" => "go",
-        "rb" => "ruby",
-        "java" => "java",
-        "json" => "json",
-        "toml" => "toml",
-        "yml" | "yaml" => "yaml",
-        "html" | "htm" => "html",
-        "css" => "css",
-        _ => return None,
-    };
-    Some(lang.to_string())
-}
 
 impl App {
     /// Ensure there's a streaming tool calls message, creating one if needed
@@ -363,9 +334,9 @@ impl App {
                     diff,
                     lines_added,
                     lines_removed,
+                    language,
                 } => {
                     if self.show_diffs {
-                        let language = language_from_path(&path);
                         self.messages.push(Message::FileDiff(DiffMessage {
                             _path: path,
                             diff,

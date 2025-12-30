@@ -16,8 +16,6 @@ mod render;
 mod selection;
 mod settings;
 mod syntax;
-#[cfg(feature = "tree-sitter")]
-mod syntax_treesitter;
 
 use std::io::{self, Read, Write};
 use std::process::Command;

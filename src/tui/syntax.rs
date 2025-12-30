@@ -1,41 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
-//! Syntax highlighting for code blocks.
+//! Syntax highlighting for TUI code blocks.
 //!
-//! Uses tree-sitter when available (default), falls back to syntect.
+//! This module provides TUI-specific syntax highlighting functionality,
+//! delegating to the shared `crate::syntax` module for actual highlighting.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use ratatui::style::Color;
-use syntect::highlighting::{Theme, ThemeSet};
-use syntect::parsing::SyntaxSet;
 
-#[cfg(feature = "tree-sitter")]
-use super::syntax_treesitter;
-
-/// Global syntax set - loaded once on first use
-static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
-
-/// Global theme - loaded once on first use
-static THEME: OnceLock<Theme> = OnceLock::new();
-
-fn syntax_set() -> &'static SyntaxSet {
-    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
-}
-
-fn theme() -> &'static Theme {
-    THEME.get_or_init(|| {
-        let ts = ThemeSet::load_defaults();
-        ts.themes
-            .get("base16-mocha.dark")
-            .cloned()
-            .unwrap_or_else(|| ts.themes.values().next().cloned().unwrap())
-    })
-}
-
-/// A highlighted span with byte range and color
+/// A highlighted span with byte range and color (TUI-specific with ratatui Color)
 #[derive(Debug, Clone)]
 pub(crate) struct HighlightSpan {
     pub start: usize,
@@ -132,56 +108,17 @@ fn find_closing_fence(text: &str) -> Option<usize> {
     None
 }
 
-/// Highlight code content and return spans with colors.
-/// Uses tree-sitter when available, falls back to syntect.
+/// Highlight code content and return spans with ratatui Colors.
+/// Delegates to the shared syntax module and converts colors.
 fn highlight_code(code: &str, language: Option<&str>) -> Vec<HighlightSpan> {
-    // Try tree-sitter first if available and language is specified
-    #[cfg(feature = "tree-sitter")]
-    if let Some(lang) = language
-        && let Some(spans) = syntax_treesitter::highlight_code(code, lang)
-    {
-        return spans;
-    }
-
-    // Fall back to syntect
-    highlight_code_syntect(code, language)
-}
-
-/// Highlight code using syntect (TextMate grammars)
-fn highlight_code_syntect(code: &str, language: Option<&str>) -> Vec<HighlightSpan> {
-    let ps = syntax_set();
-    let theme = theme();
-
-    // Find syntax definition
-    let syntax = language
-        .and_then(|lang| ps.find_syntax_by_token(lang))
-        .or_else(|| ps.find_syntax_by_extension("txt"))
-        .unwrap_or_else(|| ps.find_syntax_plain_text());
-
-    let mut highlighter = syntect::easy::HighlightLines::new(syntax, theme);
-    let mut spans = Vec::new();
-    let mut byte_offset = 0;
-
-    for line in syntect::util::LinesWithEndings::from(code) {
-        match highlighter.highlight_line(line, ps) {
-            Ok(ranges) => {
-                for (style, text) in ranges {
-                    let fg = style.foreground;
-                    let color = Color::Rgb(fg.r, fg.g, fg.b);
-                    let start = byte_offset;
-                    let end = byte_offset + text.len();
-                    spans.push(HighlightSpan { start, end, color });
-                    byte_offset = end;
-                }
-            }
-            Err(_) => {
-                // Fallback: no highlighting for this line
-                byte_offset += line.len();
-            }
-        }
-    }
-
-    spans
+    crate::syntax::highlight_code(code, language)
+        .into_iter()
+        .map(|span| HighlightSpan {
+            start: span.start,
+            end: span.end,
+            color: Color::Rgb(span.color.r, span.color.g, span.color.b),
+        })
+        .collect()
 }
 
 /// Cache for parsed code blocks to avoid re-parsing on every render
@@ -261,8 +198,7 @@ impl HighlightLookup {
     }
 }
 
-/// Highlight code using the available highlighters (tree-sitter or syntect).
-/// This is a public wrapper for use in diff highlighting.
+/// Highlight code for diff rendering.
 pub(crate) fn highlight_code_for_diff(code: &str, language: &str) -> Vec<HighlightSpan> {
     highlight_code(code, Some(language))
 }
@@ -270,39 +206,6 @@ pub(crate) fn highlight_code_for_diff(code: &str, language: &str) -> Vec<Highlig
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn list_available_themes() {
-        let ts = syntect::highlighting::ThemeSet::load_defaults();
-        println!("\nAvailable syntect themes:");
-        for name in ts.themes.keys() {
-            println!("  - {}", name);
-        }
-    }
-
-    #[test]
-    fn test_supported_languages() {
-        let ps = syntax_set();
-        let langs = [
-            "rust",
-            "python",
-            "javascript",
-            "go",
-            "sql",
-            "bash",
-            "yaml",
-            "json",
-            "c",
-            "cpp",
-            "java",
-            "ruby",
-        ];
-
-        for lang in langs {
-            let syntax = ps.find_syntax_by_token(lang);
-            assert!(syntax.is_some(), "Language '{}' should be supported", lang);
-        }
-    }
 
     #[test]
     fn test_python_highlighting() {
@@ -318,35 +221,6 @@ def hello():
             lookup.color_at(def_start).is_some(),
             "Python 'def' keyword should be highlighted"
         );
-    }
-
-    #[test]
-    fn test_all_language_tokens() {
-        let ps = syntax_set();
-
-        // Test exact tokens we use in samples
-        let test_cases = [
-            ("rust", "Rust"),
-            ("python", "Python"),
-            ("javascript", "JavaScript"),
-            ("go", "Go"),
-            ("sql", "SQL"),
-            ("bash", "Bourne Again Shell (bash)"),
-            ("json", "JSON"),
-            ("c", "C"),
-        ];
-
-        for (token, _expected_name) in test_cases {
-            let syntax = ps.find_syntax_by_token(token);
-            assert!(
-                syntax.is_some(),
-                "Token '{}' should find syntax definition",
-                token
-            );
-            if let Some(s) = syntax {
-                println!("Token '{}' -> Syntax '{}'", token, s.name);
-            }
-        }
     }
 
     #[test]

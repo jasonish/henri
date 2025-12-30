@@ -21,6 +21,7 @@ mod providers;
 mod services;
 mod session;
 mod sse;
+mod syntax;
 mod tools;
 mod tui;
 mod upgrade;

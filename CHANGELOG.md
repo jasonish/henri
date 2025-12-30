@@ -6,9 +6,12 @@
 
 - Prompt caching for Anthropic provider: system prompt and tool
   definitions are now cached to reduce token usage and latency
+- CLI: Syntax highlighting for code blocks and diffs in streaming output
 
 ### Changed
 
+- CLI: Custom commands from slash menu now fill in with a trailing space
+  on Enter, allowing arguments to be typed (matching TUI behavior)
 - Diff display now uses subtle background colors (dark green/red) for
   added/removed lines instead of changing foreground colors, preserving
   syntax highlighting visibility
@@ -18,6 +21,11 @@
 - Claude thinking now supports budget levels (off/low/medium/high) instead
   of simple on/off toggle
 - Claude default model updated to claude-haiku-4-5
+
+### Internal
+
+- Refactored syntax highlighting into shared `syntax` module used by both
+  TUI and CLI
 
 ### Fixed
 

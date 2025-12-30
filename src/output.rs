@@ -49,6 +49,8 @@ pub(crate) enum OutputEvent {
         diff: String,
         lines_added: usize,
         lines_removed: usize,
+        /// Language for syntax highlighting (derived from file extension)
+        language: Option<String>,
     },
     /// Auto-compaction is starting
     AutoCompactStarting { current_usage: u64, limit: u64 },
