@@ -1,4 +1,4 @@
-# Henri
+# Henri 🐕
 
 This is an LLM coding assistant. Mostly an experiment to see if I
 could vibe code a vibe coding tool, and it turns out you can.  Named
