@@ -40,7 +40,7 @@ use tokio::time::interval;
 
 use crate::config::{Config, ConfigFile};
 use crate::providers::ProviderManager;
-use crate::session::{self, RestoredSession};
+use crate::session::RestoredSession;
 
 use crate::commands::{ExitStatus, ModeTransferSession};
 use app::App;
@@ -368,52 +368,21 @@ async fn run_app(
                     tick_updated = true;
                 }
 
-                // Poll for all output events (unified channel)
-                if app.poll_output_events() {
-                    tick_updated = true;
-                }
-
-                // Update LSP server count
-                let lsp_mgr = crate::lsp::manager();
-                let count = lsp_mgr.server_count().await;
-                if app.lsp_server_count != count {
-                    app.lsp_server_count = count;
-                    tick_updated = true;
-                }
-
-                // Update MCP server count
-                let mcp_count = crate::mcp::running_server_count().await;
-                if app.mcp_server_count != mcp_count {
-                    app.mcp_server_count = mcp_count;
-                    tick_updated = true;
-                }
-
                 // Check if chat task completed and restore state
+                // NOTE: This must happen BEFORE poll_output_events so that the assistant
+                // response is in chat_messages when finalize_compaction runs.
                 if let Some(ref mut result_rx) = app.chat_result_rx {
                     match result_rx.try_recv() {
                         Ok((provider_manager, messages)) => {
                             app.provider_manager = Some(provider_manager);
+                            // Always update chat_messages with the task result.
+                            // For compaction, this includes the assistant's summary response.
+                            // finalize_compaction() will then extract the summary and replace
+                            // chat_messages with [summary_block + preserved_messages].
                             app.chat_messages = messages;
                             app.chat_result_rx = None;
                             app.chat_task_spawned = false;
                             tick_updated = true;
-
-                            // Auto-save session after successful chat
-                            if let Some(ref model) = app.current_model {
-                                let _ = session::save_session(
-                                    &app.working_dir,
-                                    &app.chat_messages,
-                                    &model.provider,
-                                    &model.model_id,
-                                    app.thinking_enabled,
-                                );
-                            }
-
-                            // Check for queued prompts
-                            if !app.pending_prompts.is_empty() {
-                                let next = app.pending_prompts.pop_front().unwrap();
-                                app.start_chat(next.input, next.images, next.display_text);
-                            }
                         }
                         Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                             // Task panicked or was dropped - clean up state
@@ -431,6 +400,29 @@ async fn run_app(
                             // Result not ready yet, keep waiting
                         }
                     }
+                }
+
+                // Poll for all output events (unified channel)
+                // For compaction, this processes the Done event and calls finalize_compaction,
+                // which extracts the summary from chat_messages and replaces it with
+                // [summary_block + preserved_messages].
+                if app.poll_output_events() {
+                    tick_updated = true;
+                }
+
+                // Update LSP server count
+                let lsp_mgr = crate::lsp::manager();
+                let count = lsp_mgr.server_count().await;
+                if app.lsp_server_count != count {
+                    app.lsp_server_count = count;
+                    tick_updated = true;
+                }
+
+                // Update MCP server count
+                let mcp_count = crate::mcp::running_server_count().await;
+                if app.mcp_server_count != mcp_count {
+                    app.mcp_server_count = mcp_count;
+                    tick_updated = true;
                 }
 
                 // Check if MCP toggle completed

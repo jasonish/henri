@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
+use std::collections::HashMap;
+
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
 
 /// Result of a compaction operation
@@ -11,6 +13,16 @@ pub(crate) struct CompactionResult {
 /// System prompt for the summarization request
 const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are summarizing a coding conversation to preserve context.
 
+The conversation is provided in XML format with the following structure:
+- <conversation> - root element containing all messages
+- <message role="user|assistant"> - individual messages
+- <text> - text content within messages
+- <thinking> - assistant's reasoning (provider-specific data stripped)
+- <tool_call name="..."> - tool invocations with <input> containing JSON parameters
+- <tool_result name="..." status="success|error"> - tool outputs
+- <image mime_type="..." size_bytes="..."/> - placeholder for images
+- <previous_summary messages_compacted="N"> - summaries from prior compactions
+
 Provide a structured summary including:
 - What was accomplished
 - Current work in progress
@@ -20,6 +32,182 @@ Provide a structured summary including:
 - Next steps if identified
 
 Be detailed enough that work can continue seamlessly. Use markdown formatting."#;
+
+/// Escape special XML characters in text content.
+fn xml_escape(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            '"' => result.push_str("&quot;"),
+            '\'' => result.push_str("&apos;"),
+            _ => result.push(c),
+        }
+    }
+    result
+}
+
+/// Collected tool result information for pairing with tool calls.
+struct ToolResultInfo {
+    content: String,
+    is_error: bool,
+}
+
+/// Extract tool results from a message, indexed by tool_use_id.
+fn extract_tool_results(msg: &Message) -> HashMap<String, ToolResultInfo> {
+    let mut results = HashMap::new();
+    if let MessageContent::Blocks(blocks) = &msg.content {
+        for block in blocks {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } = block
+            {
+                results.insert(
+                    tool_use_id.clone(),
+                    ToolResultInfo {
+                        content: content.clone(),
+                        is_error: *is_error,
+                    },
+                );
+            }
+        }
+    }
+    results
+}
+
+/// Build an XML representation of the conversation history for summarization.
+///
+/// This format:
+/// - Contains full content (no truncation)
+/// - Strips provider-specific data (IDs, signatures, provider_data)
+/// - Pairs tool calls with their results within assistant messages
+/// - Enables cross-model compaction
+fn build_history_xml(messages: &[Message]) -> String {
+    let mut xml = String::from("<conversation>\n");
+
+    let mut i = 0;
+    while i < messages.len() {
+        let msg = &messages[i];
+
+        // Check if the next message is a tool-result-only user message
+        // If so, we'll merge those results into this assistant message
+        let tool_results = if msg.role == Role::Assistant && i + 1 < messages.len() {
+            let next_msg = &messages[i + 1];
+            if next_msg.role == Role::User && is_tool_result_only_message(next_msg) {
+                extract_tool_results(next_msg)
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        };
+
+        // Skip tool-result-only user messages (they're merged into the previous assistant message)
+        if msg.role == Role::User && is_tool_result_only_message(msg) {
+            i += 1;
+            continue;
+        }
+
+        let role_str = match msg.role {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+            Role::System => "system",
+        };
+
+        xml.push_str(&format!("  <message role=\"{}\">\n", role_str));
+
+        match &msg.content {
+            MessageContent::Text(text) => {
+                xml.push_str(&format!("    <text>{}</text>\n", xml_escape(text)));
+            }
+            MessageContent::Blocks(blocks) => {
+                for block in blocks {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            xml.push_str(&format!("    <text>{}</text>\n", xml_escape(text)));
+                        }
+                        ContentBlock::Thinking { thinking, .. } => {
+                            // Strip provider_data, just keep the thinking content
+                            xml.push_str(&format!(
+                                "    <thinking>{}</thinking>\n",
+                                xml_escape(thinking)
+                            ));
+                        }
+                        ContentBlock::ToolUse {
+                            id, name, input, ..
+                        } => {
+                            // Strip id and thought_signature, keep name and input
+                            let input_str = serde_json::to_string(input).unwrap_or_default();
+                            xml.push_str(&format!(
+                                "    <tool_call name=\"{}\">\n      <input>{}</input>\n",
+                                xml_escape(name),
+                                xml_escape(&input_str)
+                            ));
+
+                            // Look up the corresponding tool result and include it
+                            if let Some(result) = tool_results.get(id) {
+                                let status = if result.is_error { "error" } else { "success" };
+                                xml.push_str(&format!(
+                                    "      <tool_result name=\"{}\" status=\"{}\">{}</tool_result>\n",
+                                    xml_escape(name),
+                                    status,
+                                    xml_escape(&result.content)
+                                ));
+                            }
+
+                            xml.push_str("    </tool_call>\n");
+                        }
+                        ContentBlock::ToolResult { .. } => {
+                            // Tool results in non-tool-result-only messages are handled inline
+                            // This shouldn't typically happen, but handle it just in case
+                        }
+                        ContentBlock::Summary {
+                            summary,
+                            messages_compacted,
+                        } => {
+                            xml.push_str(&format!(
+                                "    <previous_summary messages_compacted=\"{}\">{}</previous_summary>\n",
+                                messages_compacted,
+                                xml_escape(summary)
+                            ));
+                        }
+                        ContentBlock::Image { mime_type, data } => {
+                            let size_bytes = data.len();
+                            xml.push_str(&format!(
+                                "    <image mime_type=\"{}\" size_bytes=\"{}\"/>\n",
+                                xml_escape(mime_type),
+                                size_bytes
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        xml.push_str("  </message>\n");
+        i += 1;
+    }
+
+    xml.push_str("</conversation>");
+    xml
+}
+
+/// Check if a message contains only tool results (no other content).
+fn is_tool_result_only_message(msg: &Message) -> bool {
+    match &msg.content {
+        MessageContent::Text(_) => false,
+        MessageContent::Blocks(blocks) => {
+            !blocks.is_empty()
+                && blocks
+                    .iter()
+                    .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
+        }
+    }
+}
 
 /// Returns the system prompt for summarization
 pub(crate) fn summarization_system_prompt() -> &'static str {
@@ -100,76 +288,15 @@ fn find_safe_split_point(messages: &[Message], suggested_idx: usize) -> usize {
 
 /// Build the text content for a summarization request.
 /// Returns just the prompt text (not wrapped in a Message).
+///
+/// Uses XML format to preserve full conversation structure while stripping
+/// provider-specific data, enabling cross-model compaction.
 pub(crate) fn build_summarization_request_text(messages_to_summarize: &[Message]) -> String {
-    // Format the conversation for summarization
-    let mut conversation_text = String::new();
-
-    for msg in messages_to_summarize {
-        let role_label = match msg.role {
-            Role::User => "User",
-            Role::Assistant => "Assistant",
-            Role::System => "System",
-        };
-
-        conversation_text.push_str(&format!("\n## {}\n", role_label));
-
-        match &msg.content {
-            MessageContent::Text(text) => {
-                conversation_text.push_str(text);
-            }
-            MessageContent::Blocks(blocks) => {
-                for block in blocks {
-                    match block {
-                        ContentBlock::Text { text } => {
-                            conversation_text.push_str(text);
-                        }
-                        ContentBlock::Thinking { thinking, .. } => {
-                            conversation_text.push_str(&format!(
-                                "[Thinking: {}...]\n",
-                                &thinking.chars().take(200).collect::<String>()
-                            ));
-                        }
-                        ContentBlock::ToolUse { name, .. } => {
-                            conversation_text.push_str(&format!("[Tool call: {}]\n", name));
-                        }
-                        ContentBlock::ToolResult {
-                            content, is_error, ..
-                        } => {
-                            let preview = if content.chars().count() > 500 {
-                                let truncated: String = content.chars().take(500).collect();
-                                format!("{}... ({} chars)", truncated, content.len())
-                            } else {
-                                content.clone()
-                            };
-                            if *is_error {
-                                conversation_text.push_str(&format!("[Tool error: {}]\n", preview));
-                            } else {
-                                conversation_text
-                                    .push_str(&format!("[Tool result: {}]\n", preview));
-                            }
-                        }
-                        ContentBlock::Summary {
-                            summary,
-                            messages_compacted,
-                        } => {
-                            conversation_text.push_str(&format!(
-                                "[Previous compaction of {} messages: {}]\n",
-                                messages_compacted, summary
-                            ));
-                        }
-                        ContentBlock::Image { .. } => {
-                            conversation_text.push_str("[Image]\n");
-                        }
-                    }
-                }
-            }
-        }
-        conversation_text.push('\n');
-    }
+    let conversation_xml = build_history_xml(messages_to_summarize);
 
     format!(
         "Please summarize the following conversation:\n\n{}\n\nProvide a comprehensive summary.",
-        conversation_text
+        conversation_xml
     )
 }
 
@@ -231,6 +358,8 @@ mod tests {
         let prompt = summarization_system_prompt();
         assert!(prompt.contains("summarizing"));
         assert!(prompt.contains("accomplished"));
+        assert!(prompt.contains("XML format"));
+        assert!(prompt.contains("<conversation>"));
     }
 
     #[test]
@@ -246,10 +375,279 @@ mod tests {
         assert_eq!(request.role, Role::User);
         if let MessageContent::Text(text) = &request.content {
             assert!(text.contains("summarize"));
-            assert!(text.contains("User"));
-            assert!(text.contains("Assistant"));
+            assert!(text.contains("<conversation>"));
+            assert!(text.contains("</conversation>"));
+            assert!(text.contains("<message role=\"user\">"));
+            assert!(text.contains("<message role=\"assistant\">"));
         } else {
             panic!("Expected text content");
         }
+    }
+
+    #[test]
+    fn test_xml_escape() {
+        assert_eq!(xml_escape("hello"), "hello");
+        assert_eq!(xml_escape("<tag>"), "&lt;tag&gt;");
+        assert_eq!(xml_escape("a & b"), "a &amp; b");
+        assert_eq!(xml_escape("\"quoted\""), "&quot;quoted&quot;");
+        assert_eq!(xml_escape("it's"), "it&apos;s");
+        assert_eq!(
+            xml_escape("<script>alert('xss')</script>"),
+            "&lt;script&gt;alert(&apos;xss&apos;)&lt;/script&gt;"
+        );
+    }
+
+    #[test]
+    fn test_build_history_xml_simple_conversation() {
+        let messages = vec![
+            Message::user("Hello"),
+            Message::assistant_blocks(vec![ContentBlock::Text {
+                text: "Hi there!".to_string(),
+            }]),
+        ];
+
+        let xml = build_history_xml(&messages);
+
+        assert!(xml.starts_with("<conversation>"));
+        assert!(xml.ends_with("</conversation>"));
+        assert!(xml.contains("<message role=\"user\">"));
+        assert!(xml.contains("<text>Hello</text>"));
+        assert!(xml.contains("<message role=\"assistant\">"));
+        assert!(xml.contains("<text>Hi there!</text>"));
+    }
+
+    #[test]
+    fn test_build_history_xml_with_tool_use() {
+        let messages = vec![
+            Message::user("List files"),
+            Message::assistant_blocks(vec![ContentBlock::ToolUse {
+                id: "tool_123".to_string(),
+                name: "file_list".to_string(),
+                input: serde_json::json!({"path": "."}),
+                thought_signature: Some("sig_abc".to_string()),
+            }]),
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool_123".to_string(),
+                    content: "file1.rs\nfile2.rs".to_string(),
+                    is_error: false,
+                }]),
+            },
+        ];
+
+        let xml = build_history_xml(&messages);
+
+        // Should have tool call with nested result
+        assert!(xml.contains("<tool_call name=\"file_list\">"));
+        assert!(xml.contains("<input>{&quot;path&quot;:&quot;.&quot;}</input>"));
+        assert!(xml.contains("<tool_result name=\"file_list\" status=\"success\">"));
+        assert!(xml.contains("file1.rs\nfile2.rs</tool_result>"));
+
+        // Should NOT contain provider-specific IDs or signatures
+        assert!(!xml.contains("tool_123"));
+        assert!(!xml.contains("sig_abc"));
+
+        // Tool result message should be merged, not separate
+        let user_message_count = xml.matches("<message role=\"user\">").count();
+        assert_eq!(user_message_count, 1); // Only the "List files" message
+    }
+
+    #[test]
+    fn test_build_history_xml_with_tool_error() {
+        let messages = vec![
+            Message::user("Read nonexistent file"),
+            Message::assistant_blocks(vec![ContentBlock::ToolUse {
+                id: "tool_456".to_string(),
+                name: "file_read".to_string(),
+                input: serde_json::json!({"path": "/nonexistent"}),
+                thought_signature: None,
+            }]),
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "tool_456".to_string(),
+                    content: "File not found".to_string(),
+                    is_error: true,
+                }]),
+            },
+        ];
+
+        let xml = build_history_xml(&messages);
+
+        assert!(xml.contains("<tool_result name=\"file_read\" status=\"error\">"));
+        assert!(xml.contains("File not found</tool_result>"));
+    }
+
+    #[test]
+    fn test_build_history_xml_with_thinking() {
+        let messages = vec![
+            Message::user("Complex question"),
+            Message::assistant_blocks(vec![
+                ContentBlock::Thinking {
+                    thinking: "Let me think about this...".to_string(),
+                    provider_data: Some(serde_json::json!({
+                        "signature": "encrypted_sig",
+                        "encrypted_content": "secret_data"
+                    })),
+                },
+                ContentBlock::Text {
+                    text: "Here's my answer".to_string(),
+                },
+            ]),
+        ];
+
+        let xml = build_history_xml(&messages);
+
+        // Should have thinking content
+        assert!(xml.contains("<thinking>Let me think about this...</thinking>"));
+
+        // Should NOT contain provider_data
+        assert!(!xml.contains("encrypted_sig"));
+        assert!(!xml.contains("secret_data"));
+        assert!(!xml.contains("signature"));
+    }
+
+    #[test]
+    fn test_build_history_xml_with_image() {
+        let messages = vec![
+            Message::user("Check this image"),
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::Image {
+                    mime_type: "image/png".to_string(),
+                    data: vec![0u8; 1024], // 1KB of fake image data
+                }]),
+            },
+        ];
+
+        let xml = build_history_xml(&messages);
+
+        // Should have image placeholder with metadata
+        assert!(xml.contains("<image mime_type=\"image/png\" size_bytes=\"1024\"/>"));
+
+        // Should NOT contain base64 or raw image data
+        assert!(!xml.contains("AAAA")); // base64 encoding of zeros
+    }
+
+    #[test]
+    fn test_build_history_xml_with_previous_summary() {
+        let messages = vec![Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::Summary {
+                summary: "Earlier we discussed file operations.".to_string(),
+                messages_compacted: 15,
+            }]),
+        }];
+
+        let xml = build_history_xml(&messages);
+
+        assert!(xml.contains("<previous_summary messages_compacted=\"15\">"));
+        assert!(xml.contains("Earlier we discussed file operations.</previous_summary>"));
+    }
+
+    #[test]
+    fn test_build_history_xml_escapes_special_chars() {
+        let messages = vec![
+            Message::user("What about <script> tags & \"quotes\"?"),
+            Message::assistant_blocks(vec![ContentBlock::Text {
+                text: "Here's a <div> example: x < y && y > z".to_string(),
+            }]),
+        ];
+
+        let xml = build_history_xml(&messages);
+
+        assert!(xml.contains("&lt;script&gt;"));
+        assert!(xml.contains("&amp;"));
+        assert!(xml.contains("&quot;quotes&quot;"));
+        assert!(xml.contains("&lt;div&gt;"));
+        assert!(xml.contains("x &lt; y &amp;&amp; y &gt; z"));
+    }
+
+    #[test]
+    fn test_build_history_xml_multiple_tool_calls() {
+        let messages = vec![
+            Message::user("Read two files"),
+            Message::assistant_blocks(vec![
+                ContentBlock::ToolUse {
+                    id: "tool_1".to_string(),
+                    name: "file_read".to_string(),
+                    input: serde_json::json!({"path": "a.txt"}),
+                    thought_signature: None,
+                },
+                ContentBlock::ToolUse {
+                    id: "tool_2".to_string(),
+                    name: "file_read".to_string(),
+                    input: serde_json::json!({"path": "b.txt"}),
+                    thought_signature: None,
+                },
+            ]),
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::ToolResult {
+                        tool_use_id: "tool_1".to_string(),
+                        content: "Content of a.txt".to_string(),
+                        is_error: false,
+                    },
+                    ContentBlock::ToolResult {
+                        tool_use_id: "tool_2".to_string(),
+                        content: "Content of b.txt".to_string(),
+                        is_error: false,
+                    },
+                ]),
+            },
+        ];
+
+        let xml = build_history_xml(&messages);
+
+        // Both tool calls should be present with their results
+        assert!(xml.contains("Content of a.txt"));
+        assert!(xml.contains("Content of b.txt"));
+
+        // Tool result message should be merged (only 1 user message)
+        let user_message_count = xml.matches("<message role=\"user\">").count();
+        assert_eq!(user_message_count, 1);
+    }
+
+    #[test]
+    fn test_is_tool_result_only_message() {
+        // Text message - not tool result only
+        let text_msg = Message::user("Hello");
+        assert!(!is_tool_result_only_message(&text_msg));
+
+        // Tool result only
+        let tool_result_msg = Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "id".to_string(),
+                content: "result".to_string(),
+                is_error: false,
+            }]),
+        };
+        assert!(is_tool_result_only_message(&tool_result_msg));
+
+        // Mixed content - not tool result only
+        let mixed_msg = Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "Here's what I found".to_string(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "id".to_string(),
+                    content: "result".to_string(),
+                    is_error: false,
+                },
+            ]),
+        };
+        assert!(!is_tool_result_only_message(&mixed_msg));
+
+        // Empty blocks
+        let empty_msg = Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![]),
+        };
+        assert!(!is_tool_result_only_message(&empty_msg));
     }
 }

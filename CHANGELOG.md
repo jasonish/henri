@@ -47,12 +47,16 @@
 
 ### Internal
 
+- Compaction now uses XML format for conversation history, preserving
+  full content and enabling cross-model compaction
 - Refactored syntax highlighting into shared `syntax` module used by both
   TUI and CLI
 - Removed tree-sitter syntax highlighting, now using syntect only
 
 ### Fixed
 
+- TUI compaction now correctly preserves the summary instead of
+  overwriting it with the summarization request/response
 - MCP server stderr output no longer corrupts TUI display
 - TUI now displays tool error messages instead of just showing the
   failure indicator (✗) with no explanation

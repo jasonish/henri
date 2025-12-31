@@ -211,13 +211,35 @@ impl App {
                     // Handle compaction completion
                     if self.is_compacting {
                         self.finalize_compaction();
-                    }
+                        // Clear context tokens - the last API call was the summarization
+                        // request, not the actual conversation. The count will be updated
+                        // on the next actual chat.
+                        self.last_context_tokens = None;
+                    } else {
+                        // Store context stats for display in working indicator
+                        // (only for normal chats, not compaction)
+                        if let Some(ref model) = self.current_model {
+                            self.last_context_tokens = get_last_input_for_provider(model.provider);
+                            self.context_limit =
+                                crate::provider::context_limit(model.provider, &model.model_id);
+                        }
 
-                    // Store context stats for display in working indicator
-                    if let Some(ref model) = self.current_model {
-                        self.last_context_tokens = get_last_input_for_provider(model.provider);
-                        self.context_limit =
-                            crate::provider::context_limit(model.provider, &model.model_id);
+                        // Auto-save session after successful chat
+                        if let Some(ref model) = self.current_model {
+                            let _ = crate::session::save_session(
+                                &self.working_dir,
+                                &self.chat_messages,
+                                &model.provider,
+                                &model.model_id,
+                                self.thinking_enabled,
+                            );
+                        }
+
+                        // Check for queued prompts
+                        if !self.pending_prompts.is_empty() {
+                            let next = self.pending_prompts.pop_front().unwrap();
+                            self.start_chat(next.input, next.images, next.display_text);
+                        }
                     }
 
                     self.is_chatting = false;
