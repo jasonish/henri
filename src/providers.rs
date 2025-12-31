@@ -543,10 +543,6 @@ impl ProviderManager {
         provider_changed
     }
 
-    pub(crate) fn cycle_thinking(&self, current: &ThinkingState) -> ThinkingState {
-        cycle_thinking_state(self.current_provider, &self.current_model_id, current)
-    }
-
     pub(crate) fn default_thinking(&self) -> ThinkingState {
         default_thinking_state(self.current_provider, &self.current_model_id)
     }

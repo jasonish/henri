@@ -14,15 +14,18 @@ use crossterm::style::{Color, Print, ResetColor, SetBackgroundColor, SetForegrou
 use crossterm::terminal::{self, Clear, ClearType, disable_raw_mode, enable_raw_mode};
 use unicode_width::UnicodeWidthChar;
 
+use crate::cli::supports_thinking;
 use crate::commands::{self, DynamicSlashCommand};
 use crate::custom_commands::CustomCommand;
 use crate::history::FileHistory;
+use crate::providers::{ModelProvider, ThinkingState, cycle_thinking_state};
 
 const PROMPT: &str = "› ";
 
 pub(crate) struct PromptInfo {
     pub provider: String,
     pub model: String,
+    pub provider_enum: ModelProvider,
     pub path: String,
     pub git_branch: Option<String>,
     pub thinking_available: bool,
@@ -106,7 +109,7 @@ impl PromptUi {
         mut cycle_favorite: F,
     ) -> io::Result<PromptOutcome>
     where
-        F: FnMut() -> Option<(String, String, bool, Option<String>)>,
+        F: FnMut() -> Option<(String, String, ModelProvider, bool, Option<String>)>,
     {
         self.buffer.clear();
         self.cursor = 0;
@@ -638,7 +641,7 @@ impl PromptUi {
         cycle_favorite: &mut F,
     ) -> io::Result<Option<PromptOutcome>>
     where
-        F: FnMut() -> Option<(String, String, bool, Option<String>)>,
+        F: FnMut() -> Option<(String, String, ModelProvider, bool, Option<String>)>,
     {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             if self.buffer.is_empty() && self.pasted_images.is_empty() {
@@ -721,28 +724,36 @@ impl PromptUi {
             KeyCode::BackTab => {
                 if completion_visible {
                     self.move_completion(-1);
-                } else if let Some((provider, model, _provider_changed, thinking_mode_update)) =
-                    cycle_favorite()
+                } else if let Some((
+                    provider,
+                    model,
+                    provider_enum,
+                    provider_changed,
+                    thinking_mode_update,
+                )) = cycle_favorite()
                 {
                     info.provider = provider;
-                    info.model = model;
-                    if let Some(mode) = thinking_mode_update {
+                    info.model = model.clone();
+                    info.provider_enum = provider_enum;
+                    if let Some(mode) = &thinking_mode_update {
                         *thinking_mode = Some(mode.clone());
-                        // Redraw status bar in place
-                        let mut stdout = io::stdout();
-                        let lines_up = self.rendered_lines + self.rendered_menu_lines;
-                        crossterm::execute!(stdout, MoveUp(lines_up), MoveToColumn(0))?;
-                        self.render_status_bar(info, *thinking_enabled, thinking_mode.as_deref())?;
-                        crossterm::execute!(stdout, MoveToColumn(0), cursor::MoveDown(lines_up))?;
-                        return Ok(Some(PromptOutcome::ContinueWithMode(Some(mode))));
                     }
+
+                    // Update thinking_available for the new provider/model
+                    info.thinking_available = supports_thinking(provider_enum, &model);
+
                     // Redraw status bar in place
                     let mut stdout = io::stdout();
                     let lines_up = self.rendered_lines + self.rendered_menu_lines;
                     crossterm::execute!(stdout, MoveUp(lines_up), MoveToColumn(0))?;
                     self.render_status_bar(info, *thinking_enabled, thinking_mode.as_deref())?;
                     crossterm::execute!(stdout, MoveToColumn(0), cursor::MoveDown(lines_up))?;
-                    return Ok(Some(PromptOutcome::ContinueWithMode(None)));
+
+                    // Only return if provider changed (needs thinking block cleanup)
+                    if provider_changed {
+                        return Ok(Some(PromptOutcome::ContinueWithMode(thinking_mode_update)));
+                    }
+                    // Otherwise continue in place - no new prompt needed
                 }
             }
             KeyCode::Esc => {
@@ -897,7 +908,18 @@ impl PromptUi {
             }
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if info.thinking_available && info.show_thinking_status {
-                    return Ok(Some(PromptOutcome::ContinueWithMode(None)));
+                    // Cycle thinking mode in place
+                    let current = ThinkingState::new(*thinking_enabled, thinking_mode.clone());
+                    let next = cycle_thinking_state(info.provider_enum, &info.model, &current);
+                    *thinking_enabled = next.enabled;
+                    *thinking_mode = next.mode;
+
+                    // Redraw status bar in place
+                    let mut stdout = io::stdout();
+                    let lines_up = self.rendered_lines + self.rendered_menu_lines;
+                    crossterm::execute!(stdout, MoveUp(lines_up), MoveToColumn(0))?;
+                    self.render_status_bar(info, *thinking_enabled, thinking_mode.as_deref())?;
+                    crossterm::execute!(stdout, MoveToColumn(0), cursor::MoveDown(lines_up))?;
                 }
             }
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {

@@ -20,6 +20,8 @@
 
 ### Changed
 
+- CLI: Shift+Tab (cycle models) and Ctrl+T (toggle thinking) now update the
+  status bar in place instead of printing a new prompt line
 - `/mcp` now auto-triggers on tab completion (like `/model` and `/settings`)
 - CLI `/mcp` menu now uses MultiSelect for toggling multiple servers at once
 - TUI MCP menu uses markdown-style checkboxes `[x]`/`[ ]`

@@ -266,10 +266,10 @@ fn select_model(provider_manager: &mut ProviderManager) -> bool {
 }
 
 /// Cycle through favorite models (triggered by Shift+Tab)
-/// Returns (provider_display, model_id, provider_changed) if successful
+/// Returns (provider_display, model_id, provider_enum, provider_changed, thinking_mode) if successful
 fn cycle_favorite_model(
     provider_manager: &mut ProviderManager,
-) -> Option<(String, String, bool, Option<String>)> {
+) -> Option<(String, String, ModelProvider, bool, Option<String>)> {
     let choices = build_model_choices();
     let favorites: Vec<_> = choices.iter().filter(|c| c.is_favorite).collect();
 
@@ -316,6 +316,7 @@ fn cycle_favorite_model(
     Some((
         provider_display,
         next_model.model_id.clone(),
+        next_model.provider,
         provider_changed,
         thinking_mode,
     ))
@@ -627,7 +628,7 @@ fn show_default_model_menu(current: &DefaultModel) {
     }
 }
 
-fn supports_thinking(provider: ModelProvider, model: &str) -> bool {
+pub(crate) fn supports_thinking(provider: ModelProvider, model: &str) -> bool {
     match provider {
         ModelProvider::Antigravity => true,
         ModelProvider::OpenCodeZen => true,
@@ -757,6 +758,7 @@ fn build_prompt(provider_manager: &ProviderManager) -> PromptInfo {
     PromptInfo {
         provider: provider_name,
         model: model.to_string(),
+        provider_enum: provider,
         path,
         git_branch: get_git_branch(),
         thinking_available: supports_thinking(provider, model),
@@ -883,7 +885,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
             &mut history,
             || {
                 let result = cycle_favorite_model(&mut provider_manager);
-                if let Some((_, _, changed, _)) = &result
+                if let Some((_, _, _, changed, _)) = &result
                     && *changed
                 {
                     provider_changed_in_cycle = true;
@@ -903,11 +905,12 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                 continue;
             }
             PromptOutcome::ContinueWithMode(mode) => {
-                let mut next = provider_manager.cycle_thinking(&thinking_state);
+                // Provider changed - use the provided thinking mode or get new provider's default
                 if let Some(mode) = mode {
-                    next = ThinkingState::new(mode != "off", Some(mode));
+                    thinking_state = ThinkingState::new(mode != "off", Some(mode));
+                } else {
+                    thinking_state = provider_manager.default_thinking();
                 }
-                thinking_state = next;
                 continue;
             }
             PromptOutcome::Eof => return Ok(ExitStatus::Quit),
