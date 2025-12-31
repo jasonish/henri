@@ -4,6 +4,9 @@
 
 ### Added
 
+- `/tools` command to enable/disable built-in tools via interactive menu
+  in both TUI and CLI modes - disabled tools are persisted to config
+- `henri tool-call grep` subcommand for direct testing of the grep tool
 - `henri mcp add <name> <command...>` and `henri mcp remove [name]` CLI
   commands to manage MCP server configuration
 - Status line shows `[MCP: X]` indicator when MCP servers are running

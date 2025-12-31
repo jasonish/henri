@@ -38,6 +38,7 @@ pub(crate) enum Command {
     StartTransactionLogging,
     Status,
     StopTransactionLogging,
+    Tools,
     Usage,
 }
 
@@ -231,6 +232,12 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         command: Command::StopTransactionLogging,
         name: "stop-transaction-logging",
         description: "Disable transaction logging",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Tools,
+        name: "tools",
+        description: "Enable/disable built-in tools",
         availability: Availability::Always,
     },
     SlashCommand {

@@ -25,6 +25,22 @@ pub(crate) use todo::{TodoItem, TodoRead, TodoStatus, TodoWrite};
 
 use serde::{Deserialize, Serialize};
 
+/// Built-in tool names and their human-readable descriptions.
+/// This is the single source of truth for tool metadata used in menus and UIs.
+pub(crate) const TOOL_INFO: &[(&str, &str)] = &[
+    ("bash", "Execute shell commands"),
+    ("fetch", "Fetch URLs and convert to markdown"),
+    ("file_delete", "Delete files from the filesystem"),
+    ("file_edit", "Edit files with string replacements"),
+    ("file_read", "Read file contents"),
+    ("file_write", "Write content to files"),
+    ("glob", "Find files using glob patterns"),
+    ("grep", "Search for patterns in files"),
+    ("list_dir", "List directory contents"),
+    ("todo_read", "Read the current todo list"),
+    ("todo_write", "Update the todo list"),
+];
+
 /// Tool definition for AI model consumption
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ToolDefinition {
@@ -250,20 +266,45 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
 }
 
 /// Get all available tool definitions (built-in only)
-pub(crate) fn builtin_definitions(todo_enabled: bool) -> Vec<ToolDefinition> {
-    let mut tools = vec![
-        Bash.definition(),
-        Fetch.definition(),
-        FileDelete.definition(),
-        FileEdit.definition(),
-        FileRead.definition(),
-        FileWrite.definition(),
-        Glob.definition(),
-        Grep.definition(),
-        ListDir.definition(),
-    ];
-    if todo_enabled {
+/// Takes config parameters to avoid redundant config loading.
+pub(crate) fn builtin_definitions(
+    todo_enabled: bool,
+    disabled_tools: &[String],
+) -> Vec<ToolDefinition> {
+    let mut tools = Vec::new();
+
+    // Add tools only if not disabled
+    if !disabled_tools.iter().any(|t| t == "bash") {
+        tools.push(Bash.definition());
+    }
+    if !disabled_tools.iter().any(|t| t == "fetch") {
+        tools.push(Fetch.definition());
+    }
+    if !disabled_tools.iter().any(|t| t == "file_delete") {
+        tools.push(FileDelete.definition());
+    }
+    if !disabled_tools.iter().any(|t| t == "file_edit") {
+        tools.push(FileEdit.definition());
+    }
+    if !disabled_tools.iter().any(|t| t == "file_read") {
+        tools.push(FileRead.definition());
+    }
+    if !disabled_tools.iter().any(|t| t == "file_write") {
+        tools.push(FileWrite.definition());
+    }
+    if !disabled_tools.iter().any(|t| t == "glob") {
+        tools.push(Glob.definition());
+    }
+    if !disabled_tools.iter().any(|t| t == "grep") {
+        tools.push(Grep.definition());
+    }
+    if !disabled_tools.iter().any(|t| t == "list_dir") {
+        tools.push(ListDir.definition());
+    }
+    if todo_enabled && !disabled_tools.iter().any(|t| t == "todo_read") {
         tools.push(TodoRead.definition());
+    }
+    if todo_enabled && !disabled_tools.iter().any(|t| t == "todo_write") {
         tools.push(TodoWrite.definition());
     }
     tools
@@ -271,10 +312,9 @@ pub(crate) fn builtin_definitions(todo_enabled: bool) -> Vec<ToolDefinition> {
 
 /// Get all available tool definitions including MCP tools
 pub(crate) async fn all_definitions() -> Vec<ToolDefinition> {
-    let todo_enabled = crate::config::ConfigFile::load()
-        .map(|c| c.todo_enabled)
-        .unwrap_or(true);
-    let mut defs = builtin_definitions(todo_enabled);
+    // Load config once and extract all needed values
+    let config = crate::config::ConfigFile::load().unwrap_or_default();
+    let mut defs = builtin_definitions(config.todo_enabled, &config.disabled_tools);
     let mcp_defs = crate::mcp::manager().all_tool_definitions().await;
     defs.extend(mcp_defs);
     defs
@@ -288,6 +328,17 @@ pub(crate) async fn execute(
     output: &crate::output::OutputContext,
     services: &crate::services::Services,
 ) -> Option<ToolResult> {
+    // Load config once and check all conditions
+    let config = crate::config::ConfigFile::load().unwrap_or_default();
+
+    // Check if tool is disabled
+    if config.disabled_tools.iter().any(|t| t == name) {
+        return Some(ToolResult::error(
+            tool_use_id,
+            format!("Tool '{}' is disabled in configuration", name),
+        ));
+    }
+
     // First try built-in tools
     match name {
         "bash" => return Some(Bash.execute(tool_use_id, input, output, services).await),
@@ -312,10 +363,7 @@ pub(crate) async fn execute(
         "grep" => return Some(Grep.execute(tool_use_id, input, output, services).await),
         "list_dir" => return Some(ListDir.execute(tool_use_id, input, output, services).await),
         "todo_read" | "todo_write" => {
-            let todo_enabled = crate::config::ConfigFile::load()
-                .map(|c| c.todo_enabled)
-                .unwrap_or(true);
-            if !todo_enabled {
+            if !config.todo_enabled {
                 return Some(ToolResult::error(
                     tool_use_id,
                     "Todo tools are disabled in configuration",

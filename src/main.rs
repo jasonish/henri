@@ -200,6 +200,23 @@ enum ToolCommand {
         #[arg(long)]
         include_hidden: bool,
     },
+    /// Test the grep tool to search for patterns in files
+    Grep {
+        /// Regular expression or string to search for
+        pattern: String,
+
+        /// Directory or file to search in (default: current directory)
+        #[arg(short, long)]
+        path: Option<String>,
+
+        /// Ignore case distinctions
+        #[arg(short = 'i', long)]
+        case_insensitive: bool,
+
+        /// Include hidden files/directories and ignored files
+        #[arg(long)]
+        include_hidden: bool,
+    },
 }
 
 #[tokio::main]
@@ -236,6 +253,20 @@ async fn main() -> std::io::Result<()> {
                         pattern.clone(),
                         path.clone(),
                         *limit,
+                        *include_hidden,
+                    )
+                    .await;
+                }
+                ToolCommand::Grep {
+                    pattern,
+                    path,
+                    case_insensitive,
+                    include_hidden,
+                } => {
+                    return handle_grep_command(
+                        pattern.clone(),
+                        path.clone(),
+                        *case_insensitive,
                         *include_hidden,
                     )
                     .await;
@@ -424,6 +455,38 @@ async fn handle_glob_command(
     let services = services::Services::new();
     let result = glob_tool
         .execute("glob-test", input, &output, &services)
+        .await;
+
+    if result.is_error {
+        eprintln!("Error: {}", result.content);
+        std::process::exit(1);
+    } else {
+        print!("{}", result.content);
+    }
+
+    Ok(())
+}
+
+async fn handle_grep_command(
+    pattern: String,
+    path: Option<String>,
+    case_insensitive: bool,
+    include_hidden: bool,
+) -> std::io::Result<()> {
+    use tools::Tool;
+
+    let grep_tool = tools::Grep;
+    let input = serde_json::json!({
+        "pattern": pattern,
+        "path": path,
+        "case_insensitive": case_insensitive,
+        "include_hidden": include_hidden,
+    });
+
+    let output = output::OutputContext::new_quiet();
+    let services = services::Services::new();
+    let result = grep_tool
+        .execute("grep-test", input, &output, &services)
         .await;
 
     if result.is_error {

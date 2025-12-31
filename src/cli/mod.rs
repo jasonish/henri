@@ -42,6 +42,7 @@ enum CommandResult {
     CustomPrompt(String),
     Settings,
     Mcp,
+    Tools,
 }
 
 fn handle_command(
@@ -202,6 +203,7 @@ fn handle_command(
         }
         Command::Settings => CommandResult::Settings,
         Command::Mcp => CommandResult::Mcp,
+        Command::Tools => CommandResult::Tools,
         Command::Custom { name, args } => {
             if let Some(custom) = custom_commands.iter().find(|c| c.name == name) {
                 let prompt = custom_commands::substitute_variables(&custom.prompt, &args);
@@ -562,6 +564,65 @@ async fn show_mcp_menu() {
                 Ok(()) => println!("Stopped '{}'", name),
                 Err(e) => println!("Failed to stop '{}': {}", name, e),
             }
+        }
+    }
+}
+
+/// Interactive tools management menu using inquire
+fn show_tools_menu() {
+    use crate::tools::TOOL_INFO;
+    use inquire::MultiSelect;
+
+    let config = config::ConfigFile::load().unwrap_or_default();
+    let disabled_tools = &config.disabled_tools;
+
+    // Build choices with descriptions
+    let choices: Vec<String> = TOOL_INFO
+        .iter()
+        .map(|(name, desc)| format!("{:<12} - {}", name, desc))
+        .collect();
+
+    // Pre-select enabled tools (those NOT in disabled list)
+    let defaults: Vec<usize> = TOOL_INFO
+        .iter()
+        .enumerate()
+        .filter(|(_, (name, _))| !disabled_tools.iter().any(|t| t == *name))
+        .map(|(i, _)| i)
+        .collect();
+
+    let selected = match MultiSelect::new("Tools:", choices.clone())
+        .with_default(&defaults)
+        .with_page_size(output::menu_page_size())
+        .prompt()
+    {
+        Ok(sel) => sel,
+        Err(_) => {
+            println!("Cancelled.");
+            return;
+        }
+    };
+
+    // Determine which tools to enable/disable
+    let selected_indices: std::collections::HashSet<usize> = selected
+        .iter()
+        .filter_map(|s| choices.iter().position(|c| c == s))
+        .collect();
+
+    let mut new_disabled_tools: Vec<String> = Vec::new();
+
+    for (i, (name, _)) in TOOL_INFO.iter().enumerate() {
+        if !selected_indices.contains(&i) {
+            new_disabled_tools.push(name.to_string());
+        }
+    }
+
+    // Save to config
+    if let Ok(mut config) = config::ConfigFile::load() {
+        config.disabled_tools = new_disabled_tools;
+        if let Err(e) = config.save() {
+            println!("Failed to save config: {}", e);
+        } else {
+            println!("Tool settings saved.");
         }
     }
 }
@@ -1083,6 +1144,9 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                         }
                         CommandResult::Mcp => {
                             show_mcp_menu().await;
+                        }
+                        CommandResult::Tools => {
+                            show_tools_menu();
                         }
                     }
 

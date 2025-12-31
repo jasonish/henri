@@ -35,7 +35,9 @@ use super::models::{
 };
 use super::render::ExitPrompt;
 use super::selection::{InputSelection, PositionMap, Selection};
-use super::settings::{DefaultModelMenuState, McpMenuState, SettingOption, SettingsMenuState};
+use super::settings::{
+    DefaultModelMenuState, McpMenuState, SettingOption, SettingsMenuState, ToolsMenuState,
+};
 use crate::commands::{Command, DynamicSlashCommand};
 use crate::custom_commands::CustomCommand;
 
@@ -106,6 +108,7 @@ pub(crate) struct App {
     pub(crate) settings_menu: Option<SettingsMenuState>,
     pub(crate) mcp_menu: Option<McpMenuState>,
     pub(crate) mcp_toggle_rx: Option<tokio::sync::oneshot::Receiver<McpToggleResult>>,
+    pub(crate) tools_menu: Option<ToolsMenuState>,
     // History search
     pub(crate) history_search: Option<HistorySearchState>,
     // Chat state
@@ -298,6 +301,7 @@ impl App {
             settings_menu: None,
             mcp_menu: None,
             mcp_toggle_rx: None,
+            tools_menu: None,
             history_search: None,
             provider_manager,
             chat_messages,
@@ -1044,6 +1048,79 @@ impl App {
         }
     }
 
+    pub(crate) fn open_tools_menu(&mut self) {
+        self.tools_menu = Some(ToolsMenuState::new());
+    }
+
+    pub(crate) fn close_tools_menu(&mut self) {
+        self.tools_menu = None;
+    }
+
+    pub(crate) fn tools_menu_active(&self) -> bool {
+        self.tools_menu.is_some()
+    }
+
+    pub(crate) fn toggle_selected_tool(&mut self) {
+        let Some(menu) = &mut self.tools_menu else {
+            return;
+        };
+
+        if let Some((tool_name, is_enabled)) = menu.toggle_selected() {
+            let action = if is_enabled { "enabled" } else { "disabled" };
+            self.messages
+                .push(Message::Text(format!("Tool '{}' {}", tool_name, action)));
+            self.layout_cache.invalidate();
+        }
+    }
+
+    pub(crate) fn handle_tools_menu_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        _modifiers: crossterm::event::KeyModifiers,
+    ) -> bool {
+        use crossterm::event::KeyCode;
+
+        let Some(menu) = &mut self.tools_menu else {
+            return false;
+        };
+
+        match code {
+            KeyCode::Esc => {
+                self.close_tools_menu();
+                true
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                if !menu.tools.is_empty() {
+                    self.toggle_selected_tool();
+                }
+                true
+            }
+            KeyCode::Up => {
+                if !menu.tools.is_empty() {
+                    if menu.selected_index > 0 {
+                        menu.selected_index -= 1;
+                    } else {
+                        menu.selected_index = menu.tools.len().saturating_sub(1);
+                    }
+                }
+                true
+            }
+            KeyCode::Down => {
+                if !menu.tools.is_empty() {
+                    if menu.selected_index + 1 < menu.tools.len() {
+                        menu.selected_index += 1;
+                    } else {
+                        menu.selected_index = 0;
+                    }
+                }
+                true
+            }
+            // Consume all other keys to prevent them from reaching the input
+            KeyCode::Char(_) | KeyCode::Backspace => true,
+            _ => false,
+        }
+    }
+
     pub(crate) fn submit_message(&mut self) {
         self.is_cleared = false;
 
@@ -1150,6 +1227,11 @@ impl App {
             }
             Command::Mcp => {
                 self.open_mcp_menu();
+                self.input.clear();
+                self.cursor = 0;
+            }
+            Command::Tools => {
+                self.open_tools_menu();
                 self.input.clear();
                 self.cursor = 0;
             }
@@ -1907,6 +1989,13 @@ impl App {
 
         if matches!(selected.command, Command::Mcp) {
             self.open_mcp_menu();
+            self.input.clear();
+            self.cursor = 0;
+            return true;
+        }
+
+        if matches!(selected.command, Command::Tools) {
+            self.open_tools_menu();
             self.input.clear();
             self.cursor = 0;
             return true;

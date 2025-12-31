@@ -184,3 +184,59 @@ impl McpMenuState {
         }
     }
 }
+
+/// A tool entry for the tools menu
+pub(crate) struct ToolEntry {
+    /// Tool name (e.g., "bash", "file_read")
+    pub name: String,
+    /// Human-readable description
+    pub description: String,
+    /// Whether the tool is enabled (not in disabled_tools list)
+    pub is_enabled: bool,
+}
+
+/// State for the tools toggle menu
+pub(crate) struct ToolsMenuState {
+    /// List of tool entries
+    pub tools: Vec<ToolEntry>,
+    /// Currently selected tool index
+    pub selected_index: usize,
+}
+
+impl ToolsMenuState {
+    pub(crate) fn new() -> Self {
+        let config = crate::config::ConfigFile::load().unwrap_or_default();
+        let disabled_tools = &config.disabled_tools;
+
+        let tools = crate::tools::TOOL_INFO
+            .iter()
+            .map(|(name, description)| ToolEntry {
+                name: name.to_string(),
+                description: description.to_string(),
+                is_enabled: !disabled_tools.iter().any(|t| t == *name),
+            })
+            .collect();
+
+        Self {
+            tools,
+            selected_index: 0,
+        }
+    }
+
+    /// Toggle the selected tool's enabled status
+    pub(crate) fn toggle_selected(&mut self) -> Option<(&str, bool)> {
+        if let Some(tool) = self.tools.get_mut(self.selected_index) {
+            tool.is_enabled = !tool.is_enabled;
+
+            // Update config
+            if let Ok(mut config) = crate::config::ConfigFile::load() {
+                config.toggle_tool_disabled(&tool.name);
+                let _ = config.save();
+            }
+
+            Some((&tool.name, tool.is_enabled))
+        } else {
+            None
+        }
+    }
+}

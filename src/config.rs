@@ -123,6 +123,13 @@ pub(crate) struct ConfigFile {
     /// Enable the todo_read/todo_write tools (default: true)
     #[serde(default = "default_todo_enabled", rename = "todo-enabled")]
     pub todo_enabled: bool,
+    /// List of disabled tool names
+    #[serde(
+        default,
+        rename = "disabled-tools",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub disabled_tools: Vec<String>,
 }
 
 fn default_show_network_stats() -> bool {
@@ -599,6 +606,22 @@ impl ConfigFile {
             false
         } else {
             self.add_favorite(model_id.to_string());
+            true
+        }
+    }
+
+    /// Check if a tool is disabled
+    pub(crate) fn is_tool_disabled(&self, tool_name: &str) -> bool {
+        self.disabled_tools.iter().any(|t| t == tool_name)
+    }
+
+    /// Toggle a tool's disabled status. Returns true if now disabled.
+    pub(crate) fn toggle_tool_disabled(&mut self, tool_name: &str) -> bool {
+        if self.is_tool_disabled(tool_name) {
+            self.disabled_tools.retain(|t| t != tool_name);
+            false
+        } else {
+            self.disabled_tools.push(tool_name.to_string());
             true
         }
     }
