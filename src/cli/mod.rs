@@ -958,13 +958,13 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
 
     if has_configured_providers {
         output.emit(output::OutputEvent::Info(
-            "Welcome to Henri, your Golden Retriever coding assistant! 🐕\n".into(),
+            "Welcome to Henri, your Golden Retriever coding assistant! 🐕".into(),
         ));
-        output.emit(output::OutputEvent::Info(format!("{sandbox_status}\n")));
-        output.emit(output::OutputEvent::Info("Type /help for help.\n".into()));
+        output.emit(output::OutputEvent::Info(sandbox_status.into()));
+        output.emit(output::OutputEvent::Info("Type /help for help.".into()));
     } else {
         output.emit(output::OutputEvent::Info(
-            format!("Welcome to Henri! 🐕\n\nYou are currently using the free 'zen/grok-code' model. It's great for getting started!\nFor more powerful models (Claude, GPT-4), try connecting your accounts:\n\n  henri provider add      # Authenticate with GitHub Copilot, etc.\n\n{sandbox_status}\n\nType /help for help.\n"),
+            format!("Welcome to Henri! 🐕\n\nYou are currently using the free 'zen/grok-code' model. It's great for getting started!\nFor more powerful models (Claude, GPT-4), try connecting your accounts:\n\n  henri provider add      # Authenticate with GitHub Copilot, etc.\n\n{sandbox_status}\n\nType /help for help."),
         ));
     }
 
