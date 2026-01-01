@@ -252,6 +252,7 @@ async fn run_app(
                     provider: model.provider,
                     model_id: model.model_id.clone(),
                     thinking_enabled: app.thinking_enabled,
+                    session_id: app.current_session_id.clone(),
                 });
                 return Ok(ExitStatus::SwitchToCli(session));
             }
@@ -520,6 +521,14 @@ async fn run_app(
                         // Tools menu takes priority when active
                         if app.tools_menu_active()
                             && app.handle_tools_menu_key(key.code, key.modifiers)
+                        {
+                            needs_redraw = true;
+                            continue;
+                        }
+
+                        // Sessions menu takes priority when active
+                        if app.sessions_menu_active()
+                            && app.handle_sessions_menu_key(key.code, key.modifiers)
                         {
                             needs_redraw = true;
                             continue;
@@ -1063,6 +1072,7 @@ async fn run_app(
             provider: model.provider,
             model_id: model.model_id.clone(),
             thinking_enabled: app.thinking_enabled,
+            session_id: app.current_session_id.clone(),
         });
         Ok(ExitStatus::SwitchToCli(session))
     } else {

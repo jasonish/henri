@@ -40,6 +40,7 @@ enum CommandResult {
     Compact,
     CountTokens,
     CustomPrompt(String),
+    Sessions,
     Settings,
     Mcp,
     Tools,
@@ -201,6 +202,7 @@ fn handle_command(
             ));
             CommandResult::Continue
         }
+        Command::Sessions => CommandResult::Sessions,
         Command::Settings => CommandResult::Settings,
         Command::Mcp => CommandResult::Mcp,
         Command::Tools => CommandResult::Tools,
@@ -627,6 +629,38 @@ fn show_tools_menu() {
     }
 }
 
+/// Interactive session selection menu using inquire.
+/// Returns the selected SessionInfo if one was chosen.
+fn show_sessions_menu(working_dir: &std::path::Path) -> Option<session::SessionInfo> {
+    let sessions = session::list_sessions(working_dir);
+
+    if sessions.is_empty() {
+        println!("No previous sessions found for this directory.");
+        return None;
+    }
+
+    // Build display strings for each session
+    let choices: Vec<String> = sessions.iter().map(|s| s.display_string()).collect();
+
+    match Select::new("Select a session:", choices)
+        .with_page_size(output::menu_page_size())
+        .prompt()
+    {
+        Ok(choice) => {
+            // Find the corresponding session by matching display string
+            let idx = sessions
+                .iter()
+                .position(|s| s.display_string() == choice)
+                .unwrap_or(0);
+            Some(sessions[idx].clone())
+        }
+        Err(_) => {
+            println!("Selection cancelled.");
+            None
+        }
+    }
+}
+
 /// A choice in the default model submenu
 #[derive(Clone)]
 enum DefaultModelChoice {
@@ -927,10 +961,14 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
     let mut messages: Vec<Message> = Vec::new();
     let mut thinking_state = provider_manager.default_thinking();
 
+    // Track current session ID for saving
+    let mut current_session_id: Option<String> = None;
+
     // Apply restored session if provided
     if let Some(restored) = args.restored_session {
         messages = restored.messages;
         thinking_state.enabled = restored.thinking_enabled;
+        current_session_id = Some(restored.session_id);
     } else {
         clear_todos();
     }
@@ -1010,13 +1048,17 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                                     provider: provider_manager.current_provider(),
                                     model_id: provider_manager.current_model_id().to_string(),
                                     thinking_enabled: thinking_state.enabled,
+                                    session_id: current_session_id.clone(),
                                 })
                             };
                             return Ok(ExitStatus::SwitchToTui(session));
                         }
                         CommandResult::ClearHistory => {
                             messages.clear();
-                            let _ = session::delete_session(&working_dir);
+                            if let Some(ref session_id) = current_session_id {
+                                let _ = session::delete_session(&working_dir, session_id);
+                            }
+                            current_session_id = None;
                             crate::usage::network_stats().clear();
                         }
                         CommandResult::SelectModel => {
@@ -1097,14 +1139,18 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                                         result.messages_compacted
                                     )));
 
-                                    if let Err(e) = session::save_session(
+                                    match session::save_session(
                                         &working_dir,
                                         &messages,
                                         &provider_manager.current_provider(),
                                         provider_manager.current_model_id(),
                                         thinking_state.enabled,
+                                        current_session_id.as_deref(),
                                     ) {
-                                        eprintln!("Warning: Failed to save session: {}", e);
+                                        Ok(id) => current_session_id = Some(id),
+                                        Err(e) => {
+                                            eprintln!("Warning: Failed to save session: {}", e)
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -1138,6 +1184,23 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                             println!("\n{}\n", prompt);
                             let user_msg = Message::user(&prompt);
                             messages.push(user_msg);
+                        }
+                        CommandResult::Sessions => {
+                            if let Some(selected) = show_sessions_menu(&working_dir) {
+                                // Load the selected session
+                                if let Some(state) =
+                                    session::load_session_by_id(&working_dir, &selected.id)
+                                {
+                                    let restored = session::RestoredSession::from_state(&state);
+                                    messages = restored.messages;
+                                    thinking_state.enabled = restored.thinking_enabled;
+                                    // Use the ID we loaded by, not from metadata (may be empty for v1)
+                                    current_session_id = Some(selected.id.clone());
+
+                                    // Replay session
+                                    session::replay_session(&state);
+                                }
+                            }
                         }
                         CommandResult::Settings => {
                             show_settings_menu(&working_dir).await;
@@ -1255,14 +1318,16 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                     Ok(()) => {
                         print_usage_for_provider(&provider_manager);
 
-                        if let Err(e) = session::save_session(
+                        match session::save_session(
                             &working_dir,
                             &messages,
                             &provider_manager.current_provider(),
                             provider_manager.current_model_id(),
                             thinking_state.enabled,
+                            current_session_id.as_deref(),
                         ) {
-                            eprintln!("Warning: Failed to save session: {}", e);
+                            Ok(id) => current_session_id = Some(id),
+                            Err(e) => eprintln!("Warning: Failed to save session: {}", e),
                         }
                     }
                 }

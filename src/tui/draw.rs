@@ -376,6 +376,11 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(ref menu) = app.tools_menu {
         super::menus::render_tools_menu(frame, size, menu);
     }
+
+    // Render Sessions menu as overlay if active
+    if let Some(ref menu) = app.sessions_menu {
+        super::menus::render_sessions_menu(frame, size, menu);
+    }
 }
 
 /// Render pending prompts (queued output) in a fixed section

@@ -4,6 +4,9 @@
 
 ### Added
 
+- `/sessions` command to list and switch between previous sessions for the
+  current directory - sessions are now stored separately instead of
+  overwriting each other
 - `/tools` command to enable/disable built-in tools via interactive menu
   in both TUI and CLI modes - disabled tools are persisted to config
 - `henri tool-call grep` subcommand for direct testing of the grep tool
@@ -23,6 +26,9 @@
 
 ### Changed
 
+- Session storage format changed: sessions are now stored in per-directory
+  folders with individual files per session. **Breaking:** existing sessions
+  from before this change will no longer be accessible.
 - CLI: Shift+Tab (cycle models) and Ctrl+T (toggle thinking) now update the
   status bar in place instead of printing a new prompt line
 - `/mcp` now auto-triggers on tab completion (like `/model` and `/settings`)

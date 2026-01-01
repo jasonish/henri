@@ -36,7 +36,8 @@ use super::models::{
 use super::render::ExitPrompt;
 use super::selection::{InputSelection, PositionMap, Selection};
 use super::settings::{
-    DefaultModelMenuState, McpMenuState, SettingOption, SettingsMenuState, ToolsMenuState,
+    DefaultModelMenuState, McpMenuState, SessionsMenuState, SettingOption, SettingsMenuState,
+    ToolsMenuState,
 };
 use crate::commands::{Command, DynamicSlashCommand};
 use crate::custom_commands::CustomCommand;
@@ -109,6 +110,7 @@ pub(crate) struct App {
     pub(crate) mcp_menu: Option<McpMenuState>,
     pub(crate) mcp_toggle_rx: Option<tokio::sync::oneshot::Receiver<McpToggleResult>>,
     pub(crate) tools_menu: Option<ToolsMenuState>,
+    pub(crate) sessions_menu: Option<SessionsMenuState>,
     // History search
     pub(crate) history_search: Option<HistorySearchState>,
     // Chat state
@@ -174,6 +176,8 @@ pub(crate) struct App {
     pub(crate) todo_enabled: bool,
     // Default model setting (last-used or specific model)
     pub(crate) default_model: DefaultModel,
+    // Current session ID for saving
+    pub(crate) current_session_id: Option<String>,
 }
 
 impl App {
@@ -231,46 +235,51 @@ impl App {
         }
 
         // Initialize chat_messages and thinking_enabled from restored session
-        let (chat_messages, thinking_enabled) = if let Some(ref session) = restored_session {
-            messages.push(Message::Text(format!(
-                "Model: {} (thinking {}) · Saved: {} · Messages: {}",
-                session.model_id,
-                if session.thinking_enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                },
-                session::format_age(&session.state.meta.saved_at),
-                session.messages.len()
-            )));
+        let (chat_messages, thinking_enabled, current_session_id) =
+            if let Some(ref session) = restored_session {
+                messages.push(Message::Text(format!(
+                    "Model: {} (thinking {}) · Saved: {} · Messages: {}",
+                    session.model_id,
+                    if session.thinking_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    session::format_age(&session.state.meta.saved_at),
+                    session.messages.len()
+                )));
 
-            // Convert session to rich replay messages
-            let replay_messages = session::extract_replay_messages(&session.state);
+                // Convert session to rich replay messages
+                let replay_messages = session::extract_replay_messages(&session.state);
 
-            for replay_msg in replay_messages {
-                match replay_msg.role {
-                    Role::User => {
-                        let (text, has_images) = extract_user_display(&replay_msg.segments);
-                        let display_text = if has_images {
-                            format!("{}\n[images attached]", text)
-                        } else {
-                            text
-                        };
-                        messages.push(Message::User(UserMessage { display_text }));
+                for replay_msg in replay_messages {
+                    match replay_msg.role {
+                        Role::User => {
+                            let (text, has_images) = extract_user_display(&replay_msg.segments);
+                            let display_text = if has_images {
+                                format!("{}\n[images attached]", text)
+                            } else {
+                                text
+                            };
+                            messages.push(Message::User(UserMessage { display_text }));
+                        }
+                        Role::Assistant => {
+                            build_assistant_messages(&replay_msg.segments, &mut messages);
+                        }
+                        Role::System => {}
                     }
-                    Role::Assistant => {
-                        build_assistant_messages(&replay_msg.segments, &mut messages);
-                    }
-                    Role::System => {}
                 }
-            }
 
-            (session.messages.clone(), session.thinking_enabled)
-        } else {
-            // Clear todo state for fresh sessions
-            clear_todos();
-            (Vec::new(), true)
-        };
+                (
+                    session.messages.clone(),
+                    session.thinking_enabled,
+                    Some(session.session_id.clone()),
+                )
+            } else {
+                // Clear todo state for fresh sessions
+                clear_todos();
+                (Vec::new(), true, None)
+            };
 
         Self {
             input: String::new(),
@@ -302,6 +311,7 @@ impl App {
             mcp_menu: None,
             mcp_toggle_rx: None,
             tools_menu: None,
+            sessions_menu: None,
             history_search: None,
             provider_manager,
             chat_messages,
@@ -346,6 +356,7 @@ impl App {
             mcp_server_count: 0,
             todo_enabled: config.todo_enabled,
             default_model,
+            current_session_id,
         }
     }
 
@@ -1060,6 +1071,120 @@ impl App {
         self.tools_menu.is_some()
     }
 
+    pub(crate) fn open_sessions_menu(&mut self) {
+        self.sessions_menu = Some(SessionsMenuState::new(&self.working_dir));
+    }
+
+    pub(crate) fn close_sessions_menu(&mut self) {
+        self.sessions_menu = None;
+    }
+
+    pub(crate) fn sessions_menu_active(&self) -> bool {
+        self.sessions_menu.is_some()
+    }
+
+    pub(crate) fn select_session(&mut self) {
+        let Some(menu) = &self.sessions_menu else {
+            return;
+        };
+
+        if let Some(session_info) = menu.selected() {
+            let session_id = session_info.id.clone();
+            if let Some(state) = session::load_session_by_id(&self.working_dir, &session_id) {
+                let restored = session::RestoredSession::from_state(&state);
+
+                // Clear current messages
+                self.chat_messages = restored.messages;
+                self.thinking_enabled = restored.thinking_enabled;
+                // Use the session_id we loaded by, not the one from metadata (may be empty for v1)
+                self.current_session_id = Some(session_id.clone());
+
+                // Rebuild display messages from the session
+                self.messages.clear();
+                self.messages.push(Message::Text(format!(
+                    "Loaded session: {} ({} messages)",
+                    session_id,
+                    self.chat_messages.len()
+                )));
+
+                // Replay session messages to display
+                let replay_messages = session::extract_replay_messages(&state);
+                for replay_msg in replay_messages {
+                    match replay_msg.role {
+                        Role::User => {
+                            let (text, has_images) = extract_user_display(&replay_msg.segments);
+                            let display_text = if has_images {
+                                format!("{}\n[images attached]", text)
+                            } else {
+                                text
+                            };
+                            self.messages
+                                .push(Message::User(UserMessage { display_text }));
+                        }
+                        Role::Assistant => {
+                            build_assistant_messages(&replay_msg.segments, &mut self.messages);
+                        }
+                        Role::System => {}
+                    }
+                }
+
+                self.layout_cache.invalidate();
+                self.reset_scroll();
+            }
+        }
+
+        self.close_sessions_menu();
+    }
+
+    pub(crate) fn handle_sessions_menu_key(
+        &mut self,
+        code: crossterm::event::KeyCode,
+        _modifiers: crossterm::event::KeyModifiers,
+    ) -> bool {
+        use crossterm::event::KeyCode;
+
+        let Some(menu) = &mut self.sessions_menu else {
+            return false;
+        };
+
+        match code {
+            KeyCode::Esc => {
+                self.close_sessions_menu();
+                true
+            }
+            KeyCode::Up => {
+                if menu.selected_index > 0 {
+                    menu.selected_index -= 1;
+                }
+                true
+            }
+            KeyCode::Down => {
+                let filtered_len = menu.filtered_sessions().len();
+                if menu.selected_index + 1 < filtered_len {
+                    menu.selected_index += 1;
+                }
+                true
+            }
+            KeyCode::Enter => {
+                self.select_session();
+                true
+            }
+            KeyCode::Backspace => {
+                menu.search_query.pop();
+                // Reset selection when search changes
+                menu.selected_index = 0;
+                true
+            }
+            KeyCode::Char(c) => {
+                menu.search_query.push(c);
+                // Reset selection when search changes
+                menu.selected_index = 0;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn toggle_selected_tool(&mut self) {
         let Some(menu) = &mut self.tools_menu else {
             return;
@@ -1460,6 +1585,11 @@ impl App {
                 self.input.clear();
                 self.cursor = 0;
             }
+            Command::Sessions => {
+                self.open_sessions_menu();
+                self.input.clear();
+                self.cursor = 0;
+            }
             Command::BuildAgentsMd => {
                 let prompt = crate::prompts::BUILD_AGENTS_MD_PROMPT.to_string();
                 // Display the build agents prompt as user input
@@ -1684,14 +1814,17 @@ impl App {
         self.chat_messages = new_messages;
 
         // Save session with compacted messages
-        if let Some(ref model) = self.current_model {
-            let _ = session::save_session(
+        if let Some(ref model) = self.current_model
+            && let Ok(id) = session::save_session(
                 &self.working_dir,
                 &self.chat_messages,
                 &model.provider,
                 &model.model_id,
                 self.thinking_enabled,
-            );
+                self.current_session_id.as_deref(),
+            )
+        {
+            self.current_session_id = Some(id)
         }
     }
 
@@ -1850,7 +1983,10 @@ impl App {
         self.layout_cache.invalidate();
         self.reset_scroll();
         // Delete saved session
-        let _ = session::delete_session(&self.working_dir);
+        if let Some(ref session_id) = self.current_session_id {
+            let _ = session::delete_session(&self.working_dir, session_id);
+        }
+        self.current_session_id = None;
     }
 
     /// Dump the current conversation context as formatted JSON

@@ -225,14 +225,17 @@ impl App {
                         }
 
                         // Auto-save session after successful chat
-                        if let Some(ref model) = self.current_model {
-                            let _ = crate::session::save_session(
+                        if let Some(ref model) = self.current_model
+                            && let Ok(id) = crate::session::save_session(
                                 &self.working_dir,
                                 &self.chat_messages,
                                 &model.provider,
                                 &model.model_id,
                                 self.thinking_enabled,
-                            );
+                                self.current_session_id.as_deref(),
+                            )
+                        {
+                            self.current_session_id = Some(id)
                         }
 
                         // Check for queued prompts

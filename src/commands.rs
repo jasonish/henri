@@ -34,6 +34,7 @@ pub(crate) enum Command {
     Mcp,
     Model,
     Quit,
+    Sessions,
     Settings,
     StartTransactionLogging,
     Status,
@@ -81,6 +82,7 @@ pub(crate) struct ModeTransferSession {
     pub provider: crate::providers::ModelProvider,
     pub model_id: String,
     pub thinking_enabled: bool,
+    pub session_id: Option<String>,
 }
 
 impl ModeTransferSession {
@@ -92,9 +94,15 @@ impl ModeTransferSession {
         use crate::session::{RestoredSession, SerializableMessage, SessionMeta, SessionState};
         use chrono::Utc;
 
+        let session_id = self
+            .session_id
+            .clone()
+            .unwrap_or_else(crate::session::generate_session_id);
+
         // Create minimal session state for compatibility
         let meta = SessionMeta {
-            version: 1,
+            version: 2,
+            session_id: session_id.clone(),
             working_directory: working_dir.to_path_buf(),
             saved_at: Utc::now(),
             provider: self.provider.id().to_string(),
@@ -112,6 +120,7 @@ impl ModeTransferSession {
         };
 
         RestoredSession {
+            session_id,
             messages: self.messages,
             provider: self.provider.id().to_string(),
             model_id: self.model_id,
@@ -208,6 +217,12 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         command: Command::Quit,
         name: "quit",
         description: "Exit the application",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Sessions,
+        name: "sessions",
+        description: "List and select previous sessions",
         availability: Availability::Always,
     },
     SlashCommand {

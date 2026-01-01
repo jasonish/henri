@@ -3,24 +3,33 @@
 
 //! Session state persistence for Henri.
 //!
-//! Automatically saves conversation state after each interaction, allowing
-//! users to continue where they left off when restarting Henri.
+//! Supports multiple sessions per directory. Each session is stored in a
+//! separate file within a directory named after the hash of the working directory.
+//!
+//! Structure:
+//! ```text
+//! ~/.cache/henri/sessions/
+//!   {dir_hash}/                    # Directory per working directory
+//!     {session_id}.jsonl           # One file per session
+//! ```
+
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
 
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
 use crate::providers::ModelProvider;
 use crate::tools::todo::{get_todos, set_todos};
 use crate::tools::{TodoItem, format_tool_call_description};
 
-const SESSION_VERSION: u32 = 1;
+const SESSION_VERSION: u32 = 2;
 
 /// Rich intermediate representation for session replay
 #[derive(Debug, Clone)]
@@ -68,6 +77,11 @@ pub(crate) struct SessionMeta {
     /// Version for future compatibility
     pub version: u32,
 
+    /// Unique session identifier (timestamp-based)
+    /// Defaults to empty string for backward compatibility with v1 sessions.
+    #[serde(default)]
+    pub session_id: String,
+
     /// Working directory this session is for
     pub working_directory: PathBuf,
 
@@ -89,6 +103,36 @@ pub(crate) struct SessionMeta {
     pub todos: Option<Vec<TodoItem>>,
 }
 
+/// Summary info for session listing (without loading full messages)
+#[derive(Debug, Clone)]
+pub(crate) struct SessionInfo {
+    pub id: String,
+    pub saved_at: DateTime<Utc>,
+    pub model_id: String,
+    pub message_count: usize,
+    /// First user message (truncated) for preview
+    pub preview: Option<String>,
+}
+
+impl SessionInfo {
+    /// Format this session info as a display string for menus.
+    pub(crate) fn display_string(&self) -> String {
+        let preview = self
+            .preview
+            .as_ref()
+            .map(|p| format!(" - {}", p))
+            .unwrap_or_default();
+        format!(
+            "{} ({}, {} msgs, {}){}",
+            self.id,
+            self.model_id,
+            self.message_count,
+            format_age(&self.saved_at),
+            preview
+        )
+    }
+}
+
 /// Session state loaded from disk (metadata + messages).
 #[derive(Debug, Clone)]
 pub(crate) struct SessionState {
@@ -100,6 +144,7 @@ pub(crate) struct SessionState {
 /// Contains the converted messages and settings.
 #[derive(Debug, Clone)]
 pub(crate) struct RestoredSession {
+    pub session_id: String,
     pub messages: Vec<Message>,
     pub provider: String,
     pub model_id: String,
@@ -116,6 +161,7 @@ impl RestoredSession {
         }
 
         Self {
+            session_id: state.meta.session_id.clone(),
             messages: restore_messages(state),
             provider: state.meta.provider.clone(),
             model_id: state.meta.model_id.clone(),
@@ -152,10 +198,9 @@ pub(crate) enum SerializableContentBlock {
     },
     Thinking {
         thinking: String,
-        // Legacy field for backward compatibility
-        #[serde(skip_serializing_if = "Option::is_none")]
+        // Legacy field for backward compatibility with v1 sessions
+        #[serde(default, skip_serializing)]
         signature: Option<String>,
-        // New unified provider data field
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_data: Option<serde_json::Value>,
     },
@@ -212,7 +257,7 @@ impl From<&ContentBlock> for SerializableContentBlock {
                 provider_data,
             } => SerializableContentBlock::Thinking {
                 thinking: thinking.clone(),
-                signature: None, // Don't use legacy field
+                signature: None,
                 provider_data: provider_data.clone(),
             },
             ContentBlock::ToolUse {
@@ -281,13 +326,12 @@ impl From<&SerializableContentBlock> for ContentBlock {
                 signature,
                 provider_data,
             } => {
-                // Handle migration from old format (signature field) to new format (provider_data)
-                let provider_data = if let Some(data) = provider_data {
-                    Some(data.clone())
+                // Migrate legacy signature field to provider_data if needed
+                let provider_data = if provider_data.is_some() {
+                    provider_data.clone()
                 } else if let Some(sig) = signature
                     && !sig.is_empty()
                 {
-                    // Migrate old signature field to provider_data
                     Some(serde_json::json!({"signature": sig}))
                 } else {
                     None
@@ -328,14 +372,15 @@ impl From<&SerializableContentBlock> for ContentBlock {
     }
 }
 
-/// Get the sessions directory path.
-fn sessions_dir() -> PathBuf {
+/// Get the base sessions directory path.
+fn sessions_base_dir() -> PathBuf {
     dirs::home_dir()
         .map(|home| home.join(".cache").join("henri").join("sessions"))
         .unwrap_or_else(|| PathBuf::from(".cache/henri/sessions"))
 }
 
-fn get_session_path(dir: &Path) -> PathBuf {
+/// Get the sessions directory for a specific working directory.
+fn sessions_dir_for_path(dir: &Path) -> PathBuf {
     let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
     let path_str = canonical.to_string_lossy();
 
@@ -345,20 +390,38 @@ fn get_session_path(dir: &Path) -> PathBuf {
     let hash_str = format!("{:x}", hash);
     let short_hash = &hash_str[..16];
 
-    sessions_dir().join(format!("{}.json", short_hash))
+    sessions_base_dir().join(short_hash)
+}
+
+/// Get the path for a specific session file.
+fn get_session_path(dir: &Path, session_id: &str) -> PathBuf {
+    sessions_dir_for_path(dir).join(format!("{}.jsonl", session_id))
+}
+
+/// Generate a new session ID based on current timestamp.
+/// Format: YYYYMMDDTHHMMSS (compact ISO-8601 for natural sorting)
+pub(crate) fn generate_session_id() -> String {
+    Utc::now().format("%Y%m%dT%H%M%S").to_string()
 }
 
 /// Save session state to disk in JSONL format.
 /// Line 1: Session metadata
 /// Lines 2+: One message per line
+///
+/// If `session_id` is None, generates a new session ID.
+/// Returns the session ID used.
 pub(crate) fn save_session(
     working_directory: &Path,
     messages: &[Message],
     provider: &ModelProvider,
     model_id: &str,
     thinking_enabled: bool,
-) -> std::io::Result<()> {
-    let session_path = get_session_path(working_directory);
+    session_id: Option<&str>,
+) -> std::io::Result<String> {
+    let session_id = session_id
+        .map(|s| s.to_string())
+        .unwrap_or_else(generate_session_id);
+    let session_path = get_session_path(working_directory, &session_id);
 
     // Ensure the sessions directory exists
     if let Some(parent) = session_path.parent() {
@@ -371,6 +434,7 @@ pub(crate) fn save_session(
 
     let meta = SessionMeta {
         version: SESSION_VERSION,
+        session_id: session_id.clone(),
         working_directory: working_directory.to_path_buf(),
         saved_at: Utc::now(),
         provider: provider.id().to_string(),
@@ -394,14 +458,29 @@ pub(crate) fn save_session(
         writeln!(file, "{}", msg_json)?;
     }
 
-    Ok(())
+    Ok(session_id)
 }
 
-/// Load session state from disk (JSONL format).
-/// Returns None if no session exists or if the session is invalid.
+/// Load the most recent session for a directory.
+/// Returns None if no sessions exist.
 pub(crate) fn load_session(dir: &Path) -> Option<SessionState> {
-    let session_path = get_session_path(dir);
-    let file = File::open(&session_path).ok()?;
+    let sessions = list_sessions(dir);
+    if sessions.is_empty() {
+        return None;
+    }
+    // Sessions are sorted newest first
+    load_session_by_id(dir, &sessions[0].id)
+}
+
+/// Load a specific session by ID.
+pub(crate) fn load_session_by_id(dir: &Path, session_id: &str) -> Option<SessionState> {
+    let session_path = get_session_path(dir, session_id);
+    load_session_from_path(&session_path)
+}
+
+/// Load session state from a specific path.
+fn load_session_from_path(path: &Path) -> Option<SessionState> {
+    let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
@@ -433,9 +512,113 @@ pub(crate) fn load_session(dir: &Path) -> Option<SessionState> {
     Some(SessionState { meta, messages })
 }
 
-/// Delete the session file for a given directory.
-pub(crate) fn delete_session(dir: &Path) -> std::io::Result<()> {
-    let session_path = get_session_path(dir);
+/// List all sessions for a directory, sorted by recency (newest first).
+pub(crate) fn list_sessions(dir: &Path) -> Vec<SessionInfo> {
+    let sessions_dir = sessions_dir_for_path(dir);
+    let mut sessions = Vec::new();
+
+    let Ok(entries) = fs::read_dir(&sessions_dir) else {
+        return sessions;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "jsonl")
+            && let Some(info) = load_session_info(&path)
+        {
+            sessions.push(info);
+        }
+    }
+
+    // Sort by saved_at descending (newest first)
+    sessions.sort_by(|a, b| b.saved_at.cmp(&a.saved_at));
+    sessions
+}
+
+/// Load just the session info (metadata + message count + preview) without loading all messages.
+fn load_session_info(path: &Path) -> Option<SessionInfo> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+
+    // First line is metadata
+    let meta_line = lines.next()?.ok()?;
+    let meta: SessionMeta = serde_json::from_str(&meta_line).ok()?;
+
+    // For v1 sessions, derive ID from filename (strip .jsonl extension)
+    let session_id = if meta.session_id.is_empty() {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    } else {
+        meta.session_id
+    };
+
+    // Count messages and find first user message for preview
+    let mut message_count = 0;
+    let mut preview = None;
+
+    for line in lines {
+        let Ok(line) = line else { continue };
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(msg) = serde_json::from_str::<SerializableMessage>(&line) {
+            message_count += 1;
+            // Get first user message as preview
+            if preview.is_none() && msg.role == Role::User {
+                preview = extract_preview(&msg.content);
+            }
+        }
+    }
+
+    Some(SessionInfo {
+        id: session_id,
+        saved_at: meta.saved_at,
+        model_id: meta.model_id,
+        message_count,
+        preview,
+    })
+}
+
+/// Extract a preview string from message content, truncated to ~60 chars.
+fn extract_preview(content: &SerializableContent) -> Option<String> {
+    let text = match content {
+        SerializableContent::Text(s) => s.clone(),
+        SerializableContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|b| match b {
+                SerializableContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+
+    if text.is_empty() {
+        return None;
+    }
+
+    // Take first line and truncate (char-safe)
+    let first_line = text.lines().next().unwrap_or(&text);
+    Some(truncate_str(first_line, 60))
+}
+
+/// Truncate a string to at most `max_chars` characters, appending "…" if truncated.
+pub(crate) fn truncate_str(s: &str, max_chars: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{}…", truncated)
+    }
+}
+
+/// Delete a specific session by ID.
+pub(crate) fn delete_session(dir: &Path, session_id: &str) -> std::io::Result<()> {
+    let session_path = get_session_path(dir, session_id);
     if session_path.exists() {
         fs::remove_file(&session_path)?;
     }
@@ -449,8 +632,7 @@ fn restore_messages(state: &SessionState) -> Vec<Message> {
 /// Extract rich replay messages from session state
 pub(crate) fn extract_replay_messages(state: &SessionState) -> Vec<SessionReplayMessage> {
     let mut result = Vec::new();
-    let mut tool_results: std::collections::HashMap<String, (usize, bool, Option<String>)> =
-        std::collections::HashMap::new();
+    let mut tool_results: HashMap<String, (usize, bool, Option<String>)> = HashMap::new();
 
     // First pass: collect all tool results
     for msg in &state.messages {
@@ -543,7 +725,7 @@ fn extract_user_segments(content: &SerializableContent) -> Vec<ReplaySegment> {
 
 fn extract_assistant_segments(
     content: &SerializableContent,
-    tool_results: &std::collections::HashMap<String, (usize, bool, Option<String>)>,
+    tool_results: &HashMap<String, (usize, bool, Option<String>)>,
 ) -> Vec<ReplaySegment> {
     let mut segments = Vec::new();
 
@@ -749,8 +931,8 @@ mod tests {
     #[test]
     fn test_session_path_consistency() {
         let dir = Path::new("/tmp/test-project");
-        let path1 = get_session_path(dir);
-        let path2 = get_session_path(dir);
+        let path1 = get_session_path(dir, "20251231T120000");
+        let path2 = get_session_path(dir, "20251231T120000");
         assert_eq!(path1, path2);
     }
 
@@ -758,8 +940,8 @@ mod tests {
     fn test_session_path_different_dirs() {
         let dir1 = Path::new("/tmp/project-a");
         let dir2 = Path::new("/tmp/project-b");
-        let path1 = get_session_path(dir1);
-        let path2 = get_session_path(dir2);
+        let path1 = get_session_path(dir1, "20251231T120000");
+        let path2 = get_session_path(dir2, "20251231T120000");
         assert_ne!(path1, path2);
     }
 
@@ -775,12 +957,13 @@ mod tests {
             }]),
         ];
 
-        save_session(
+        let session_id = save_session(
             working_dir,
             &messages,
             &ModelProvider::Claude,
             "claude-opus-4-5",
             true,
+            None,
         )
         .unwrap();
 
@@ -788,24 +971,100 @@ mod tests {
         assert_eq!(loaded.messages.len(), 2);
         assert_eq!(loaded.meta.provider, "claude");
         assert_eq!(loaded.meta.model_id, "claude-opus-4-5");
+        assert_eq!(loaded.meta.session_id, session_id);
         assert!(loaded.meta.thinking_enabled);
 
-        delete_session(working_dir).unwrap();
+        delete_session(working_dir, &session_id).unwrap();
     }
 
     #[test]
-    fn test_delete_session() {
+    fn test_multiple_sessions() {
         let temp_dir = TempDir::new().unwrap();
         let working_dir = temp_dir.path();
 
-        let messages = vec![Message::user("Hello")];
-        save_session(working_dir, &messages, &ModelProvider::Claude, "test", true).unwrap();
+        // Create first session
+        let messages1 = vec![Message::user("First session")];
+        let id1 = save_session(
+            working_dir,
+            &messages1,
+            &ModelProvider::Claude,
+            "model1",
+            true,
+            Some("20251231T100000"),
+        )
+        .unwrap();
 
-        assert!(load_session(working_dir).is_some());
+        // Create second session (newer)
+        let messages2 = vec![Message::user("Second session")];
+        let id2 = save_session(
+            working_dir,
+            &messages2,
+            &ModelProvider::Claude,
+            "model2",
+            false,
+            Some("20251231T110000"),
+        )
+        .unwrap();
 
-        delete_session(working_dir).unwrap();
+        // List sessions - should be sorted newest first
+        let sessions = list_sessions(working_dir);
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].id, id2); // Newer first
+        assert_eq!(sessions[1].id, id1);
 
-        assert!(load_session(working_dir).is_none());
+        // Load most recent should get second session
+        let loaded = load_session(working_dir).unwrap();
+        assert_eq!(loaded.meta.session_id, id2);
+        assert_eq!(loaded.meta.model_id, "model2");
+
+        // Load specific session by ID
+        let loaded1 = load_session_by_id(working_dir, &id1).unwrap();
+        assert_eq!(loaded1.meta.model_id, "model1");
+
+        // Delete one session
+        delete_session(working_dir, &id1).unwrap();
+        let sessions = list_sessions(working_dir);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, id2);
+
+        delete_session(working_dir, &id2).unwrap();
+    }
+
+    #[test]
+    fn test_session_preview() {
+        let temp_dir = TempDir::new().unwrap();
+        let working_dir = temp_dir.path();
+
+        let messages = vec![
+            Message::user("What is the meaning of life, the universe, and everything?"),
+            Message::assistant_blocks(vec![ContentBlock::Text {
+                text: "42".to_string(),
+            }]),
+        ];
+
+        let session_id = save_session(
+            working_dir,
+            &messages,
+            &ModelProvider::Claude,
+            "test",
+            true,
+            None,
+        )
+        .unwrap();
+
+        let sessions = list_sessions(working_dir);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].message_count, 2);
+        assert!(sessions[0].preview.is_some());
+        assert!(
+            sessions[0]
+                .preview
+                .as_ref()
+                .unwrap()
+                .contains("meaning of life")
+        );
+
+        delete_session(working_dir, &session_id).unwrap();
     }
 
     #[test]
@@ -873,12 +1132,13 @@ mod tests {
             }]),
         ];
 
-        save_session(
+        let session_id = save_session(
             working_dir,
             &messages,
             &ModelProvider::Claude,
             "claude-opus-4-5",
             true,
+            None,
         )
         .unwrap();
 
@@ -910,6 +1170,6 @@ mod tests {
             panic!("Expected Blocks content");
         }
 
-        delete_session(working_dir).unwrap();
+        delete_session(working_dir, &session_id).unwrap();
     }
 }

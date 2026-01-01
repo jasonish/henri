@@ -240,3 +240,51 @@ impl ToolsMenuState {
         }
     }
 }
+
+/// State for the sessions selection menu
+pub(crate) struct SessionsMenuState {
+    /// List of available sessions
+    pub sessions: Vec<crate::session::SessionInfo>,
+    /// Currently selected session index (in filtered list)
+    pub selected_index: usize,
+    /// Search query for filtering sessions
+    pub search_query: String,
+}
+
+impl SessionsMenuState {
+    pub(crate) fn new(working_dir: &std::path::Path) -> Self {
+        let sessions = crate::session::list_sessions(working_dir);
+        Self {
+            sessions,
+            selected_index: 0,
+            search_query: String::new(),
+        }
+    }
+
+    /// Returns filtered sessions matching the search query
+    pub(crate) fn filtered_sessions(&self) -> Vec<(usize, &crate::session::SessionInfo)> {
+        if self.search_query.is_empty() {
+            self.sessions.iter().enumerate().collect()
+        } else {
+            let query = self.search_query.to_lowercase();
+            self.sessions
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    s.model_id.to_lowercase().contains(&query)
+                        || s.preview
+                            .as_ref()
+                            .is_some_and(|p| p.to_lowercase().contains(&query))
+                })
+                .collect()
+        }
+    }
+
+    /// Get the selected session info from filtered results
+    pub(crate) fn selected(&self) -> Option<&crate::session::SessionInfo> {
+        let filtered = self.filtered_sessions();
+        filtered
+            .get(self.selected_index)
+            .map(|(_, session)| *session)
+    }
+}

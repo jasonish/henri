@@ -715,3 +715,141 @@ pub(crate) fn render_tools_menu(
     let widget = Paragraph::new(lines).block(block);
     frame.render_widget(widget, popup_area);
 }
+
+pub(crate) fn render_sessions_menu(
+    frame: &mut Frame,
+    screen: Rect,
+    menu: &super::settings::SessionsMenuState,
+) {
+    let bg = Color::Rgb(32, 32, 32);
+    let border_color = Color::Rgb(80, 80, 80);
+
+    if menu.sessions.is_empty() {
+        // Show empty state
+        let popup_width = 40.min(screen.width.saturating_sub(4));
+        let popup_height = 3;
+        let popup_x = (screen.width.saturating_sub(popup_width)) / 2;
+        let popup_y = (screen.height.saturating_sub(popup_height)) / 2;
+        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        frame.render_widget(Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color))
+            .title(" Sessions ")
+            .title_style(Style::default().fg(Color::Yellow))
+            .style(Style::default().bg(bg));
+
+        let text = Paragraph::new("No previous sessions found.")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+
+        frame.render_widget(text, popup_area);
+        return;
+    }
+
+    // Get filtered sessions
+    let filtered = menu.filtered_sessions();
+    let max_visible = 12;
+    let visible_count = filtered.len().min(max_visible);
+
+    // Calculate popup dimensions
+    let popup_width = 70.min(screen.width.saturating_sub(4));
+    // +3 for borders and search line
+    let popup_height = (visible_count as u16 + 3).min(screen.height.saturating_sub(4));
+
+    // Center the popup
+    let popup_x = (screen.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (screen.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Search line
+    let search_text = if menu.search_query.is_empty() {
+        "Type to filter...".to_string()
+    } else {
+        format!("Filter: {}", menu.search_query)
+    };
+    let search_style = if menu.search_query.is_empty() {
+        Style::default().fg(Color::DarkGray).bg(bg)
+    } else {
+        Style::default().fg(Color::Yellow).bg(bg)
+    };
+    lines.push(Line::raw(search_text).style(search_style));
+
+    if filtered.is_empty() {
+        lines.push(Line::raw(" No matches").style(Style::default().fg(Color::DarkGray).bg(bg)));
+    } else {
+        // Calculate scroll offset for long lists
+        let scroll_offset = if menu.selected_index >= max_visible {
+            menu.selected_index - max_visible + 1
+        } else {
+            0
+        };
+
+        for (display_idx, (_, session)) in filtered.iter().enumerate() {
+            if display_idx < scroll_offset {
+                continue;
+            }
+            if display_idx >= scroll_offset + max_visible {
+                break;
+            }
+
+            let is_selected = display_idx == menu.selected_index;
+            let prefix = if is_selected { ">" } else { " " };
+
+            let age = crate::session::format_age(&session.saved_at);
+            let preview = session
+                .preview
+                .as_ref()
+                .map(|p| format!(" - {}", p))
+                .unwrap_or_default();
+
+            let style = if is_selected {
+                Style::default().fg(Color::Cyan).bg(Color::Rgb(48, 48, 48))
+            } else {
+                Style::default().fg(Color::White).bg(bg)
+            };
+
+            let muted_style = if is_selected {
+                Style::default()
+                    .fg(Color::Rgb(128, 128, 128))
+                    .bg(Color::Rgb(48, 48, 48))
+            } else {
+                Style::default().fg(Color::Rgb(128, 128, 128)).bg(bg)
+            };
+
+            // Truncate preview to fit (char-safe)
+            let max_preview_chars = popup_width as usize - 45;
+            let preview_display = crate::session::truncate_str(&preview, max_preview_chars);
+
+            lines.push(Line::from(vec![
+                Span::styled(format!("{} ", prefix), style),
+                Span::styled(
+                    format!(
+                        "{} · {} msgs · {}",
+                        session.model_id, session.message_count, age
+                    ),
+                    style,
+                ),
+                Span::styled(preview_display, muted_style),
+            ]));
+        }
+    }
+
+    let title = format!(" Sessions ({}) ", filtered.len());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(title)
+        .title_style(Style::default().fg(Color::Yellow))
+        .style(Style::default().bg(bg));
+
+    let widget = Paragraph::new(lines).block(block);
+    frame.render_widget(widget, popup_area);
+}
