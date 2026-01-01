@@ -263,16 +263,16 @@ pub(crate) trait InputEditor {
         let cursor = self.cursor();
         let text = self.input();
         let mut pos = cursor;
-        let mut skipping_whitespace = true;
+        let mut skipping_boundary = true;
 
         for (byte_idx, ch) in text[cursor..].char_indices() {
-            if skipping_whitespace {
-                if !ch.is_whitespace() {
-                    skipping_whitespace = false;
+            if skipping_boundary {
+                if !ch.is_whitespace() && !is_word_boundary(ch) {
+                    skipping_boundary = false;
                 }
                 pos = cursor + byte_idx + ch.len_utf8();
             } else {
-                if ch.is_whitespace() {
+                if ch.is_whitespace() || is_word_boundary(ch) {
                     pos = cursor + byte_idx;
                     break;
                 }
@@ -326,16 +326,16 @@ pub(crate) trait InputEditor {
         let cursor = self.cursor();
         let text = self.input();
         let mut pos = cursor;
-        let mut skipping_whitespace = true;
+        let mut skipping_boundary = true;
 
         for (byte_idx, ch) in text[..cursor].char_indices().rev() {
-            if skipping_whitespace {
-                if !ch.is_whitespace() {
-                    skipping_whitespace = false;
+            if skipping_boundary {
+                if !ch.is_whitespace() && !is_word_boundary(ch) {
+                    skipping_boundary = false;
                 }
                 pos = byte_idx;
             } else {
-                if ch.is_whitespace() {
+                if ch.is_whitespace() || is_word_boundary(ch) {
                     pos = byte_idx + ch.len_utf8();
                     break;
                 }
@@ -350,16 +350,16 @@ pub(crate) trait InputEditor {
         let cursor = self.cursor();
         let text = self.input();
         let mut pos = cursor;
-        let mut skipping_whitespace = true;
+        let mut skipping_boundary = true;
 
         for (byte_idx, ch) in text[cursor..].char_indices() {
-            if skipping_whitespace {
-                if !ch.is_whitespace() {
-                    skipping_whitespace = false;
+            if skipping_boundary {
+                if !ch.is_whitespace() && !is_word_boundary(ch) {
+                    skipping_boundary = false;
                 }
                 pos = cursor + byte_idx + ch.len_utf8();
             } else {
-                if ch.is_whitespace() {
+                if ch.is_whitespace() || is_word_boundary(ch) {
                     pos = cursor + byte_idx;
                     break;
                 }
@@ -491,6 +491,11 @@ pub(crate) fn line_col_to_offset(
     }
 
     text.len()
+}
+
+/// Check if a character is a word boundary for Alt+B/F navigation.
+fn is_word_boundary(ch: char) -> bool {
+    matches!(ch, '/' | '-')
 }
 
 #[cfg(test)]

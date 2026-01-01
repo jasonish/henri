@@ -1209,9 +1209,9 @@ impl PromptUi {
             return;
         }
         let mut idx = self.cursor;
-        // Skip whitespace
+        // Skip whitespace and boundary characters
         while let Some((pos, ch)) = self.buffer[..idx].char_indices().last() {
-            if !ch.is_whitespace() {
+            if !ch.is_whitespace() && !is_word_boundary(ch) {
                 idx = pos + ch.len_utf8();
                 break;
             }
@@ -1219,7 +1219,7 @@ impl PromptUi {
         }
         // Skip word characters
         while let Some((pos, ch)) = self.buffer[..idx].char_indices().last() {
-            if ch.is_whitespace() {
+            if ch.is_whitespace() || is_word_boundary(ch) {
                 idx = pos + ch.len_utf8();
                 break;
             }
@@ -1233,13 +1233,13 @@ impl PromptUi {
         // Skip current word
         while let Some((pos, ch)) = self.buffer[idx..].char_indices().next() {
             idx += pos + ch.len_utf8();
-            if ch.is_whitespace() {
+            if ch.is_whitespace() || is_word_boundary(ch) {
                 break;
             }
         }
-        // Skip whitespace
+        // Skip whitespace and boundary characters
         while let Some((pos, ch)) = self.buffer[idx..].char_indices().next() {
-            if !ch.is_whitespace() {
+            if !ch.is_whitespace() && !is_word_boundary(ch) {
                 break;
             }
             idx += pos + ch.len_utf8();
@@ -1502,6 +1502,11 @@ fn display_width(s: &str) -> usize {
     s.chars()
         .map(|ch| UnicodeWidthChar::width(ch).unwrap_or(1))
         .sum()
+}
+
+/// Check if a character is a word boundary for Alt+B/F navigation.
+fn is_word_boundary(ch: char) -> bool {
+    matches!(ch, '/' | '-')
 }
 
 fn normalize_paste_text(pasted: &str) -> String {

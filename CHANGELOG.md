@@ -26,6 +26,9 @@
 
 ### Changed
 
+- Word navigation (Alt+B/F) and word deletion (Alt+D) now treat `/` and `-`
+  as word boundaries, improving navigation through file paths and hyphenated
+  names in both CLI and TUI modes
 - Session storage format changed: sessions are now stored in per-directory
   folders with individual files per session. **Breaking:** existing sessions
   from before this change will no longer be accessible.
