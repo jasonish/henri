@@ -34,6 +34,7 @@ pub(crate) enum Command {
     Mcp,
     Model,
     Quit,
+    Sandbox,
     Sessions,
     Settings,
     StartTransactionLogging,
@@ -217,6 +218,12 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         command: Command::Quit,
         name: "quit",
         description: "Exit the application",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Sandbox,
+        name: "sandbox",
+        description: "Toggle Landlock sandbox for bash commands",
         availability: Availability::Always,
     },
     SlashCommand {

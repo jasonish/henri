@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
+use std::path::PathBuf;
 use std::process::Stdio;
 
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+use super::sandbox;
 use super::{Tool, ToolDefinition, ToolResult};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
@@ -81,6 +83,20 @@ Web content fetching:
 
         let timeout_secs = input.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
 
+        // Determine effective working directory
+        let effective_cwd: PathBuf = if let Some(ref cwd) = input.cwd {
+            let path = std::path::Path::new(cwd);
+            if !path.is_dir() {
+                return ToolResult::error(
+                    tool_use_id,
+                    format!("Working directory does not exist: {}", cwd),
+                );
+            }
+            path.to_path_buf()
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        };
+
         let mut cmd = Command::new("bash");
         cmd.arg("-c").arg(&input.command);
         cmd.stdout(Stdio::piped());
@@ -92,15 +108,30 @@ Web content fetching:
         cmd.env("EDITOR", "true");
         cmd.env("VISUAL", "true");
 
-        if let Some(ref cwd) = input.cwd {
-            let path = std::path::Path::new(cwd);
-            if !path.is_dir() {
-                return ToolResult::error(
-                    tool_use_id,
-                    format!("Working directory does not exist: {}", cwd),
-                );
+        cmd.current_dir(&effective_cwd);
+
+        // Apply Landlock sandbox if enabled
+        // The ruleset is created here (before fork) so all file descriptors are opened
+        // in the parent process where allocations are safe
+        if services.is_sandbox_enabled()
+            && let Some(ruleset) = sandbox::create_bash_ruleset(&effective_cwd)
+        {
+            // Wrap in Option so we can take() it in the FnMut closure
+            let mut ruleset = Some(ruleset);
+
+            // SAFETY: The pre_exec closure runs after fork but before exec.
+            // sandbox::apply_ruleset only makes direct syscalls (landlock_restrict_self,
+            // prctl) which are async-signal-safe. The ruleset file descriptors were
+            // opened before fork.
+            unsafe {
+                cmd.pre_exec(move || {
+                    if let Some(rs) = ruleset.take() {
+                        sandbox::apply_ruleset(rs)
+                    } else {
+                        Ok(())
+                    }
+                });
             }
-            cmd.current_dir(cwd);
         }
 
         let mut child = match cmd.spawn() {

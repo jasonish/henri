@@ -74,6 +74,7 @@ pub async fn run(
     initial_prompt: Option<String>,
     model: Option<String>,
     lsp_override: Option<bool>,
+    no_sandbox: bool,
 ) -> io::Result<ExitStatus> {
     setup_terminal()?;
 
@@ -101,6 +102,11 @@ pub async fn run(
 
     let services = crate::services::Services::new();
 
+    // Disable sandbox if --no-sandbox was passed
+    if no_sandbox {
+        services.set_sandbox_enabled(false);
+    }
+
     // If no model specified on CLI, try to use the one from the restored session
     let model = model.or_else(|| {
         restored_session
@@ -111,7 +117,7 @@ pub async fn run(
     // Initialize provider manager from config
     let provider_manager = Config::load(model)
         .ok()
-        .map(|config| ProviderManager::new(&config, services));
+        .map(|config| ProviderManager::new(&config, services.clone()));
 
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut app = App::new(

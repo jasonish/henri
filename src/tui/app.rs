@@ -1360,6 +1360,25 @@ impl App {
                 self.input.clear();
                 self.cursor = 0;
             }
+            Command::Sandbox => {
+                if let Some(ref pm) = self.provider_manager {
+                    let services = pm.services();
+                    let enabled = !services.is_sandbox_enabled();
+                    services.set_sandbox_enabled(enabled);
+                    if enabled {
+                        self.messages
+                            .push(Message::Text("Sandbox enabled for bash commands.".into()));
+                    } else {
+                        self.messages.push(Message::Text(
+                            "⚠ Sandbox disabled for bash commands.".into(),
+                        ));
+                    }
+                    self.layout_cache.invalidate();
+                }
+                self.input.clear();
+                self.cursor = 0;
+                self.reset_scroll();
+            }
             Command::StartTransactionLogging => {
                 let path = crate::provider::transaction_log::start(None);
                 self.messages.push(Message::Text(format!(

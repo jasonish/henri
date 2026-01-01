@@ -88,6 +88,9 @@ struct Args {
     #[arg(long, help = "Disable LSP integration", conflicts_with = "lsp")]
     no_lsp: bool,
 
+    #[arg(long, help = "Disable Landlock sandbox for bash commands")]
+    no_sandbox: bool,
+
     #[arg(
         trailing_var_arg = true,
         help = "Prompt to send (non-interactive mode)"
@@ -111,6 +114,9 @@ enum Command {
         #[arg(long, help = "Disable LSP integration", conflicts_with = "lsp")]
         no_lsp: bool,
 
+        #[arg(long, help = "Disable Landlock sandbox for bash commands")]
+        no_sandbox: bool,
+
         #[arg(
             trailing_var_arg = true,
             help = "Prompt to send (non-interactive mode)"
@@ -130,6 +136,9 @@ enum Command {
 
         #[arg(long, help = "Disable LSP integration", conflicts_with = "lsp")]
         no_lsp: bool,
+
+        #[arg(long, help = "Disable Landlock sandbox for bash commands")]
+        no_sandbox: bool,
 
         #[arg(
             trailing_var_arg = true,
@@ -342,6 +351,14 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
+    // Determine sandbox disable: subcommand takes precedence over global args
+    let no_sandbox = match &args.command {
+        Some(Command::Cli { no_sandbox, .. }) | Some(Command::Tui { no_sandbox, .. }) => {
+            *no_sandbox || args.no_sandbox
+        }
+        _ => args.no_sandbox,
+    };
+
     let mut first_run = true;
     let mut transferred_session: Option<commands::ModeTransferSession> = None;
 
@@ -394,6 +411,7 @@ async fn main() -> std::io::Result<()> {
                     working_dir,
                     restored_session,
                     lsp_override,
+                    no_sandbox,
                 })
                 .await?
             }
@@ -410,6 +428,7 @@ async fn main() -> std::io::Result<()> {
                     initial_prompt,
                     model,
                     lsp_override,
+                    no_sandbox,
                 )
                 .await?
             }

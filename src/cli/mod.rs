@@ -44,6 +44,7 @@ enum CommandResult {
     Settings,
     Mcp,
     Tools,
+    SandboxToggle,
 }
 
 fn handle_command(
@@ -204,6 +205,7 @@ fn handle_command(
         }
         Command::Sessions => CommandResult::Sessions,
         Command::Settings => CommandResult::Settings,
+        Command::Sandbox => CommandResult::SandboxToggle,
         Command::Mcp => CommandResult::Mcp,
         Command::Tools => CommandResult::Tools,
         Command::Custom { name, args } => {
@@ -869,6 +871,8 @@ pub(crate) struct CliArgs {
     pub restored_session: Option<session::RestoredSession>,
     /// LSP override: Some(true) = force enable, Some(false) = force disable, None = use config
     pub lsp_override: Option<bool>,
+    /// Disable Landlock sandbox for bash commands
+    pub no_sandbox: bool,
 }
 
 /// Main entry point for the CLI interface
@@ -900,7 +904,12 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
 
     let services = crate::services::Services::new();
 
-    let mut provider_manager = ProviderManager::new(&config, services);
+    // Disable sandbox if --no-sandbox was passed
+    if args.no_sandbox {
+        services.set_sandbox_enabled(false);
+    }
+
+    let mut provider_manager = ProviderManager::new(&config, services.clone());
 
     // Non-interactive mode: run single prompt and exit
     if !args.prompt.is_empty() {
@@ -1210,6 +1219,19 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                         }
                         CommandResult::Tools => {
                             show_tools_menu();
+                        }
+                        CommandResult::SandboxToggle => {
+                            let enabled = !services.is_sandbox_enabled();
+                            services.set_sandbox_enabled(enabled);
+                            if enabled {
+                                output.emit(output::OutputEvent::Info(
+                                    "Sandbox enabled for bash commands.".into(),
+                                ));
+                            } else {
+                                output.emit(output::OutputEvent::Info(
+                                    "⚠ Sandbox disabled for bash commands.".into(),
+                                ));
+                            }
                         }
                     }
 

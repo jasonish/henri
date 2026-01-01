@@ -16,6 +16,8 @@ pub(crate) struct Services {
     pub lsp: Arc<LspManager>,
     /// Interrupt flag for cancellable operations (e.g., bash commands).
     interrupted: Option<Arc<AtomicBool>>,
+    /// Sandbox enabled flag (true by default, can be disabled via --no-sandbox or /sandbox).
+    sandbox_enabled: Arc<AtomicBool>,
 }
 
 impl Services {
@@ -24,6 +26,7 @@ impl Services {
             mcp: crate::mcp::manager(),
             lsp: crate::lsp::manager(),
             interrupted: None,
+            sandbox_enabled: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -34,6 +37,7 @@ impl Services {
             mcp: Arc::new(McpManager::new()),
             lsp: Arc::new(LspManager::new()),
             interrupted: None,
+            sandbox_enabled: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -43,6 +47,7 @@ impl Services {
             mcp: self.mcp.clone(),
             lsp: self.lsp.clone(),
             interrupted: Some(flag),
+            sandbox_enabled: self.sandbox_enabled.clone(),
         }
     }
 
@@ -51,6 +56,16 @@ impl Services {
         self.interrupted
             .as_ref()
             .is_some_and(|f| f.load(Ordering::SeqCst))
+    }
+
+    /// Check if sandbox is enabled.
+    pub(crate) fn is_sandbox_enabled(&self) -> bool {
+        self.sandbox_enabled.load(Ordering::SeqCst)
+    }
+
+    /// Set sandbox enabled/disabled.
+    pub(crate) fn set_sandbox_enabled(&self, enabled: bool) {
+        self.sandbox_enabled.store(enabled, Ordering::SeqCst);
     }
 }
 

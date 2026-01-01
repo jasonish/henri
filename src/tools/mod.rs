@@ -10,6 +10,7 @@ mod file_write;
 mod glob;
 mod grep;
 mod list_dir;
+mod sandbox;
 pub(crate) mod todo;
 
 pub(crate) use bash::Bash;

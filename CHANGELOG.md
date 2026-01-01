@@ -7,6 +7,10 @@
 - `/sessions` command to list and switch between previous sessions for the
   current directory - sessions are now stored separately instead of
   overwriting each other
+- Landlock sandbox for bash tool: restricts write access to cwd and temp
+  directories. Disable with `--no-sandbox` flag or `/sandbox` command.
+  - Allows writes to /dev/null and /dev/tty for git and other tools
+  - Supports git worktrees by allowing writes to the actual git directory
 - `/tools` command to enable/disable built-in tools via interactive menu
   in both TUI and CLI modes - disabled tools are persisted to config
 - `henri tool-call grep` subcommand for direct testing of the grep tool

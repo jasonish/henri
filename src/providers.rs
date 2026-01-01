@@ -445,6 +445,11 @@ impl ProviderManager {
         }
     }
 
+    /// Get a reference to the services container.
+    pub(crate) fn services(&self) -> &Services {
+        &self.services
+    }
+
     pub(crate) fn current_model_string(&self) -> String {
         match self.current_provider {
             ModelProvider::Antigravity | ModelProvider::OpenAiCompat => {
