@@ -130,6 +130,7 @@ pub async fn run(
             show_diffs,
             lsp_enabled,
             todo_enabled,
+            sandbox_enabled: services.is_sandbox_enabled(),
         },
         output,
     );

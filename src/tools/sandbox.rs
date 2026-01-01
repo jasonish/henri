@@ -100,6 +100,20 @@ pub(crate) fn apply_ruleset(ruleset: RulesetCreated) -> std::io::Result<()> {
     ruleset.restrict_self().map(|_| ()).or(Ok(()))
 }
 
+/// Check if Landlock sandboxing is available on this system.
+///
+/// Returns true if Landlock is supported by the kernel and can be used.
+pub(crate) fn is_available() -> bool {
+    // Try to create a minimal ruleset to check availability
+    let abi = ABI::V5;
+    let write_access = AccessFs::from_all(abi) & !AccessFs::from_read(abi);
+    Ruleset::default()
+        .handle_access(write_access)
+        .ok()
+        .and_then(|r| r.create().ok())
+        .is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

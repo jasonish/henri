@@ -45,6 +45,7 @@
 - MCP servers are now disabled by default on startup - use `/mcp` to
   enable them as needed
 - Simplified startup message to "Type /help for help."
+- TUI: Welcome message now shows sandbox status (enabled/disabled/unavailable) matching CLI behavior
 - `Message::Text` in TUI now renders as markdown, enabling formatted help output
 - CLI: Custom commands from slash menu now fill in with a trailing space
   on Enter, allowing arguments to be typed (matching TUI behavior)
@@ -68,6 +69,7 @@
 
 ### Fixed
 
+- CLI: Removed extra blank lines in startup message
 - TUI compaction now correctly preserves the summary instead of
   overwriting it with the summarization request/response
 - MCP server stderr output no longer corrupts TUI display

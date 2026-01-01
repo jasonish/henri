@@ -22,6 +22,7 @@ pub(crate) use file_write::FileWrite;
 pub(crate) use glob::Glob;
 pub(crate) use grep::Grep;
 pub(crate) use list_dir::ListDir;
+pub(crate) use sandbox::is_available as sandbox_available;
 pub(crate) use todo::{TodoItem, TodoRead, TodoStatus, TodoWrite};
 
 use serde::{Deserialize, Serialize};

@@ -76,6 +76,8 @@ pub(crate) struct AppConfig {
     pub(crate) show_diffs: bool,
     pub(crate) lsp_enabled: bool,
     pub(crate) todo_enabled: bool,
+    /// Sandbox state: true = enabled, false = disabled by user
+    pub(crate) sandbox_enabled: bool,
 }
 
 pub(crate) struct App {
@@ -223,14 +225,24 @@ impl App {
         // Build display messages
         let mut messages = Vec::new();
 
+        // Determine sandbox status
+        let sandbox_status = if !config.sandbox_enabled {
+            "Sandbox: disabled"
+        } else if crate::tools::sandbox_available() {
+            "Sandbox: enabled"
+        } else {
+            "Sandbox: unavailable (Landlock not supported)"
+        };
+
         if has_configured_providers {
             messages.push(Message::Text(
                 "Welcome to Henri, your Golden Retriever coding assistant! 🐕".into(),
             ));
+            messages.push(Message::Text(sandbox_status.into()));
             messages.push(Message::Text("Type /help for help.".into()));
         } else {
             messages.push(Message::Text(
-                "Welcome to Henri! 🐕\n\nYou are currently using the free 'zen/grok-code' model. It's great for getting started!\nFor more powerful models (Claude, GPT-4), try connecting your accounts:\n\n  henri provider add      # Authenticate with GitHub Copilot, etc.\n\nType /help for help.".into(),
+                format!("Welcome to Henri! 🐕\n\nYou are currently using the free 'zen/grok-code' model. It's great for getting started!\nFor more powerful models (Claude, GPT-4), try connecting your accounts:\n\n  henri provider add      # Authenticate with GitHub Copilot, etc.\n\n{sandbox_status}\nType /help for help."),
             ));
         }
 
@@ -3086,6 +3098,7 @@ mod tests {
                 show_diffs: true,
                 lsp_enabled: true,
                 todo_enabled: true,
+                sandbox_enabled: true,
             },
             crate::output::OutputContext::null(),
         );
@@ -3140,6 +3153,7 @@ mod tests {
                 show_diffs: true,
                 lsp_enabled: true,
                 todo_enabled: true,
+                sandbox_enabled: true,
             },
             crate::output::OutputContext::null(),
         );
