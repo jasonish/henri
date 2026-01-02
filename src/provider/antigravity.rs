@@ -561,8 +561,9 @@ impl AntigravityProvider {
                     }
 
                     let status = response.status();
+                    let status_code = status.as_u16();
                     // If Unauthorized, fail immediately to trigger refresh in outer loop
-                    if status.as_u16() == 401 {
+                    if status_code == 401 {
                         let text = response.text().await.unwrap_or_default();
                         return Err(Error::Unauthorized(format!(
                             "Antigravity chat failed: {} - {}",
@@ -572,10 +573,20 @@ impl AntigravityProvider {
 
                     // For other errors, store and try next endpoint
                     let text = response.text().await.unwrap_or_default();
-                    last_error = Some(Error::Auth(format!(
-                        "Antigravity chat failed: {} - {}",
-                        status, text
-                    )));
+
+                    // Check for retryable errors (timeouts, overloaded, rate limits)
+                    if super::is_retryable_status(status_code) || super::is_retryable_message(&text)
+                    {
+                        last_error = Some(Error::Retryable {
+                            status: status_code,
+                            message: text,
+                        });
+                    } else {
+                        last_error = Some(Error::Auth(format!(
+                            "Antigravity chat failed: {} - {}",
+                            status, text
+                        )));
+                    }
                 }
                 Err(e) => {
                     last_error = Some(Error::Other(format!(

@@ -598,7 +598,17 @@ impl Provider for CopilotProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let status_code = status.as_u16();
             let text = response.text().await.unwrap_or_default();
+
+            // Check for retryable errors (timeouts, overloaded, rate limits)
+            if super::is_retryable_status(status_code) || super::is_retryable_message(&text) {
+                return Err(Error::Retryable {
+                    status: status_code,
+                    message: text,
+                });
+            }
+
             return Err(Error::Auth(format!(
                 "Copilot chat failed: {} - {}",
                 status, text
@@ -866,7 +876,17 @@ impl CopilotProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let status_code = status.as_u16();
             let text = response.text().await.unwrap_or_default();
+
+            // Check for retryable errors (timeouts, overloaded, rate limits)
+            if super::is_retryable_status(status_code) || super::is_retryable_message(&text) {
+                return Err(Error::Retryable {
+                    status: status_code,
+                    message: text,
+                });
+            }
+
             return Err(Error::Auth(format!(
                 "Copilot responses failed: {} - {}",
                 status, text

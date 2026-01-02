@@ -180,3 +180,36 @@ pub(crate) fn transform_thinking_for_provider_switch(messages: &mut [Message]) {
         }
     }
 }
+
+/// Check if an HTTP status code indicates a retryable error.
+/// Returns true for:
+/// - 408 Request Timeout
+/// - 429 Too Many Requests
+/// - 502 Bad Gateway
+/// - 503 Service Unavailable
+/// - 529 Overloaded (Anthropic-specific)
+pub(crate) fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 502 | 503 | 529)
+}
+
+/// Check if an error message indicates a retryable error.
+/// Looks for common timeout/overload messages in the response body.
+pub(crate) fn is_retryable_message(message: &str) -> bool {
+    let msg_lower = message.to_lowercase();
+    msg_lower.contains("timeout")
+        || msg_lower.contains("overloaded")
+        || msg_lower.contains("too many requests")
+        || msg_lower.contains("rate limit")
+        || msg_lower.contains("service unavailable")
+        || msg_lower.contains("bad gateway")
+}
+
+/// Create the appropriate error for an API response based on status and message.
+/// Returns `Error::Retryable` if the error appears to be transient, otherwise `Error::Api`.
+pub(crate) fn api_error(status: u16, message: String) -> crate::error::Error {
+    if is_retryable_status(status) || is_retryable_message(&message) {
+        crate::error::Error::Retryable { status, message }
+    } else {
+        crate::error::Error::Api { status, message }
+    }
+}

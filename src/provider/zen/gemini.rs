@@ -352,7 +352,7 @@ pub(super) async fn chat(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let message = response.text().await.unwrap_or_default();
-        return Err(Error::Api { status, message });
+        return Err(crate::provider::api_error(status, message));
     }
 
     let mut full_text = String::new();

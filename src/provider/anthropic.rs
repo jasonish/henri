@@ -558,6 +558,7 @@ impl AnthropicProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let status_code = status.as_u16();
             let text = response.text().await.unwrap_or_default();
 
             // Check for corrupted session state error (tool_use without tool_result)
@@ -569,11 +570,19 @@ impl AnthropicProvider {
                 )));
             }
 
-            if status.as_u16() == 401 {
+            if status_code == 401 {
                 return Err(Error::Unauthorized(format!(
                     "Anthropic chat failed: {} - {}",
                     status, text
                 )));
+            }
+
+            // Check for retryable errors (timeouts, overloaded, rate limits)
+            if super::is_retryable_status(status_code) || super::is_retryable_message(&text) {
+                return Err(Error::Retryable {
+                    status: status_code,
+                    message: text,
+                });
             }
 
             return Err(Error::Auth(format!(

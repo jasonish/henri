@@ -29,6 +29,9 @@
 - Prompt caching for Anthropic provider: system prompt and tool
   definitions are now cached to reduce token usage and latency
 - CLI: Syntax highlighting for code blocks and diffs in streaming output
+- Automatic retry with exponential backoff for transient API errors (timeouts,
+  rate limits, 503/529 overloaded responses) - retries up to 3 times before
+  failing
 
 ### Changed
 

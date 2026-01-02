@@ -29,6 +29,9 @@ pub(crate) enum Error {
     #[error("API error: {status} - {message}")]
     Api { status: u16, message: String },
 
+    #[error("Retryable API error: {status} - {message}")]
+    Retryable { status: u16, message: String },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -53,9 +56,14 @@ impl Error {
     /// For API errors, returns just the response body without the status prefix.
     pub(crate) fn tui_message(&self) -> String {
         match self {
-            Error::Api { message, .. } => message.clone(),
+            Error::Api { message, .. } | Error::Retryable { message, .. } => message.clone(),
             other => other.to_string(),
         }
+    }
+
+    /// Check if this error is retryable (server overloaded, timeout, etc.)
+    pub(crate) fn is_retryable(&self) -> bool {
+        matches!(self, Error::Retryable { .. })
     }
 }
 

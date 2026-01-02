@@ -5,12 +5,21 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::output;
-use crate::provider::{ContentBlock, Message, MessageContent, Provider, Role, StopReason};
+use crate::provider::{
+    ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason,
+};
 use crate::services::Services;
 use crate::tools;
+
+/// Maximum number of retries for transient errors (timeouts, overloaded, etc.)
+const MAX_RETRIES: u32 = 3;
+
+/// Initial delay between retries (doubles with each attempt)
+const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 /// Result of a single chat iteration
 pub(crate) enum ChatIterationResult {
@@ -18,6 +27,80 @@ pub(crate) enum ChatIterationResult {
     Done,
     /// Tools were executed, should continue with another iteration
     Continue,
+}
+
+/// Send a chat request to the provider with retry logic for transient errors.
+async fn send_with_retry<P: Provider>(
+    provider: &P,
+    messages: Vec<Message>,
+    interrupted: &Arc<AtomicBool>,
+    output: &output::OutputContext,
+) -> Result<ChatResponse> {
+    let mut attempts = 0;
+    let mut delay = INITIAL_RETRY_DELAY;
+
+    loop {
+        // Check for interrupt before each attempt
+        if interrupted.load(Ordering::SeqCst) {
+            output::emit_interrupted(output);
+            return Err(Error::Interrupted);
+        }
+
+        // Notify that we're waiting for the model
+        output::emit_waiting(output);
+
+        // Race the model call against interrupt check
+        let result = tokio::select! {
+            biased;
+            _ = async {
+                while !interrupted.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            } => {
+                output::emit_interrupted(output);
+                return Err(Error::Interrupted);
+            }
+            result = provider.chat(messages.clone(), output) => result
+        };
+
+        match result {
+            Ok(response) => return Ok(response),
+            Err(e) if e.is_retryable() && attempts < MAX_RETRIES => {
+                attempts += 1;
+                output::emit_error(
+                    output,
+                    &format!(
+                        "{} (retrying in {}s, attempt {}/{})",
+                        e.tui_message(),
+                        delay.as_secs(),
+                        attempts,
+                        MAX_RETRIES
+                    ),
+                );
+
+                // Wait before retrying, but check for interrupts
+                tokio::select! {
+                    biased;
+                    _ = async {
+                        while !interrupted.load(Ordering::SeqCst) {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    } => {
+                        output::emit_interrupted(output);
+                        return Err(Error::Interrupted);
+                    }
+                    _ = tokio::time::sleep(delay) => {}
+                };
+
+                // Exponential backoff
+                delay *= 2;
+            }
+            Err(e) => {
+                output::emit_error(output, &e.tui_message());
+                return Err(e);
+            }
+        }
+    }
 }
 
 /// Run a single chat iteration: one provider call plus tool execution if needed.
@@ -37,30 +120,8 @@ pub(crate) async fn run_chat_iteration<P: Provider>(
         return Err(Error::Interrupted);
     }
 
-    // Notify that we're waiting for the model
-    output::emit_waiting(output);
-
-    // Race the model call against interrupt check
-    let response = tokio::select! {
-        biased;
-        _ = async {
-            while !interrupted.load(Ordering::SeqCst) {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            }
-        } => {
-            output::emit_interrupted(output);
-            return Err(Error::Interrupted);
-        }
-        result = provider.chat(messages.clone(), output) => {
-            match result {
-                Ok(response) => response,
-                Err(e) => {
-                    output::emit_error(output, &e.tui_message());
-                    return Err(e);
-                }
-            }
-        }
-    };
+    // Send the chat request with retry logic for transient errors
+    let response = send_with_retry(provider, messages.clone(), interrupted, output).await?;
 
     // If no tool calls, add the response and we're done
     if response.stop_reason != StopReason::ToolUse || response.tool_calls.is_empty() {
