@@ -64,6 +64,8 @@
   (e.g., test failures) to reduce noise, showing only the status indicator (✗)
 - Thinking toggle visibility in UI is now model-aware: hidden for models where
   thinking cannot be disabled (e.g., minimax-m2.1-free, grok-code in Zen provider)
+- TUI: Markdown tables that would exceed terminal width are now left unformatted
+  to prevent horizontal overflow
 
 ### Internal
 

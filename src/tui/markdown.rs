@@ -169,8 +169,18 @@ pub(crate) fn calculate_display_width(text: &str) -> usize {
     width
 }
 
-/// Align markdown tables for consistent column widths
-pub(crate) fn align_markdown_tables(text: &str) -> String {
+/// Calculate the total width of a formatted table row
+fn calculate_table_row_width(col_widths: &[usize]) -> usize {
+    // Format: | cell1 | cell2 | ... |
+    // Each column contributes: 1 (space) + width + 1 (space) + 1 (|)
+    // Plus 1 for the leading |
+    1 + col_widths.iter().map(|w| w + 3).sum::<usize>()
+}
+
+/// Align markdown tables for consistent column widths.
+/// If max_width is provided and the formatted table would exceed it,
+/// the original table text is preserved without formatting.
+pub(crate) fn align_markdown_tables(text: &str, max_width: Option<usize>) -> String {
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
         return text.to_string();
@@ -186,6 +196,7 @@ pub(crate) fn align_markdown_tables(text: &str) -> String {
             if i + 1 < lines.len() && is_table_separator(lines[i + 1]) {
                 // Found a table - collect all rows
                 let mut table_rows: Vec<Vec<String>> = vec![header_cells];
+                let table_start = i;
                 let mut j = i + 2; // Skip header and separator
 
                 while j < lines.len() {
@@ -213,6 +224,20 @@ pub(crate) fn align_markdown_tables(text: &str) -> String {
                 // Minimum width of 3 for separator dashes
                 for w in &mut col_widths {
                     *w = (*w).max(3);
+                }
+
+                // Check if formatted table would be too wide
+                let table_width = calculate_table_row_width(&col_widths);
+                if let Some(max) = max_width
+                    && table_width > max
+                {
+                    // Table is too wide - preserve original lines without formatting
+                    for line in lines.iter().take(j).skip(table_start) {
+                        result.push_str(line);
+                        result.push('\n');
+                    }
+                    i = j;
+                    continue;
                 }
 
                 // Render header

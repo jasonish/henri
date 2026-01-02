@@ -1204,7 +1204,7 @@ pub(crate) fn render_text_message(
         return;
     }
 
-    let aligned_text = align_markdown_tables(trimmed);
+    let aligned_text = align_markdown_tables(trimmed, Some(ctx.area.width as usize));
     render_markdown_with_selection(ctx, &aligned_text, bg_color, None);
 }
 
