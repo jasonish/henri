@@ -64,6 +64,7 @@ const ZEN_MODELS: &[ZenModelSpec] = &[
     ZenModelSpec::new("gpt-5.1-codex", ApiType::OpenAiResponses, true),
     ZenModelSpec::new("gpt-5.1-codex-max", ApiType::OpenAiResponses, true),
     ZenModelSpec::new("grok-code", ApiType::OpenAiCompatible, false),
+    ZenModelSpec::new("minimax-m2.1-free", ApiType::Anthropic, false),
 ];
 
 fn get_model_spec(model: &str) -> Option<&'static ZenModelSpec> {
