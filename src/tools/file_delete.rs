@@ -3,8 +3,9 @@
 
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use super::sandbox;
 use super::{Tool, ToolDefinition, ToolResult};
 
 pub(crate) struct FileDelete;
@@ -38,7 +39,7 @@ impl Tool for FileDelete {
         tool_use_id: &str,
         input: serde_json::Value,
         _output: &crate::output::OutputContext,
-        _services: &crate::services::Services,
+        services: &crate::services::Services,
     ) -> ToolResult {
         let input: FileDeleteInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
@@ -46,6 +47,12 @@ impl Tool for FileDelete {
         };
 
         let path = Path::new(&input.file_path);
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        if let Err(message) = sandbox::check_write_access(path, &cwd, services.is_sandbox_enabled())
+        {
+            return ToolResult::error(tool_use_id, message);
+        }
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &input.file_path) {
             return e;

@@ -11,6 +11,8 @@
   directories. Disable with `--no-sandbox` flag or `/sandbox` command.
   - Allows writes to /dev/null and /dev/tty for git and other tools
   - Supports git worktrees by allowing writes to the actual git directory
+  - Sandbox enforcement for `file_write`, `file_edit`, and `file_delete` tools
+    restricting writes to cwd and safe temporary directories
 - `/tools` command to enable/disable built-in tools via interactive menu
   in both TUI and CLI modes - disabled tools are persisted to config
 - `henri tool-call grep` subcommand for direct testing of the grep tool

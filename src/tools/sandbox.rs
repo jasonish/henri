@@ -45,7 +45,112 @@ fn get_git_worktree_dir(cwd: &Path) -> Option<PathBuf> {
 }
 
 /// Paths that should be writable beyond the working directory.
-const WRITE_PATHS: &[&str] = &["/tmp", "/var/tmp", "/dev/null", "/dev/tty"];
+const WRITE_DIRS: &[&str] = &["/tmp", "/var/tmp"];
+const WRITE_FILES: &[&str] = &["/dev/null", "/dev/tty"];
+
+#[derive(Debug, Default)]
+struct AllowedWritePaths {
+    directories: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+}
+
+fn canonicalize_existing(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn allowed_write_paths(cwd: &Path) -> AllowedWritePaths {
+    let mut allowed = AllowedWritePaths::default();
+    let cwd = canonicalize_existing(cwd);
+
+    allowed.directories.push(cwd.clone());
+
+    if let Some(git_dir) = get_git_worktree_dir(&cwd) {
+        allowed.directories.push(canonicalize_existing(&git_dir));
+    }
+
+    for dir in WRITE_DIRS {
+        allowed
+            .directories
+            .push(canonicalize_existing(Path::new(dir)));
+    }
+
+    for file in WRITE_FILES {
+        allowed.files.push(canonicalize_existing(Path::new(file)));
+    }
+
+    allowed
+}
+
+fn allowed_write_paths_for_ruleset(cwd: &Path) -> Vec<PathBuf> {
+    let allowed = allowed_write_paths(cwd);
+    allowed
+        .directories
+        .into_iter()
+        .chain(allowed.files)
+        .collect()
+}
+
+fn canonicalize_for_write(path: &Path) -> Result<PathBuf, String> {
+    if let Ok(canonical) = path.canonicalize() {
+        return Ok(canonical);
+    }
+
+    let mut current = path.parent();
+    while let Some(parent) = current {
+        if parent.exists() {
+            let canonical_parent = parent
+                .canonicalize()
+                .map_err(|e| format!("Failed to canonicalize {}: {}", parent.display(), e))?;
+            let remainder = path
+                .strip_prefix(parent)
+                .map_err(|_| format!("Failed to resolve path: {}", path.display()))?;
+            return Ok(canonical_parent.join(remainder));
+        }
+        current = parent.parent();
+    }
+
+    Err(format!("Failed to resolve path: {}", path.display()))
+}
+
+fn validate_write_path(target: &Path, cwd: &Path) -> Result<(), String> {
+    let absolute_target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        cwd.join(target)
+    };
+
+    let canonical_target = canonicalize_for_write(&absolute_target)?;
+    let allowed = allowed_write_paths(cwd);
+
+    if allowed.files.contains(&canonical_target) {
+        return Ok(());
+    }
+
+    if allowed
+        .directories
+        .iter()
+        .any(|root| canonical_target.starts_with(root))
+    {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Sandbox: write access denied for {}",
+        absolute_target.display()
+    ))
+}
+
+pub(crate) fn check_write_access(
+    target: &Path,
+    cwd: &Path,
+    sandbox_enabled: bool,
+) -> Result<(), String> {
+    if !sandbox_enabled || !is_available() {
+        return Ok(());
+    }
+
+    validate_write_path(target, cwd)
+}
 
 /// Create a Landlock ruleset for bash command execution.
 ///
@@ -68,23 +173,10 @@ pub(crate) fn create_bash_ruleset(cwd: &Path) -> Option<RulesetCreated> {
         .create()
         .ok()?;
 
-    // Allow writes to cwd and subdirectories
+    // Allow writes to cwd and other permitted paths
+    let allowed_paths = allowed_write_paths_for_ruleset(cwd);
     let ruleset = ruleset
-        .add_rules(path_beneath_rules([cwd], write_access))
-        .ok()?;
-
-    // Allow writes to git worktree directory if applicable
-    let ruleset = if let Some(git_dir) = get_git_worktree_dir(cwd) {
-        ruleset
-            .add_rules(path_beneath_rules([git_dir], write_access))
-            .ok()?
-    } else {
-        ruleset
-    };
-
-    // Allow writes to standard writable paths
-    let ruleset = ruleset
-        .add_rules(path_beneath_rules(WRITE_PATHS, write_access))
+        .add_rules(path_beneath_rules(allowed_paths, write_access))
         .ok()?;
 
     Some(ruleset)
@@ -125,5 +217,21 @@ mod tests {
         // This may return None on systems without Landlock support
         let _ruleset = create_bash_ruleset(&cwd);
         // Just verify it doesn't panic
+    }
+
+    #[test]
+    fn test_validate_write_path_allows_cwd() {
+        let cwd = env::current_dir().unwrap();
+        let allowed_path = cwd.join("sandbox-test.txt");
+
+        assert!(validate_write_path(&allowed_path, &cwd).is_ok());
+    }
+
+    #[test]
+    fn test_validate_write_path_allows_tmp() {
+        let cwd = env::current_dir().unwrap();
+        let allowed_path = PathBuf::from("/tmp/henri-sandbox-test.txt");
+
+        assert!(validate_write_path(&allowed_path, &cwd).is_ok());
     }
 }

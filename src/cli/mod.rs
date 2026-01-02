@@ -871,7 +871,7 @@ pub(crate) struct CliArgs {
     pub restored_session: Option<session::RestoredSession>,
     /// LSP override: Some(true) = force enable, Some(false) = force disable, None = use config
     pub lsp_override: Option<bool>,
-    /// Disable Landlock sandbox for bash commands
+    /// Disable sandbox for write-capable tools
     pub no_sandbox: bool,
 }
 

@@ -3,8 +3,9 @@
 
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use super::sandbox;
 use super::{Tool, ToolDefinition, ToolResult};
 
 /// Tool for performing exact string replacements in files
@@ -81,6 +82,13 @@ impl Tool for FileEdit {
         }
         if let Err(e) = super::validate_is_file(tool_use_id, path, &input.file_path) {
             return e;
+        }
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        if let Err(message) = sandbox::check_write_access(path, &cwd, services.is_sandbox_enabled())
+        {
+            return ToolResult::error(tool_use_id, message);
         }
 
         // Read the file contents

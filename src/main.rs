@@ -88,7 +88,7 @@ struct Args {
     #[arg(long, help = "Disable LSP integration", conflicts_with = "lsp")]
     no_lsp: bool,
 
-    #[arg(long, help = "Disable Landlock sandbox for bash commands")]
+    #[arg(long, help = "Disable sandbox for write-capable tools")]
     no_sandbox: bool,
 
     #[arg(
@@ -114,7 +114,7 @@ enum Command {
         #[arg(long, help = "Disable LSP integration", conflicts_with = "lsp")]
         no_lsp: bool,
 
-        #[arg(long, help = "Disable Landlock sandbox for bash commands")]
+        #[arg(long, help = "Disable sandbox for write-capable tools")]
         no_sandbox: bool,
 
         #[arg(
@@ -137,7 +137,7 @@ enum Command {
         #[arg(long, help = "Disable LSP integration", conflicts_with = "lsp")]
         no_lsp: bool,
 
-        #[arg(long, help = "Disable Landlock sandbox for bash commands")]
+        #[arg(long, help = "Disable sandbox for write-capable tools")]
         no_sandbox: bool,
 
         #[arg(

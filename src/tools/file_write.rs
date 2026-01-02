@@ -4,8 +4,9 @@
 use base64::Engine;
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use super::sandbox;
 use super::{Tool, ToolDefinition, ToolResult};
 
 pub(crate) struct FileWrite;
@@ -81,6 +82,13 @@ impl Tool for FileWrite {
                 tool_use_id,
                 format!("Path is a directory: {}", input.file_path),
             );
+        }
+
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+        if let Err(message) = sandbox::check_write_access(path, &cwd, services.is_sandbox_enabled())
+        {
+            return ToolResult::error(tool_use_id, message);
         }
 
         if let Some(parent) = path.parent()

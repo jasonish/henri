@@ -223,7 +223,7 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         command: Command::Sandbox,
         name: "sandbox",
-        description: "Toggle Landlock sandbox for bash commands",
+        description: "Toggle sandbox for write-capable tools",
         availability: Availability::Always,
     },
     SlashCommand {
