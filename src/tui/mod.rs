@@ -39,6 +39,7 @@ use ratatui::prelude::*;
 use tokio::time::interval;
 
 use crate::config::{Config, ConfigFile};
+use crate::provider::zen::ZenProvider;
 use crate::providers::ProviderManager;
 use crate::session::RestoredSession;
 
@@ -58,7 +59,9 @@ use selection::ContentPosition;
 pub(crate) fn supports_thinking(provider: crate::providers::ModelProvider, model: &str) -> bool {
     match provider {
         crate::providers::ModelProvider::Antigravity => true,
-        crate::providers::ModelProvider::OpenCodeZen => true,
+        crate::providers::ModelProvider::OpenCodeZen => {
+            ZenProvider::model_thinking_toggleable(model)
+        }
         crate::providers::ModelProvider::GitHubCopilot => model.starts_with("gpt-5"),
         crate::providers::ModelProvider::Claude => true,
         crate::providers::ModelProvider::OpenAi => false,

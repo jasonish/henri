@@ -39,32 +39,42 @@ struct ZenModelSpec {
     name: &'static str,
     api_type: ApiType,
     supports_thinking: bool,
+    /// Whether the thinking toggle is available for this model.
+    /// Some models support thinking but force it on (cannot be disabled).
+    thinking_toggleable: bool,
 }
 
 impl ZenModelSpec {
-    const fn new(name: &'static str, api_type: ApiType, supports_thinking: bool) -> Self {
+    const fn new(
+        name: &'static str,
+        api_type: ApiType,
+        supports_thinking: bool,
+        thinking_toggleable: bool,
+    ) -> Self {
         Self {
             name,
             api_type,
             supports_thinking,
+            thinking_toggleable,
         }
     }
 }
 
 const ZEN_MODELS: &[ZenModelSpec] = &[
-    ZenModelSpec::new("big-pickle", ApiType::OpenAiCompatible, true),
-    ZenModelSpec::new("claude-haiku-4-5", ApiType::Anthropic, true),
-    ZenModelSpec::new("claude-opus-4-5", ApiType::Anthropic, true),
-    ZenModelSpec::new("claude-sonnet-4-5", ApiType::Anthropic, true),
-    ZenModelSpec::new("gemini-3-pro", ApiType::Gemini, true),
-    ZenModelSpec::new("gemini-3-flash", ApiType::Gemini, true),
-    ZenModelSpec::new("glm-4.6", ApiType::OpenAiCompatible, true),
-    ZenModelSpec::new("glm-4.7-free", ApiType::OpenAiCompatible, true),
-    ZenModelSpec::new("gpt-5.1", ApiType::OpenAiResponses, true),
-    ZenModelSpec::new("gpt-5.1-codex", ApiType::OpenAiResponses, true),
-    ZenModelSpec::new("gpt-5.1-codex-max", ApiType::OpenAiResponses, true),
-    ZenModelSpec::new("grok-code", ApiType::OpenAiCompatible, false),
-    ZenModelSpec::new("minimax-m2.1-free", ApiType::Anthropic, false),
+    ZenModelSpec::new("big-pickle", ApiType::OpenAiCompatible, true, true),
+    ZenModelSpec::new("claude-haiku-4-5", ApiType::Anthropic, true, true),
+    ZenModelSpec::new("claude-opus-4-5", ApiType::Anthropic, true, true),
+    ZenModelSpec::new("claude-sonnet-4-5", ApiType::Anthropic, true, true),
+    ZenModelSpec::new("gemini-3-pro", ApiType::Gemini, true, true),
+    ZenModelSpec::new("gemini-3-flash", ApiType::Gemini, true, true),
+    ZenModelSpec::new("glm-4.6", ApiType::OpenAiCompatible, true, true),
+    ZenModelSpec::new("glm-4.7-free", ApiType::OpenAiCompatible, true, true),
+    ZenModelSpec::new("gpt-5.1", ApiType::OpenAiResponses, true, true),
+    ZenModelSpec::new("gpt-5.1-codex", ApiType::OpenAiResponses, true, true),
+    ZenModelSpec::new("gpt-5.1-codex-max", ApiType::OpenAiResponses, true, true),
+    ZenModelSpec::new("grok-code", ApiType::OpenAiCompatible, true, false),
+    // minimax-m2.1-free supports thinking but it's forced (cannot be disabled)
+    ZenModelSpec::new("minimax-m2.1-free", ApiType::Anthropic, true, false),
 ];
 
 fn get_model_spec(model: &str) -> Option<&'static ZenModelSpec> {
@@ -174,6 +184,9 @@ impl ZenProvider {
     }
 
     pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
+        if let Some(ref mut delegate) = self.openai_compat_delegate {
+            delegate.set_reasoning_effort(mode.clone());
+        }
         self.thinking_mode = mode;
     }
 
@@ -207,6 +220,14 @@ impl ZenProvider {
 
     pub(crate) fn models() -> &'static [&'static str] {
         &ZEN_MODEL_NAMES
+    }
+
+    /// Returns true if the thinking toggle should be available for this model.
+    /// Some models support thinking but force it on (cannot be disabled).
+    pub(crate) fn model_thinking_toggleable(model: &str) -> bool {
+        get_model_spec(model)
+            .map(|m| m.thinking_toggleable)
+            .unwrap_or(true)
     }
 
     /// Get the context limit for a given model name

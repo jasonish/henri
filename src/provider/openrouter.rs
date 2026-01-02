@@ -92,12 +92,12 @@ impl Provider for OpenRouterProvider {
         messages: Vec<Message>,
         output: &crate::output::OutputContext,
     ) -> Result<ChatResponse> {
-        execute_chat(&self.config, &self.provider_config, &messages, output).await
+        execute_chat(&self.config, &self.provider_config, &messages, output, None).await
     }
 
     async fn prepare_request(&self, messages: Vec<Message>) -> Result<serde_json::Value> {
         use crate::provider::openai_compat::build_request;
-        let request = build_request(&self.config, &self.provider_config, &messages).await?;
+        let request = build_request(&self.config, &self.provider_config, &messages, None).await?;
         Ok(serde_json::to_value(&request)?)
     }
 

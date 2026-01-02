@@ -20,6 +20,7 @@ use crate::custom_commands;
 use crate::error;
 use crate::history::FileHistory;
 use crate::output;
+use crate::provider::zen::ZenProvider;
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
 use crate::providers::{ModelProvider, ProviderManager, ThinkingState, build_model_choices};
 use crate::session;
@@ -728,7 +729,7 @@ fn show_default_model_menu(current: &DefaultModel) {
 pub(crate) fn supports_thinking(provider: ModelProvider, model: &str) -> bool {
     match provider {
         ModelProvider::Antigravity => true,
-        ModelProvider::OpenCodeZen => true,
+        ModelProvider::OpenCodeZen => ZenProvider::model_thinking_toggleable(model),
         ModelProvider::GitHubCopilot => model.starts_with("gpt-5"),
         ModelProvider::Claude => true,
         ModelProvider::OpenAi => false,

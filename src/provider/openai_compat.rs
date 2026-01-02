@@ -136,8 +136,17 @@ pub async fn execute_chat(
     model_config: &dyn ModelConfigProvider,
     messages: &[Message],
     output: &crate::output::OutputContext,
+    reasoning_effort_override: Option<&str>,
 ) -> Result<ChatResponse> {
-    execute_chat_inner(config, model_config, messages, 0, output).await
+    execute_chat_inner(
+        config,
+        model_config,
+        messages,
+        0,
+        output,
+        reasoning_effort_override,
+    )
+    .await
 }
 
 async fn execute_chat_inner(
@@ -146,9 +155,10 @@ async fn execute_chat_inner(
     messages: &[Message],
     continuation_depth: u8,
     output: &crate::output::OutputContext,
+    reasoning_effort_override: Option<&str>,
 ) -> Result<ChatResponse> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let request = build_request(config, model_config, messages).await?;
+    let request = build_request(config, model_config, messages, reasoning_effort_override).await?;
 
     let mut req_headers = HashMap::new();
     req_headers.insert(
@@ -379,6 +389,7 @@ async fn execute_chat_inner(
             &extended_messages,
             continuation_depth + 1,
             output,
+            reasoning_effort_override,
         ))
         .await;
     }
@@ -427,6 +438,7 @@ pub(crate) async fn build_request(
     config: &OpenAiChatConfig,
     model_config: &dyn ModelConfigProvider,
     messages: &[Message],
+    reasoning_effort_override: Option<&str>,
 ) -> Result<OpenAiRequest> {
     let mut all_messages = vec![Message::system(prompts::system_prompt().join("\n\n"))];
     all_messages.extend(messages.iter().cloned());
@@ -447,6 +459,11 @@ pub(crate) async fn build_request(
     // Get model-specific config if available
     let model_params = model_config.get_model_config(&config.model);
 
+    // Use override if provided, otherwise fall back to model config
+    let reasoning_effort = reasoning_effort_override
+        .map(|s| s.to_string())
+        .or_else(|| model_params.and_then(|c| c.reasoning_effort.clone()));
+
     Ok(OpenAiRequest {
         model: config.model.clone(),
         messages: build_messages(&all_messages),
@@ -455,7 +472,7 @@ pub(crate) async fn build_request(
         temperature: model_params.and_then(|c| c.temperature),
         max_tokens: model_params.and_then(|c| c.max_tokens),
         stop: model_params.and_then(|c| c.stop_sequences.clone()),
-        reasoning_effort: model_params.and_then(|c| c.reasoning_effort.clone()),
+        reasoning_effort,
     })
 }
 
@@ -590,6 +607,8 @@ fn build_messages(messages: &[Message]) -> Vec<serde_json::Value> {
 pub(crate) struct OpenAiCompatProvider {
     config: OpenAiChatConfig,
     provider_config: crate::config::OpenAiCompatProviderConfig,
+    /// Dynamic override for reasoning_effort (takes precedence over model config)
+    reasoning_effort: Option<String>,
 }
 
 impl OpenAiCompatProvider {
@@ -648,6 +667,7 @@ impl OpenAiCompatProvider {
         Ok(Self {
             config: chat_config,
             provider_config,
+            reasoning_effort: None,
         })
     }
 
@@ -669,11 +689,16 @@ impl OpenAiCompatProvider {
         Self {
             config: chat_config,
             provider_config: config,
+            reasoning_effort: None,
         }
     }
 
     pub(crate) fn set_model(&mut self, model: String) {
         self.config.model = model;
+    }
+
+    pub(crate) fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        self.reasoning_effort = effort;
     }
 
     /// Get context limit for a given model name
@@ -689,11 +714,24 @@ impl Provider for OpenAiCompatProvider {
         messages: Vec<Message>,
         output: &crate::output::OutputContext,
     ) -> Result<ChatResponse> {
-        execute_chat(&self.config, &self.provider_config, &messages, output).await
+        execute_chat(
+            &self.config,
+            &self.provider_config,
+            &messages,
+            output,
+            self.reasoning_effort.as_deref(),
+        )
+        .await
     }
 
     async fn prepare_request(&self, messages: Vec<Message>) -> Result<serde_json::Value> {
-        let request = build_request(&self.config, &self.provider_config, &messages).await?;
+        let request = build_request(
+            &self.config,
+            &self.provider_config,
+            &messages,
+            self.reasoning_effort.as_deref(),
+        )
+        .await?;
         Ok(serde_json::to_value(&request)?)
     }
 

@@ -62,6 +62,8 @@
 - Claude default model updated to claude-haiku-4-5
 - TUI: Suppressed detailed error output for bash commands in conversation history
   (e.g., test failures) to reduce noise, showing only the status indicator (✗)
+- Thinking toggle visibility in UI is now model-aware: hidden for models where
+  thinking cannot be disabled (e.g., minimax-m2.1-free, grok-code in Zen provider)
 
 ### Internal
 
