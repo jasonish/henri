@@ -60,6 +60,8 @@
 - Claude thinking now supports budget levels (off/low/medium/high) instead
   of simple on/off toggle
 - Claude default model updated to claude-haiku-4-5
+- TUI: Suppressed detailed error output for bash commands in conversation history
+  (e.g., test failures) to reduce noise, showing only the status indicator (✗)
 
 ### Internal
 

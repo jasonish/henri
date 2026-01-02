@@ -146,8 +146,12 @@ impl App {
                         if !last_tool.contains("todo_") {
                             if is_error {
                                 *last_tool = last_tool.replace("▶", "✗");
-                                // Add error preview as a new line
-                                if let Some(preview) = error_preview {
+                                // Add error preview as a new line, but skip for bash commands
+                                // (identified by "Running: " prefix) as they often fail in tests/checks
+                                // where we just want the status indicator
+                                if let Some(preview) = error_preview
+                                    && !last_tool.contains("Running: ")
+                                {
                                     msg.calls.push(format!("  ✗ Error: {}", preview));
                                 }
                             } else {

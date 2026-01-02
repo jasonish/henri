@@ -2956,7 +2956,16 @@ fn build_assistant_messages(segments: &[session::ReplaySegment], messages: &mut 
             } => {
                 // Tool results append to the current tool calls batch
                 if *is_error && let Some(preview) = error_preview {
-                    current_tool_calls.push(format!("  ✗ Error: {}", preview));
+                    // Check if this is a bash command (starts with "Running: ")
+                    // If so, suppress the error details as they can be noisy in history
+                    let is_bash = current_tool_calls
+                        .last()
+                        .map(|s| s.contains("Running: "))
+                        .unwrap_or(false);
+
+                    if !is_bash {
+                        current_tool_calls.push(format!("  ✗ Error: {}", preview));
+                    }
                 }
             }
             session::ReplaySegment::Text { text: t } => {
