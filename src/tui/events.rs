@@ -280,6 +280,15 @@ impl App {
                     }
                     self.mark_new_content_if_scrolled();
                 }
+                OutputEvent::Warning(warn) => {
+                    // Non-terminal warning - display but don't end chat
+                    self.messages.push(Message::Warning(warn));
+                    self.layout_cache.invalidate();
+                    if width > 0 {
+                        self.adjust_scroll_for_content_change(width);
+                    }
+                    self.mark_new_content_if_scrolled();
+                }
                 OutputEvent::Interrupted => {
                     // Add [Interrupted] marker to a text message
                     match self.messages.last_mut() {

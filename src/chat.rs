@@ -67,7 +67,7 @@ async fn send_with_retry<P: Provider>(
             Ok(response) => return Ok(response),
             Err(e) if e.is_retryable() && attempts < MAX_RETRIES => {
                 attempts += 1;
-                output::emit_error(
+                output::emit_warning(
                     output,
                     &format!(
                         "{} (retrying in {}s, attempt {}/{})",

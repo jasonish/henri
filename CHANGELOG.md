@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Retry notifications during API errors now display as warnings instead of
+  errors, preventing the TUI from incorrectly ending the chat session
+
 ## [0.3.0] - 2025-01-03
 
 ### Added

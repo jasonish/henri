@@ -31,8 +31,10 @@ pub(crate) enum OutputEvent {
     SpinnerStop,
     /// Informational message
     Info(String),
-    /// Error message
+    /// Error message (terminal - ends chat in TUI)
     Error(String),
+    /// Warning message (non-terminal - does not end chat in TUI)
+    Warning(String),
     /// Waiting for model response
     Waiting,
     /// Model finished responding
@@ -250,9 +252,14 @@ pub(crate) fn emit_context_update(
     });
 }
 
-/// Emit error message
+/// Emit error message (terminal - ends chat in TUI)
 pub(crate) fn emit_error(ctx: &OutputContext, message: &str) {
     ctx.emit(OutputEvent::Error(message.to_string()));
+}
+
+/// Emit warning message (non-terminal - does not end chat in TUI)
+pub(crate) fn emit_warning(ctx: &OutputContext, message: &str) {
+    ctx.emit(OutputEvent::Warning(message.to_string()));
 }
 
 /// Emit todo list update

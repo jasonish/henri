@@ -524,6 +524,10 @@ impl OutputListener for CliListener {
                 eprintln!("{}", msg);
             }
 
+            OutputEvent::Warning(msg) => {
+                eprintln!("{}", msg.yellow());
+            }
+
             OutputEvent::TodoList { todos } => {
                 self.stop_spinner();
                 if todos.is_empty() {
