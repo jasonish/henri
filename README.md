@@ -3,11 +3,16 @@
 This is an LLM coding assistant. Mostly an experiment to see if I
 could vibe code a vibe coding tool, and it turns out you can. Named
 after my Golden Retriever after hearing that AI coding agents were
-much like letting a Golden Retrieve code.
+much like letting a Golden Retriever code.
 
 There is no way this tool can keep up with the progress of Claude Code
 or OpenCode, but sometimes I just prefer its simplicity, especially in
 CLI mode.
+
+Henri remains simple. It executes one task at a time serially, providing
+verbose output so you can see exactly what's going on. It uses no
+sub-agents or background tasks. In some ways, I prefer this to
+what the more advanced agents are doing these days.
 
 ## Features
 
@@ -42,14 +47,14 @@ are best-effort.
 
 ## Installation
 
-At least for now, the only way is with Cargo:
+Currently, the only way to install is with Cargo:
 
 ```
 cargo install --locked --git https://github.com/jasonish/henri
 ```
 
-This will install to `~/.cargo/bin`, so be sure to have that in your
-path, or after install do something like:
+This will install to `~/.cargo/bin`. Ensure that directory is in your
+`PATH`, or move the binary after installation:
 
 ```
 mv ~/.cargo/bin/henri ~/.local/bin/henri
@@ -69,7 +74,7 @@ For a traditional REPL/shell interface:
 henri cli
 ```
 
-On first start, a free model will be used, however connecting to a
+On first start, a free model will be used; however, connecting to a
 provider is recommended.
 
 ## Adding a Provider
