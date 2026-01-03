@@ -460,10 +460,12 @@ impl App {
 fn get_last_input_for_provider(provider: crate::providers::ModelProvider) -> Option<u64> {
     let input = match provider {
         crate::providers::ModelProvider::Claude => crate::usage::anthropic().last_input(),
+        crate::providers::ModelProvider::Antigravity => crate::usage::antigravity().last_input(),
         crate::providers::ModelProvider::OpenCodeZen => crate::usage::zen().last_input(),
         crate::providers::ModelProvider::OpenAiCompat => crate::usage::openai_compat().last_input(),
         crate::providers::ModelProvider::OpenAi => crate::usage::openai().last_input(),
-        _ => return None,
+        crate::providers::ModelProvider::OpenRouter => crate::usage::openrouter().last_input(),
+        crate::providers::ModelProvider::GitHubCopilot => return None, // Copilot doesn't report tokens
     };
     // Only return if we actually have usage data
     if input > 0 { Some(input) } else { None }

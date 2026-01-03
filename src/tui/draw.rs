@@ -797,14 +797,7 @@ fn render_working_indicator(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             " Done"
         };
-        let mut stats = if app.streaming_tokens.is_some() && app.streaming_tokens_display > 0 {
-            format!(
-                "({} tokens • {:.1}s)",
-                app.streaming_tokens_display, duration
-            )
-        } else {
-            format!("({:.1}s)", duration)
-        };
+        let mut stats = format!("[{:.1}s", duration);
 
         // Add context info when available (shown during tool loop and when done)
         if let (Some(ctx_tokens), Some(ctx_limit)) = (app.last_context_tokens, app.context_limit) {
@@ -816,6 +809,13 @@ fn render_working_indicator(frame: &mut Frame, area: Rect, app: &App) {
             let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
             stats.push_str(&format!(" • ctx: {}k", ctx_k));
         }
+
+        // Add turn total (input + output tokens this turn)
+        if app.streaming_tokens.is_some() && app.streaming_tokens_display > 0 {
+            stats.push_str(&format!(" • total: {}", app.streaming_tokens_display));
+        }
+
+        stats.push(']');
 
         (status.to_string(), Some(stats))
     } else if app.is_chatting {

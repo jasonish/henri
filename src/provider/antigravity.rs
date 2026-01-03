@@ -785,6 +785,8 @@ impl AntigravityProvider {
         // Record final usage (only once, after streaming completes)
         if let Some(input) = final_prompt_tokens {
             usage::antigravity().record_input(input);
+            let limit = Self::context_limit(&self.model);
+            output::emit_context_update(output, input, limit);
         }
         if let Some(output_tokens) = final_output_tokens {
             usage::antigravity().record_output(output_tokens);
