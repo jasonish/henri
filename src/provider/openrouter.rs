@@ -7,6 +7,7 @@ use crate::config::ConfigFile;
 use crate::error::{Error, Result};
 use crate::provider::openai_compat::{ModelConfigProvider, OpenAiChatConfig, execute_chat};
 use crate::provider::{ChatResponse, Message, Provider};
+use crate::services::Services;
 use crate::usage;
 
 pub(crate) struct OpenRouterProvider {
@@ -15,7 +16,7 @@ pub(crate) struct OpenRouterProvider {
 }
 
 impl OpenRouterProvider {
-    pub(crate) fn try_new(provider_name: &str) -> Result<Self> {
+    pub(crate) fn try_new(provider_name: &str, services: Services) -> Result<Self> {
         let config = ConfigFile::load()?;
         let openrouter_config = config
             .get_provider(provider_name)
@@ -67,6 +68,7 @@ impl OpenRouterProvider {
             model: "default".to_string(),
             usage_tracker: usage::openrouter(),
             custom_headers: Some(custom_headers),
+            services,
         };
 
         Ok(Self {

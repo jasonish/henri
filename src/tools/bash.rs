@@ -110,10 +110,20 @@ Web content fetching:
 
         cmd.current_dir(&effective_cwd);
 
-        // Apply Landlock sandbox if enabled
-        // The ruleset is created here (before fork) so all file descriptors are opened
-        // in the parent process where allocations are safe
-        if services.is_sandbox_enabled()
+        if services.is_read_only() {
+            if let Some(ruleset) = sandbox::create_read_only_ruleset() {
+                let mut ruleset = Some(ruleset);
+                unsafe {
+                    cmd.pre_exec(move || {
+                        if let Some(rs) = ruleset.take() {
+                            sandbox::apply_ruleset(rs)
+                        } else {
+                            Ok(())
+                        }
+                    });
+                }
+            }
+        } else if services.is_sandbox_enabled()
             && let Some(ruleset) = sandbox::create_bash_ruleset(&effective_cwd)
         {
             // Wrap in Option so we can take() it in the FnMut closure

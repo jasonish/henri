@@ -15,6 +15,7 @@ use crate::prompts;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
 };
+use crate::services::Services;
 use crate::sse;
 use crate::tools;
 
@@ -50,6 +51,7 @@ pub(crate) struct CopilotProvider {
     state: Mutex<CopilotState>,
     model: String,
     thinking_enabled: bool,
+    services: Services,
 }
 
 #[derive(Deserialize)]
@@ -151,7 +153,7 @@ struct CopilotFunctionDelta {
 }
 
 impl CopilotProvider {
-    pub(crate) fn try_new() -> Result<Self> {
+    pub(crate) fn try_new(services: Services) -> Result<Self> {
         let config = ConfigFile::load()?;
 
         // Find the first enabled GitHub Copilot provider
@@ -174,6 +176,7 @@ impl CopilotProvider {
             }),
             model: "claude-haiku-4.5".to_string(),
             thinking_enabled: true,
+            services,
         })
     }
 
@@ -473,7 +476,7 @@ impl CopilotProvider {
     }
 
     async fn build_chat_request(&self, messages: &[Message]) -> CopilotChatRequest {
-        let openai_tools: Vec<OpenAiTool> = tools::all_definitions()
+        let openai_tools: Vec<OpenAiTool> = tools::all_definitions(&self.services)
             .await
             .into_iter()
             .map(|t| OpenAiTool {
@@ -495,7 +498,7 @@ impl CopilotProvider {
     }
 
     async fn build_responses_request(&self, messages: &[Message]) -> CopilotResponsesRequest {
-        let tools: Vec<ResponsesTool> = tools::all_definitions()
+        let tools: Vec<ResponsesTool> = tools::all_definitions(&self.services)
             .await
             .into_iter()
             .map(|t| ResponsesTool {

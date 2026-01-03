@@ -193,6 +193,8 @@ pub(crate) struct ToolEntry {
     pub description: String,
     /// Whether the tool is enabled (not in disabled_tools list)
     pub is_enabled: bool,
+    /// Whether the tool is locked due to read-only mode (cannot be toggled)
+    pub is_read_only_locked: bool,
 }
 
 /// State for the tools toggle menu
@@ -201,31 +203,44 @@ pub(crate) struct ToolsMenuState {
     pub tools: Vec<ToolEntry>,
     /// Currently selected tool index
     pub selected_index: usize,
+    /// Whether read-only mode is active
+    pub read_only: bool,
 }
 
 impl ToolsMenuState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(read_only: bool) -> Self {
         let config = crate::config::ConfigFile::load().unwrap_or_default();
         let disabled_tools = &config.disabled_tools;
 
         let tools = crate::tools::TOOL_INFO
             .iter()
-            .map(|(name, description)| ToolEntry {
-                name: name.to_string(),
-                description: description.to_string(),
-                is_enabled: !disabled_tools.iter().any(|t| t == *name),
+            .map(|(name, description)| {
+                let is_read_only_locked =
+                    read_only && crate::tools::READ_ONLY_DISABLED_TOOLS.contains(name);
+                ToolEntry {
+                    name: name.to_string(),
+                    description: description.to_string(),
+                    is_enabled: !disabled_tools.iter().any(|t| t == *name),
+                    is_read_only_locked,
+                }
             })
             .collect();
 
         Self {
             tools,
             selected_index: 0,
+            read_only,
         }
     }
 
     /// Toggle the selected tool's enabled status
     pub(crate) fn toggle_selected(&mut self) -> Option<(&str, bool)> {
         if let Some(tool) = self.tools.get_mut(self.selected_index) {
+            // Don't allow toggling read-only locked tools
+            if tool.is_read_only_locked {
+                return None;
+            }
+
             tool.is_enabled = !tool.is_enabled;
 
             // Update config

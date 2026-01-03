@@ -403,11 +403,11 @@ pub(crate) struct ProviderManager {
 
 impl ProviderManager {
     pub(crate) fn new(config: &Config, services: Services) -> Self {
-        let zen_provider = ZenProvider::new(config);
-        let copilot_provider = CopilotProvider::try_new().ok();
-        let anthropic_provider = AnthropicProvider::try_new().ok();
-        let openai_provider = OpenAiProvider::try_new().ok();
-        let openrouter_provider = OpenRouterProvider::try_new("openrouter").ok();
+        let zen_provider = ZenProvider::new(config, services.clone());
+        let copilot_provider = CopilotProvider::try_new(services.clone()).ok();
+        let anthropic_provider = AnthropicProvider::try_new(services.clone()).ok();
+        let openai_provider = OpenAiProvider::try_new(services.clone()).ok();
+        let openrouter_provider = OpenRouterProvider::try_new("openrouter", services.clone()).ok();
 
         // Load all configured OpenAI-compatible providers
         let mut openai_compat_providers = HashMap::new();
@@ -415,12 +415,12 @@ impl ProviderManager {
         if let Ok(cfg) = crate::config::ConfigFile::load() {
             for (name, provider_config) in &cfg.providers.entries {
                 if provider_config.as_openai_compat().is_some()
-                    && let Ok(provider) = OpenAiCompatProvider::try_new(name)
+                    && let Ok(provider) = OpenAiCompatProvider::try_new(name, services.clone())
                 {
                     openai_compat_providers.insert(name.clone(), provider);
                 }
                 if provider_config.as_antigravity().is_some()
-                    && let Ok(provider) = AntigravityProvider::try_new(name)
+                    && let Ok(provider) = AntigravityProvider::try_new(name, services.clone())
                 {
                     antigravity_providers.insert(name.clone(), provider);
                 }
@@ -486,7 +486,9 @@ impl ProviderManager {
             ModelProvider::Antigravity => {
                 if let Some(custom_name) = &custom_provider {
                     if !self.antigravity_providers.contains_key(custom_name) {
-                        if let Ok(provider) = AntigravityProvider::try_new(custom_name) {
+                        if let Ok(provider) =
+                            AntigravityProvider::try_new(custom_name, self.services.clone())
+                        {
                             self.antigravity_providers
                                 .insert(custom_name.clone(), provider);
                         } else {
@@ -526,7 +528,9 @@ impl ProviderManager {
                 if let Some(custom_name) = &custom_provider {
                     // Try to get or initialize the specific custom provider
                     if !self.openai_compat_providers.contains_key(custom_name) {
-                        if let Ok(provider) = OpenAiCompatProvider::try_new(custom_name) {
+                        if let Ok(provider) =
+                            OpenAiCompatProvider::try_new(custom_name, self.services.clone())
+                        {
                             self.openai_compat_providers
                                 .insert(custom_name.clone(), provider);
                         } else {

@@ -16,8 +16,10 @@ pub(crate) struct Services {
     pub lsp: Arc<LspManager>,
     /// Interrupt flag for cancellable operations (e.g., bash commands).
     interrupted: Option<Arc<AtomicBool>>,
-    /// Sandbox enabled flag (true by default, can be disabled via --no-sandbox or /sandbox).
+    /// Sandbox enabled flag (true by default, can be disabled via /yolo command).
     sandbox_enabled: Arc<AtomicBool>,
+    /// Read-only flag (false by default, can be toggled via /read-only or /ro).
+    read_only: Arc<AtomicBool>,
 }
 
 impl Services {
@@ -27,6 +29,7 @@ impl Services {
             lsp: crate::lsp::manager(),
             interrupted: None,
             sandbox_enabled: Arc::new(AtomicBool::new(true)),
+            read_only: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -38,6 +41,7 @@ impl Services {
             lsp: Arc::new(LspManager::new()),
             interrupted: None,
             sandbox_enabled: Arc::new(AtomicBool::new(true)),
+            read_only: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -48,6 +52,7 @@ impl Services {
             lsp: self.lsp.clone(),
             interrupted: Some(flag),
             sandbox_enabled: self.sandbox_enabled.clone(),
+            read_only: self.read_only.clone(),
         }
     }
 
@@ -66,6 +71,16 @@ impl Services {
     /// Set sandbox enabled/disabled.
     pub(crate) fn set_sandbox_enabled(&self, enabled: bool) {
         self.sandbox_enabled.store(enabled, Ordering::SeqCst);
+    }
+
+    /// Check if read-only mode is enabled.
+    pub(crate) fn is_read_only(&self) -> bool {
+        self.read_only.load(Ordering::SeqCst)
+    }
+
+    /// Set read-only mode enabled/disabled.
+    pub(crate) fn set_read_only(&self, enabled: bool) {
+        self.read_only.store(enabled, Ordering::SeqCst);
     }
 }
 

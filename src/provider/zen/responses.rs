@@ -13,6 +13,7 @@ use crate::output;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Role, StopReason, ToolCall,
 };
+use crate::services::Services;
 use crate::tools;
 use crate::usage;
 
@@ -205,8 +206,9 @@ pub(super) async fn build_request(
     model: &str,
     messages: &[Message],
     thinking_enabled: bool,
+    services: &Services,
 ) -> OpenAiResponsesRequest {
-    let tools: Vec<OpenAiResponsesTool> = tools::all_definitions()
+    let tools: Vec<OpenAiResponsesTool> = tools::all_definitions(services)
         .await
         .into_iter()
         .map(|t| OpenAiResponsesTool {
@@ -249,7 +251,7 @@ pub(super) async fn chat(
     output: &crate::output::OutputContext,
 ) -> Result<ChatResponse> {
     let url = format!("{}/responses", ZEN_BASE_URL);
-    let request = build_request(ctx.model, &messages, ctx.thinking_enabled).await;
+    let request = build_request(ctx.model, &messages, ctx.thinking_enabled, ctx.services).await;
 
     // Record TX bytes
     let body_bytes = serde_json::to_vec(&request)?;

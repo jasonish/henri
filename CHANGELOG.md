@@ -8,7 +8,7 @@
   current directory - sessions are now stored separately instead of
   overwriting each other
 - Landlock sandbox for bash tool: restricts write access to cwd and temp
-  directories. Disable with `--no-sandbox` flag or `/sandbox` command.
+  directories. Use `--read-only` flag or cycle modes with Ctrl+X.
   - Allows writes to /dev/null and /dev/tty for git and other tools
   - Supports git worktrees by allowing writes to the actual git directory
   - Sandbox enforcement for `file_write`, `file_edit`, and `file_delete` tools
@@ -35,6 +35,8 @@
 
 ### Changed
 
+- Security modes: replaced `--no-sandbox`/`/sandbox` with three modes cycled via
+  Ctrl+X: Read-Write (sandboxed), Read-Only (no file writes), YOLO (no sandbox)
 - Word navigation (Alt+B/F) and word deletion (Alt+D) now treat `/` and `-`
   as word boundaries, improving navigation through file paths and hyphenated
   names in both CLI and TUI modes

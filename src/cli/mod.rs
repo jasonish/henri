@@ -45,7 +45,9 @@ enum CommandResult {
     Settings,
     Mcp,
     Tools,
-    SandboxToggle,
+    SetReadWrite,
+    SetReadOnly,
+    SetYolo,
 }
 
 fn handle_command(
@@ -148,6 +150,11 @@ fn handle_command(
                 "  {} - Toggle thinking",
                 shortcut.yellow()
             )));
+            let shortcut = format!("{:<33}", "Ctrl+X");
+            output.emit(output::OutputEvent::Info(format!(
+                "  {} - Cycle security mode (Read-Write -> Read-Only -> YOLO)",
+                shortcut.yellow()
+            )));
             let shortcut = format!("{:<33}", "Shift+Tab");
             output.emit(output::OutputEvent::Info(format!(
                 "  {} - Cycle favorite models",
@@ -206,7 +213,9 @@ fn handle_command(
         }
         Command::Sessions => CommandResult::Sessions,
         Command::Settings => CommandResult::Settings,
-        Command::Sandbox => CommandResult::SandboxToggle,
+        Command::ReadOnly => CommandResult::SetReadOnly,
+        Command::ReadWrite => CommandResult::SetReadWrite,
+        Command::Yolo => CommandResult::SetYolo,
         Command::Mcp => CommandResult::Mcp,
         Command::Tools => CommandResult::Tools,
         Command::Custom { name, args } => {
@@ -574,21 +583,31 @@ async fn show_mcp_menu() {
 }
 
 /// Interactive tools management menu using inquire
-fn show_tools_menu() {
-    use crate::tools::TOOL_INFO;
+fn show_tools_menu(read_only: bool) {
+    use crate::tools::{READ_ONLY_DISABLED_TOOLS, TOOL_INFO};
     use inquire::MultiSelect;
+    use std::collections::HashSet;
 
     let config = config::ConfigFile::load().unwrap_or_default();
     let disabled_tools = &config.disabled_tools;
 
-    // Build choices with descriptions
-    let choices: Vec<String> = TOOL_INFO
+    if read_only {
+        println!("Read-only mode: write-capable tools are hidden.");
+        println!();
+    }
+
+    let visible_tools: Vec<(&str, &str)> = TOOL_INFO
+        .iter()
+        .filter(|(name, _)| !(read_only && READ_ONLY_DISABLED_TOOLS.contains(name)))
+        .map(|(name, desc)| (*name, *desc))
+        .collect();
+
+    let choices: Vec<String> = visible_tools
         .iter()
         .map(|(name, desc)| format!("{:<12} - {}", name, desc))
         .collect();
 
-    // Pre-select enabled tools (those NOT in disabled list)
-    let defaults: Vec<usize> = TOOL_INFO
+    let defaults: Vec<usize> = visible_tools
         .iter()
         .enumerate()
         .filter(|(_, (name, _))| !disabled_tools.iter().any(|t| t == *name))
@@ -607,19 +626,31 @@ fn show_tools_menu() {
         }
     };
 
-    // Determine which tools to enable/disable
-    let selected_indices: std::collections::HashSet<usize> = selected
+    let selected_indices: HashSet<usize> = selected
         .iter()
         .filter_map(|s| choices.iter().position(|c| c == s))
         .collect();
 
-    let mut new_disabled_tools: Vec<String> = Vec::new();
+    let mut disabled_set: HashSet<String> = disabled_tools.iter().cloned().collect();
 
-    for (i, (name, _)) in TOOL_INFO.iter().enumerate() {
-        if !selected_indices.contains(&i) {
-            new_disabled_tools.push(name.to_string());
+    for (i, (name, _)) in visible_tools.iter().enumerate() {
+        if selected_indices.contains(&i) {
+            disabled_set.remove(*name);
+        } else {
+            disabled_set.insert((*name).to_string());
         }
     }
+
+    let new_disabled_tools: Vec<String> = TOOL_INFO
+        .iter()
+        .filter_map(|(name, _)| {
+            if disabled_set.contains(*name) {
+                Some((*name).to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Save to config
     if let Ok(mut config) = config::ConfigFile::load() {
@@ -829,7 +860,11 @@ fn get_git_branch() -> Option<String> {
     }
 }
 
-fn build_prompt(provider_manager: &ProviderManager) -> PromptInfo {
+fn build_prompt(
+    provider_manager: &ProviderManager,
+    read_only: bool,
+    sandbox_enabled: bool,
+) -> PromptInfo {
     let provider = provider_manager.current_provider();
     let model = provider_manager.current_model_id();
     let custom_provider = provider_manager.current_custom_provider();
@@ -861,6 +896,8 @@ fn build_prompt(provider_manager: &ProviderManager) -> PromptInfo {
         git_branch: get_git_branch(),
         thinking_available: supports_thinking(provider, model),
         show_thinking_status: !matches!(provider, ModelProvider::OpenAi),
+        read_only,
+        sandbox_enabled,
     }
 }
 
@@ -872,8 +909,8 @@ pub(crate) struct CliArgs {
     pub restored_session: Option<session::RestoredSession>,
     /// LSP override: Some(true) = force enable, Some(false) = force disable, None = use config
     pub lsp_override: Option<bool>,
-    /// Disable sandbox for write-capable tools
-    pub no_sandbox: bool,
+    /// Enable read-only mode (disables file editing tools)
+    pub read_only: bool,
 }
 
 /// Main entry point for the CLI interface
@@ -905,9 +942,9 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
 
     let services = crate::services::Services::new();
 
-    // Disable sandbox if --no-sandbox was passed
-    if args.no_sandbox {
-        services.set_sandbox_enabled(false);
+    // Enable read-only mode if --read-only was passed
+    if args.read_only {
+        services.set_read_only(true);
     }
 
     let mut provider_manager = ProviderManager::new(&config, services.clone());
@@ -983,18 +1020,24 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
 
     // Track current session ID for saving
     let mut current_session_id: Option<String> = None;
+    let mut read_only = false;
+    let mut sandbox_enabled = services.is_sandbox_enabled();
 
     // Apply restored session if provided
     if let Some(restored) = args.restored_session {
         messages = restored.messages;
         thinking_state.enabled = restored.thinking_enabled;
+        read_only = restored.read_only;
+        services.set_read_only(read_only);
+        // Sync sandbox state from services (it might have been set by args)
+        sandbox_enabled = services.is_sandbox_enabled();
         current_session_id = Some(restored.session_id);
     } else {
         clear_todos();
     }
 
     loop {
-        let mut prompt_info = build_prompt(&provider_manager);
+        let mut prompt_info = build_prompt(&provider_manager, read_only, sandbox_enabled);
         // Track if provider changed during cycle_favorite so we can strip thinking blocks
         let mut provider_changed_in_cycle = false;
         let outcome = prompt_ui.read(
@@ -1016,6 +1059,21 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
         // Transform thinking blocks if provider changed during Shift+Tab cycling
         if provider_changed_in_cycle {
             crate::provider::transform_thinking_for_provider_switch(&mut messages);
+        }
+
+        // Sync security state if changed during prompt editing (Ctrl+x)
+        if prompt_info.read_only != read_only || prompt_info.sandbox_enabled != sandbox_enabled {
+            if !prompt_info.read_only && !prompt_info.sandbox_enabled {
+                output.emit(output::OutputEvent::Info(
+                    "⚠ YOLO mode enabled (Sandbox disabled)"
+                        .yellow()
+                        .to_string(),
+                ));
+            }
+            read_only = prompt_info.read_only;
+            sandbox_enabled = prompt_info.sandbox_enabled;
+            services.set_read_only(read_only);
+            services.set_sandbox_enabled(sandbox_enabled);
         }
 
         match outcome {
@@ -1068,6 +1126,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                                     provider: provider_manager.current_provider(),
                                     model_id: provider_manager.current_model_id().to_string(),
                                     thinking_enabled: thinking_state.enabled,
+                                    read_only,
                                     session_id: current_session_id.clone(),
                                 })
                             };
@@ -1165,6 +1224,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                                         &provider_manager.current_provider(),
                                         provider_manager.current_model_id(),
                                         thinking_state.enabled,
+                                        read_only,
                                         current_session_id.as_deref(),
                                     ) {
                                         Ok(id) => current_session_id = Some(id),
@@ -1214,6 +1274,8 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                                     let restored = session::RestoredSession::from_state(&state);
                                     messages = restored.messages;
                                     thinking_state.enabled = restored.thinking_enabled;
+                                    read_only = restored.read_only;
+                                    services.set_read_only(read_only);
                                     // Use the ID we loaded by, not from metadata (may be empty for v1)
                                     current_session_id = Some(selected.id.clone());
 
@@ -1229,20 +1291,38 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                             show_mcp_menu().await;
                         }
                         CommandResult::Tools => {
-                            show_tools_menu();
+                            show_tools_menu(read_only);
                         }
-                        CommandResult::SandboxToggle => {
-                            let enabled = !services.is_sandbox_enabled();
-                            services.set_sandbox_enabled(enabled);
-                            if enabled {
+                        CommandResult::SetReadWrite => {
+                            read_only = false;
+                            sandbox_enabled = true;
+                            services.set_read_only(false);
+                            services.set_sandbox_enabled(true);
+                            output.emit(output::OutputEvent::Info(
+                                "Read-Write mode enabled (Sandboxed).".into(),
+                            ));
+                        }
+                        CommandResult::SetYolo => {
+                            // Only show warning if not already in YOLO mode
+                            if read_only || sandbox_enabled {
                                 output.emit(output::OutputEvent::Info(
-                                    "Sandbox enabled for bash commands.".into(),
-                                ));
-                            } else {
-                                output.emit(output::OutputEvent::Info(
-                                    "⚠ Sandbox disabled for bash commands.".into(),
+                                    "⚠ YOLO mode enabled (Sandbox disabled)"
+                                        .yellow()
+                                        .to_string(),
                                 ));
                             }
+                            read_only = false;
+                            sandbox_enabled = false;
+                            services.set_read_only(false);
+                            services.set_sandbox_enabled(false);
+                        }
+                        CommandResult::SetReadOnly => {
+                            read_only = true;
+                            sandbox_enabled = true;
+                            services.set_read_only(true);
+                            services.set_sandbox_enabled(true);
+                            output
+                                .emit(output::OutputEvent::Info("Read-Only mode enabled.".into()));
                         }
                     }
 
@@ -1357,6 +1437,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                             &provider_manager.current_provider(),
                             provider_manager.current_model_id(),
                             thinking_state.enabled,
+                            read_only,
                             current_session_id.as_deref(),
                         ) {
                             Ok(id) => current_session_id = Some(id),

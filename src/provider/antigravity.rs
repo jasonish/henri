@@ -16,6 +16,7 @@ use crate::prompts::system_prompt;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
 };
+use crate::services::Services;
 use crate::sse;
 use crate::tools;
 use crate::usage;
@@ -104,10 +105,11 @@ pub(crate) struct AntigravityProvider {
     model: String,
     thinking_enabled: bool,
     thinking_mode: Option<String>,
+    services: Services,
 }
 
 impl AntigravityProvider {
-    pub(crate) fn try_new(provider_name: &str) -> Result<Self> {
+    pub(crate) fn try_new(provider_name: &str, services: Services) -> Result<Self> {
         let config = ConfigFile::load()?;
 
         let antigravity = config
@@ -139,6 +141,7 @@ impl AntigravityProvider {
             model: "gemini-3-flash".to_string(),
             thinking_enabled: true,
             thinking_mode: None,
+            services,
         })
     }
 
@@ -404,7 +407,7 @@ impl AntigravityProvider {
 
     /// Build the inner Gemini-style request (contents, systemInstruction, tools, etc.)
     async fn build_inner_request(&self, messages: &[Message]) -> serde_json::Value {
-        let tools: Vec<serde_json::Value> = tools::all_definitions()
+        let tools: Vec<serde_json::Value> = tools::all_definitions(&self.services)
             .await
             .into_iter()
             .map(|t| {

@@ -1,13 +1,44 @@
 # Henri 🐕
 
 This is an LLM coding assistant. Mostly an experiment to see if I
-could vibe code a vibe coding tool, and it turns out you can.  Named
+could vibe code a vibe coding tool, and it turns out you can. Named
 after my Golden Retriever after hearing that AI coding agents were
 much like letting a Golden Retrieve code.
 
 There is no way this tool can keep up with the progress of Claude Code
 or OpenCode, but sometimes I just prefer its simplicity, especially in
 CLI mode.
+
+## Features
+
+### Multi Provider / Multi Model
+
+Built-in support for the following providers:
+
+- GitHub Copilot
+- Anthropic Claude Pro/Max
+- OpenAI ChatGPT Pro
+- Google Antigravity
+- OpenCode Zen
+- OpenAI Compatible APIs (like Z.ai)
+- OpenRouter
+
+### Sandboxing
+
+Henri has three security modes:
+
+- **Read-Write (RW)**: Tools and shell commands can write only inside
+  the current directory (and children), plus `/tmp`. This is the
+  default.
+- **Read-Only (RO)**: Tools and shell commands cannot write files at
+  all.
+- **YOLO**: No sandbox restrictions—tools and shell can write anywhere.
+
+Switch modes with `/read-write`, `/read-only`, `/yolo`, or `Ctrl+X` to
+cycle through them. Start in read-only mode with `henri cli --read-only`.
+
+Sandboxing uses Linux Landlock; on unsupported systems, restrictions
+are best-effort.
 
 ## Installation
 
@@ -48,15 +79,6 @@ Henri supports multiple AI providers. Add one with:
 ```
 henri provider add
 ```
-
-This launches an interactive menu to configure:
-
-- **GitHub Copilot** - OAuth device flow authentication
-- **Claude (Max/Pro)** - OAuth authentication for Anthropic Claude
-- **OpenAI** - OAuth authentication
-- **OpenCode Zen** - API key authentication
-- **OpenRouter** - API key with model selection
-- **OpenAI Compatible** - For local servers (Ollama, etc.) or other OpenAI-compatible APIs
 
 To remove a provider:
 

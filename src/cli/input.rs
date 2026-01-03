@@ -30,6 +30,8 @@ pub(crate) struct PromptInfo {
     pub git_branch: Option<String>,
     pub thinking_available: bool,
     pub show_thinking_status: bool,
+    pub read_only: bool,
+    pub sandbox_enabled: bool,
 }
 
 pub(crate) enum PromptOutcome {
@@ -203,6 +205,25 @@ impl PromptUi {
                 ResetColor
             )?;
         }
+
+        // Display security status
+        let (sec_status, sec_color) = if info.read_only {
+            ("RO", Color::Yellow)
+        } else if info.sandbox_enabled {
+            ("RW", Color::Green)
+        } else {
+            ("YOLO", Color::Red)
+        };
+        crossterm::execute!(
+            stdout,
+            SetForegroundColor(Color::DarkGrey),
+            Print(" ["),
+            SetForegroundColor(sec_color),
+            Print(sec_status),
+            SetForegroundColor(Color::DarkGrey),
+            Print("]"),
+            ResetColor
+        )?;
 
         // Display thinking status
         if info.show_thinking_status {
@@ -924,6 +945,29 @@ impl PromptUi {
             }
             KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return Ok(Some(PromptOutcome::SelectModel));
+            }
+            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if info.read_only {
+                    // RO -> YOLO
+                    info.read_only = false;
+                    info.sandbox_enabled = false;
+                } else if info.sandbox_enabled {
+                    // RW -> RO
+                    info.read_only = true;
+                    info.sandbox_enabled = true;
+                } else {
+                    // YOLO -> RW
+                    info.read_only = false;
+                    info.sandbox_enabled = true;
+                }
+
+                // Redraw status bar in place
+                let mut stdout = io::stdout();
+                let lines_up = self.last_cursor_row + 1;
+                crossterm::execute!(stdout, MoveUp(lines_up), MoveToColumn(0))?;
+                self.render_status_bar(info, *thinking_enabled, thinking_mode.as_deref())?;
+                crossterm::execute!(stdout, MoveToColumn(0), cursor::MoveDown(lines_up))?;
+                return Ok(None);
             }
             KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Run fzf history search

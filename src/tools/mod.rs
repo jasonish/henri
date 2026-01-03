@@ -27,6 +27,8 @@ pub(crate) use todo::{TodoItem, TodoRead, TodoStatus, TodoWrite};
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) const READ_ONLY_DISABLED_TOOLS: &[&str] = &["file_delete", "file_edit", "file_write"];
+
 /// Built-in tool names and their human-readable descriptions.
 /// This is the single source of truth for tool metadata used in menus and UIs.
 pub(crate) const TOOL_INFO: &[(&str, &str)] = &[
@@ -272,52 +274,61 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
 pub(crate) fn builtin_definitions(
     todo_enabled: bool,
     disabled_tools: &[String],
+    read_only: bool,
 ) -> Vec<ToolDefinition> {
+    let is_disabled = |name: &str| {
+        disabled_tools.iter().any(|t| t == name)
+            || (read_only && READ_ONLY_DISABLED_TOOLS.contains(&name))
+    };
+
     let mut tools = Vec::new();
 
-    // Add tools only if not disabled
-    if !disabled_tools.iter().any(|t| t == "bash") {
+    if !is_disabled("bash") {
         tools.push(Bash.definition());
     }
-    if !disabled_tools.iter().any(|t| t == "fetch") {
+    if !is_disabled("fetch") {
         tools.push(Fetch.definition());
     }
-    if !disabled_tools.iter().any(|t| t == "file_delete") {
+    if !is_disabled("file_delete") {
         tools.push(FileDelete.definition());
     }
-    if !disabled_tools.iter().any(|t| t == "file_edit") {
+    if !is_disabled("file_edit") {
         tools.push(FileEdit.definition());
     }
-    if !disabled_tools.iter().any(|t| t == "file_read") {
+    if !is_disabled("file_read") {
         tools.push(FileRead.definition());
     }
-    if !disabled_tools.iter().any(|t| t == "file_write") {
+    if !is_disabled("file_write") {
         tools.push(FileWrite.definition());
     }
-    if !disabled_tools.iter().any(|t| t == "glob") {
+    if !is_disabled("glob") {
         tools.push(Glob.definition());
     }
-    if !disabled_tools.iter().any(|t| t == "grep") {
+    if !is_disabled("grep") {
         tools.push(Grep.definition());
     }
-    if !disabled_tools.iter().any(|t| t == "list_dir") {
+    if !is_disabled("list_dir") {
         tools.push(ListDir.definition());
     }
-    if todo_enabled && !disabled_tools.iter().any(|t| t == "todo_read") {
+    if todo_enabled && !is_disabled("todo_read") {
         tools.push(TodoRead.definition());
     }
-    if todo_enabled && !disabled_tools.iter().any(|t| t == "todo_write") {
+    if todo_enabled && !is_disabled("todo_write") {
         tools.push(TodoWrite.definition());
     }
     tools
 }
 
 /// Get all available tool definitions including MCP tools
-pub(crate) async fn all_definitions() -> Vec<ToolDefinition> {
+pub(crate) async fn all_definitions(services: &crate::services::Services) -> Vec<ToolDefinition> {
     // Load config once and extract all needed values
     let config = crate::config::ConfigFile::load().unwrap_or_default();
-    let mut defs = builtin_definitions(config.todo_enabled, &config.disabled_tools);
-    let mcp_defs = crate::mcp::manager().all_tool_definitions().await;
+    let mut defs = builtin_definitions(
+        config.todo_enabled,
+        &config.disabled_tools,
+        services.is_read_only(),
+    );
+    let mcp_defs = services.mcp.all_tool_definitions().await;
     defs.extend(mcp_defs);
     defs
 }
@@ -338,6 +349,13 @@ pub(crate) async fn execute(
         return Some(ToolResult::error(
             tool_use_id,
             format!("Tool '{}' is disabled in configuration", name),
+        ));
+    }
+
+    if services.is_read_only() && READ_ONLY_DISABLED_TOOLS.contains(&name) {
+        return Some(ToolResult::error(
+            tool_use_id,
+            format!("Read-only mode: tool '{}' is disabled", name),
         ));
     }
 
@@ -386,4 +404,20 @@ pub(crate) async fn execute(
 
     // Try MCP tools
     services.mcp.execute_tool(name, tool_use_id, input).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_builtin_definitions_read_only() {
+        let defs = builtin_definitions(false, &[], true);
+        let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        assert!(!names.contains(&"file_write"));
+        assert!(!names.contains(&"file_edit"));
+        assert!(!names.contains(&"file_delete"));
+        assert!(names.contains(&"file_read"));
+        assert!(names.contains(&"bash"));
+    }
 }

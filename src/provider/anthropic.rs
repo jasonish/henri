@@ -16,6 +16,7 @@ use crate::prompts::system_prompt;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
 };
+use crate::services::Services;
 use crate::sse;
 use crate::tools;
 use crate::usage;
@@ -309,14 +310,16 @@ pub(crate) struct AnthropicProvider {
     client: AnthropicClient,
     model: String,
     thinking_mode: Option<String>,
+    services: Services,
 }
 
 impl AnthropicProvider {
-    pub(crate) fn try_new() -> Result<Self> {
+    pub(crate) fn try_new(services: Services) -> Result<Self> {
         Ok(Self {
             client: AnthropicClient::try_new()?,
             model: DEFAULT_MODEL.to_string(),
             thinking_mode: Some("medium".to_string()),
+            services: services.clone(),
         })
     }
 
@@ -446,7 +449,7 @@ impl AnthropicProvider {
 
     /// Build the request struct for the Anthropic API
     async fn build_request(&self, messages: &[Message]) -> AnthropicRequest {
-        let mut tools: Vec<AnthropicTool> = tools::all_definitions()
+        let mut tools: Vec<AnthropicTool> = tools::all_definitions(&self.services)
             .await
             .into_iter()
             .map(|t| AnthropicTool {

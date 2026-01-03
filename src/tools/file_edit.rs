@@ -60,6 +60,10 @@ impl Tool for FileEdit {
         _output: &crate::output::OutputContext,
         services: &crate::services::Services,
     ) -> ToolResult {
+        if services.is_read_only() {
+            return ToolResult::error(tool_use_id, "Read-only mode is enabled");
+        }
+
         let input: FileEditInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
             Err(e) => return e,

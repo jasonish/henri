@@ -236,6 +236,7 @@ impl App {
                                 &model.provider,
                                 &model.model_id,
                                 self.thinking_enabled,
+                                self.read_only,
                                 self.current_session_id.as_deref(),
                             )
                         {

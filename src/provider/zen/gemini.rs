@@ -14,6 +14,7 @@ use crate::prompts;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Role, StopReason, ToolCall,
 };
+use crate::services::Services;
 use crate::sse;
 use crate::tools;
 use crate::usage;
@@ -241,9 +242,10 @@ pub(super) async fn build_request(
     messages: &[Message],
     thinking_enabled: bool,
     thinking_mode: Option<&str>,
+    services: &Services,
 ) -> GeminiRequest {
     let tools: Vec<GeminiToolDeclaration> = vec![GeminiToolDeclaration {
-        function_declarations: tools::all_definitions()
+        function_declarations: tools::all_definitions(services)
             .await
             .into_iter()
             .map(|t| GeminiFunctionDeclaration {
@@ -318,6 +320,7 @@ pub(super) async fn chat(
         &messages,
         ctx.thinking_enabled,
         ctx.thinking_mode,
+        ctx.services,
     )
     .await;
 

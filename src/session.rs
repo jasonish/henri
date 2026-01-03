@@ -97,6 +97,11 @@ pub(crate) struct SessionMeta {
     /// Whether thinking/reasoning is enabled
     pub thinking_enabled: bool,
 
+    /// Whether read-only mode is enabled
+    #[serde(default)]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
+
     /// Current todo list state
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,6 +154,7 @@ pub(crate) struct RestoredSession {
     pub provider: String,
     pub model_id: String,
     pub thinking_enabled: bool,
+    pub read_only: bool,
     pub state: SessionState, // Keep original state for replay
 }
 
@@ -166,6 +172,7 @@ impl RestoredSession {
             provider: state.meta.provider.clone(),
             model_id: state.meta.model_id.clone(),
             thinking_enabled: state.meta.thinking_enabled,
+            read_only: state.meta.read_only,
             state: state.clone(),
         }
     }
@@ -416,6 +423,7 @@ pub(crate) fn save_session(
     provider: &ModelProvider,
     model_id: &str,
     thinking_enabled: bool,
+    read_only: bool,
     session_id: Option<&str>,
 ) -> std::io::Result<String> {
     let session_id = session_id
@@ -440,6 +448,7 @@ pub(crate) fn save_session(
         provider: provider.id().to_string(),
         model_id: model_id.to_string(),
         thinking_enabled,
+        read_only,
         todos,
     };
 
@@ -963,6 +972,7 @@ mod tests {
             &ModelProvider::Claude,
             "claude-opus-4-5",
             true,
+            false,
             None,
         )
         .unwrap();
@@ -973,6 +983,7 @@ mod tests {
         assert_eq!(loaded.meta.model_id, "claude-opus-4-5");
         assert_eq!(loaded.meta.session_id, session_id);
         assert!(loaded.meta.thinking_enabled);
+        assert!(!loaded.meta.read_only);
 
         delete_session(working_dir, &session_id).unwrap();
     }
@@ -990,6 +1001,7 @@ mod tests {
             &ModelProvider::Claude,
             "model1",
             true,
+            false,
             Some("20251231T100000"),
         )
         .unwrap();
@@ -1001,6 +1013,7 @@ mod tests {
             &messages2,
             &ModelProvider::Claude,
             "model2",
+            false,
             false,
             Some("20251231T110000"),
         )
@@ -1031,6 +1044,31 @@ mod tests {
     }
 
     #[test]
+    fn test_save_and_load_session_read_only() {
+        let temp_dir = TempDir::new().unwrap();
+        let working_dir = temp_dir.path();
+
+        let messages = vec![Message::user("Hello")];
+
+        let session_id = save_session(
+            working_dir,
+            &messages,
+            &ModelProvider::Claude,
+            "claude-opus-4-5",
+            true,
+            true,
+            None,
+        )
+        .unwrap();
+
+        let loaded = load_session(working_dir).unwrap();
+        assert_eq!(loaded.meta.session_id, session_id);
+        assert!(loaded.meta.read_only);
+
+        delete_session(working_dir, &session_id).unwrap();
+    }
+
+    #[test]
     fn test_session_preview() {
         let temp_dir = TempDir::new().unwrap();
         let working_dir = temp_dir.path();
@@ -1048,6 +1086,7 @@ mod tests {
             &ModelProvider::Claude,
             "test",
             true,
+            false,
             None,
         )
         .unwrap();
@@ -1138,6 +1177,7 @@ mod tests {
             &ModelProvider::Claude,
             "claude-opus-4-5",
             true,
+            false,
             None,
         )
         .unwrap();

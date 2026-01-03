@@ -555,6 +555,19 @@ fn render_message(
             };
             render_text_with_selection(&mut ctx, &content, None, Some(Color::Red));
         }
+        Message::Warning(warn) => {
+            let content = bulletify(warn);
+            let mut ctx = RenderContext {
+                frame,
+                area: content_area,
+                message_idx: index,
+                skip_top: adjusted_skip,
+                selection,
+                position_map: &mut app.position_map,
+                byte_offset_base: 0,
+            };
+            render_text_with_selection(&mut ctx, &content, None, Some(Color::Yellow));
+        }
         Message::AssistantThinking(msg) => {
             let mut ctx = RenderContext {
                 frame,
@@ -888,9 +901,22 @@ fn render_input_area(
     let text_fg = Color::Rgb(220, 220, 220);
     let border_fg = Color::Rgb(60, 60, 60);
 
-    let input_block = Block::default()
+    let mut input_block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::default().fg(border_fg));
+
+    let (status_text, status_color) = if app.read_only {
+        ("RO", Color::Yellow)
+    } else if app.sandbox_enabled {
+        ("RW", Color::Green)
+    } else {
+        ("YOLO", Color::Red)
+    };
+
+    input_block = input_block.title_top(Line::from(vec![
+        Span::styled("─", Style::default().fg(border_fg)),
+        Span::styled(status_text, Style::default().fg(status_color)),
+    ]));
     let text_row = input_block.inner(input_area);
     frame.render_widget(input_block, input_area);
 

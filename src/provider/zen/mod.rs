@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::provider::openai_compat::OpenAiCompatProvider;
 use crate::provider::{ChatResponse, Message, Provider};
+use crate::services::Services;
 use crate::usage;
 
 const ZEN_BASE_URL: &str = "https://opencode.ai/zen/v1";
@@ -24,6 +25,7 @@ pub(super) struct ChatContext<'a> {
     pub model: &'a str,
     pub thinking_enabled: bool,
     pub thinking_mode: Option<&'a str>,
+    pub services: &'a Services,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -111,11 +113,12 @@ pub(crate) struct ZenProvider {
     thinking_enabled: bool,
     thinking_mode: Option<String>,
     openai_compat_delegate: Option<OpenAiCompatProvider>,
+    services: Services,
 }
 
 impl ZenProvider {
-    pub(crate) fn new(config: &Config) -> Self {
-        let openai_compat_delegate = Self::create_openai_compat_delegate(config);
+    pub(crate) fn new(config: &Config, services: Services) -> Self {
+        let openai_compat_delegate = Self::create_openai_compat_delegate(config, services.clone());
 
         Self {
             client: Client::new(),
@@ -124,10 +127,14 @@ impl ZenProvider {
             thinking_enabled: true,
             thinking_mode: None,
             openai_compat_delegate,
+            services,
         }
     }
 
-    fn create_openai_compat_delegate(config: &Config) -> Option<OpenAiCompatProvider> {
+    fn create_openai_compat_delegate(
+        config: &Config,
+        services: Services,
+    ) -> Option<OpenAiCompatProvider> {
         let mut provider_config = crate::config::OpenAiCompatProviderConfig {
             enabled: true,
             api_key: config.api_key.clone(),
@@ -176,6 +183,7 @@ impl ZenProvider {
             "zen",
             provider_config,
             usage::zen(),
+            services,
         ))
     }
 
@@ -264,6 +272,7 @@ impl Provider for ZenProvider {
             model: &self.model,
             thinking_enabled: self.thinking_enabled,
             thinking_mode: self.thinking_mode.as_deref(),
+            services: &self.services,
         };
 
         match api_type {
@@ -288,13 +297,23 @@ impl Provider for ZenProvider {
                 None => Err(Error::Auth("Zen provider not configured".to_string())),
             },
             ApiType::OpenAiResponses => {
-                let request =
-                    responses::build_request(&self.model, &messages, self.thinking_enabled).await;
+                let request = responses::build_request(
+                    &self.model,
+                    &messages,
+                    self.thinking_enabled,
+                    &self.services,
+                )
+                .await;
                 responses::prepare_request_value(&request)
             }
             ApiType::Anthropic => {
-                let request =
-                    anthropic::build_request(&self.model, &messages, self.thinking_enabled).await;
+                let request = anthropic::build_request(
+                    &self.model,
+                    &messages,
+                    self.thinking_enabled,
+                    &self.services,
+                )
+                .await;
                 anthropic::prepare_request_value(&request)
             }
             ApiType::Gemini => {
@@ -303,6 +322,7 @@ impl Provider for ZenProvider {
                     &messages,
                     self.thinking_enabled,
                     self.thinking_mode.as_deref(),
+                    &self.services,
                 )
                 .await;
                 gemini::prepare_request_value(&request)

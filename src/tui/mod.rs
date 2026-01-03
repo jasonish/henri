@@ -77,7 +77,7 @@ pub async fn run(
     initial_prompt: Option<String>,
     model: Option<String>,
     lsp_override: Option<bool>,
-    no_sandbox: bool,
+    read_only: bool,
 ) -> io::Result<ExitStatus> {
     setup_terminal()?;
 
@@ -105,9 +105,9 @@ pub async fn run(
 
     let services = crate::services::Services::new();
 
-    // Disable sandbox if --no-sandbox was passed
-    if no_sandbox {
-        services.set_sandbox_enabled(false);
+    // Enable read-only mode if --read-only was passed
+    if read_only {
+        services.set_read_only(true);
     }
 
     // If no model specified on CLI, try to use the one from the restored session
@@ -133,7 +133,7 @@ pub async fn run(
             show_diffs,
             lsp_enabled,
             todo_enabled,
-            sandbox_enabled: services.is_sandbox_enabled(),
+            services,
         },
         output,
     );
@@ -262,6 +262,7 @@ async fn run_app(
                     provider: model.provider,
                     model_id: model.model_id.clone(),
                     thinking_enabled: app.thinking_enabled,
+                    read_only: app.read_only,
                     session_id: app.current_session_id.clone(),
                 });
                 return Ok(ExitStatus::SwitchToCli(session));
@@ -634,6 +635,10 @@ async fn run_app(
                             (KeyCode::Char('m'), KeyModifiers::CONTROL) => {
                                 // Open model selection menu
                                 app.open_model_menu();
+                            }
+                            (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                                // Cycle security mode
+                                app.cycle_security_mode();
                             }
                             (KeyCode::BackTab, mods)
                                 if mods.is_empty() || mods == KeyModifiers::SHIFT =>
@@ -1082,6 +1087,7 @@ async fn run_app(
             provider: model.provider,
             model_id: model.model_id.clone(),
             thinking_enabled: app.thinking_enabled,
+            read_only: app.read_only,
             session_id: app.current_session_id.clone(),
         });
         Ok(ExitStatus::SwitchToCli(session))

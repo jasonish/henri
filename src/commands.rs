@@ -34,7 +34,9 @@ pub(crate) enum Command {
     Mcp,
     Model,
     Quit,
-    Sandbox,
+    ReadOnly,
+    ReadWrite,
+    Yolo,
     Sessions,
     Settings,
     StartTransactionLogging,
@@ -83,6 +85,7 @@ pub(crate) struct ModeTransferSession {
     pub provider: crate::providers::ModelProvider,
     pub model_id: String,
     pub thinking_enabled: bool,
+    pub read_only: bool,
     pub session_id: Option<String>,
 }
 
@@ -109,6 +112,7 @@ impl ModeTransferSession {
             provider: self.provider.id().to_string(),
             model_id: self.model_id.clone(),
             thinking_enabled: self.thinking_enabled,
+            read_only: self.read_only,
             todos: None,
         };
 
@@ -126,6 +130,7 @@ impl ModeTransferSession {
             provider: self.provider.id().to_string(),
             model_id: self.model_id,
             thinking_enabled: self.thinking_enabled,
+            read_only: self.read_only,
             state,
         }
     }
@@ -221,9 +226,21 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         availability: Availability::Always,
     },
     SlashCommand {
-        command: Command::Sandbox,
-        name: "sandbox",
-        description: "Toggle sandbox for write-capable tools",
+        command: Command::ReadOnly,
+        name: "read-only",
+        description: "Switch to Read-Only mode",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::ReadWrite,
+        name: "read-write",
+        description: "Switch to Read-Write mode (Sandbox enabled)",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Yolo,
+        name: "yolo",
+        description: "Switch to YOLO mode (Sandbox disabled)",
         availability: Availability::Always,
     },
     SlashCommand {

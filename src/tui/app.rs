@@ -76,8 +76,7 @@ pub(crate) struct AppConfig {
     pub(crate) show_diffs: bool,
     pub(crate) lsp_enabled: bool,
     pub(crate) todo_enabled: bool,
-    /// Sandbox state: true = enabled, false = disabled by user
-    pub(crate) sandbox_enabled: bool,
+    pub(crate) services: crate::services::Services,
 }
 
 pub(crate) struct App {
@@ -180,11 +179,17 @@ pub(crate) struct App {
     pub(crate) default_model: DefaultModel,
     // Current session ID for saving
     pub(crate) current_session_id: Option<String>,
+    // Read-only mode state
+    pub(crate) read_only: bool,
+    // Sandbox enabled state
+    pub(crate) sandbox_enabled: bool,
+    // Services for sandbox/read-only mode control
+    pub(crate) services: crate::services::Services,
 }
 
 impl App {
     pub(crate) fn new(
-        provider_manager: Option<ProviderManager>,
+        mut provider_manager: Option<ProviderManager>,
         working_dir: PathBuf,
         restored_session: Option<RestoredSession>,
         event_rx: tokio::sync::mpsc::UnboundedReceiver<OutputEvent>,
@@ -226,8 +231,10 @@ impl App {
         let mut messages = Vec::new();
 
         // Determine sandbox status
-        let sandbox_status = if !config.sandbox_enabled {
-            "Sandbox: disabled"
+        let sandbox_status = if config.services.is_read_only() {
+            "Read-only mode"
+        } else if !config.services.is_sandbox_enabled() {
+            "YOLO mode (Sandbox disabled)"
         } else if crate::tools::sandbox_available() {
             "Sandbox: enabled"
         } else {
@@ -247,8 +254,11 @@ impl App {
         }
 
         // Initialize chat_messages and thinking_enabled from restored session
-        let (chat_messages, thinking_enabled, current_session_id) =
+        let (chat_messages, thinking_enabled, current_session_id, read_only) =
             if let Some(ref session) = restored_session {
+                if let Some(ref mut pm) = provider_manager {
+                    pm.services().set_read_only(session.read_only);
+                }
                 messages.push(Message::Text(format!(
                     "Model: {} (thinking {}) · Saved: {} · Messages: {}",
                     session.model_id,
@@ -260,6 +270,12 @@ impl App {
                     session::format_age(&session.state.meta.saved_at),
                     session.messages.len()
                 )));
+
+                if session.read_only {
+                    messages.push(Message::Text(
+                        "Read-only mode enabled for this session.".into(),
+                    ));
+                }
 
                 // Convert session to rich replay messages
                 let replay_messages = session::extract_replay_messages(&session.state);
@@ -286,11 +302,12 @@ impl App {
                     session.messages.clone(),
                     session.thinking_enabled,
                     Some(session.session_id.clone()),
+                    session.read_only,
                 )
             } else {
                 // Clear todo state for fresh sessions
                 clear_todos();
-                (Vec::new(), true, None)
+                (Vec::new(), true, None, config.services.is_read_only())
             };
 
         Self {
@@ -369,6 +386,9 @@ impl App {
             todo_enabled: config.todo_enabled,
             default_model,
             current_session_id,
+            read_only,
+            sandbox_enabled: config.services.is_sandbox_enabled(),
+            services: config.services,
         }
     }
 
@@ -1072,7 +1092,7 @@ impl App {
     }
 
     pub(crate) fn open_tools_menu(&mut self) {
-        self.tools_menu = Some(ToolsMenuState::new());
+        self.tools_menu = Some(ToolsMenuState::new(self.read_only));
     }
 
     pub(crate) fn close_tools_menu(&mut self) {
@@ -1108,8 +1128,19 @@ impl App {
                 // Clear current messages
                 self.chat_messages = restored.messages;
                 self.thinking_enabled = restored.thinking_enabled;
+                self.read_only = restored.read_only;
+                if let Some(ref mut pm) = self.provider_manager {
+                    pm.services().set_read_only(self.read_only);
+                }
+
                 // Use the session_id we loaded by, not the one from metadata (may be empty for v1)
                 self.current_session_id = Some(session_id.clone());
+
+                if self.read_only {
+                    self.messages.push(Message::Text(
+                        "Read-only mode enabled for this session.".into(),
+                    ));
+                }
 
                 // Rebuild display messages from the session
                 self.messages.clear();
@@ -1208,6 +1239,42 @@ impl App {
                 .push(Message::Text(format!("Tool '{}' {}", tool_name, action)));
             self.layout_cache.invalidate();
         }
+    }
+
+    pub(crate) fn cycle_security_mode(&mut self) {
+        let current_ro = self.read_only;
+        let current_sandbox = self.sandbox_enabled;
+
+        // Cycle: RW (Sandboxed) -> RO -> YOLO -> RW (Sandboxed)
+        let (next_ro, next_sandbox) = if current_ro {
+            // RO -> YOLO
+            (false, false)
+        } else if current_sandbox {
+            // RW -> RO
+            (true, true)
+        } else {
+            // YOLO -> RW
+            (false, true)
+        };
+
+        self.read_only = next_ro;
+        self.sandbox_enabled = next_sandbox;
+        self.services.set_read_only(next_ro);
+        self.services.set_sandbox_enabled(next_sandbox);
+
+        if !next_ro && !next_sandbox {
+            self.messages.push(Message::Warning(
+                "⚠ YOLO mode enabled (Sandbox disabled)".into(),
+            ));
+        } else if next_ro {
+            self.messages
+                .push(Message::Text("Read-Only mode enabled".into()));
+        } else {
+            self.messages
+                .push(Message::Text("Read-Write mode enabled (Sandboxed)".into()));
+        }
+
+        self.layout_cache.invalidate();
     }
 
     pub(crate) fn handle_tools_menu_key(
@@ -1372,19 +1439,49 @@ impl App {
                 self.input.clear();
                 self.cursor = 0;
             }
-            Command::Sandbox => {
+            Command::ReadWrite => {
                 if let Some(ref pm) = self.provider_manager {
                     let services = pm.services();
-                    let enabled = !services.is_sandbox_enabled();
-                    services.set_sandbox_enabled(enabled);
-                    if enabled {
-                        self.messages
-                            .push(Message::Text("Sandbox enabled for bash commands.".into()));
-                    } else {
-                        self.messages.push(Message::Text(
-                            "⚠ Sandbox disabled for bash commands.".into(),
+                    self.read_only = false;
+                    self.sandbox_enabled = true;
+                    services.set_read_only(false);
+                    services.set_sandbox_enabled(true);
+                    self.messages
+                        .push(Message::Text("Read-Write mode enabled (Sandboxed).".into()));
+                    self.layout_cache.invalidate();
+                }
+                self.input.clear();
+                self.cursor = 0;
+                self.reset_scroll();
+            }
+            Command::Yolo => {
+                if let Some(ref pm) = self.provider_manager {
+                    let services = pm.services();
+                    // Only show warning if not already in YOLO mode
+                    if self.read_only || self.sandbox_enabled {
+                        self.messages.push(Message::Warning(
+                            "⚠ YOLO mode enabled (Sandbox disabled)".into(),
                         ));
                     }
+                    self.read_only = false;
+                    self.sandbox_enabled = false;
+                    services.set_read_only(false);
+                    services.set_sandbox_enabled(false);
+                    self.layout_cache.invalidate();
+                }
+                self.input.clear();
+                self.cursor = 0;
+                self.reset_scroll();
+            }
+            Command::ReadOnly => {
+                if let Some(ref pm) = self.provider_manager {
+                    let services = pm.services();
+                    self.read_only = true;
+                    self.sandbox_enabled = true;
+                    services.set_read_only(true);
+                    services.set_sandbox_enabled(true);
+                    self.messages
+                        .push(Message::Text("Read-Only mode enabled.".into()));
                     self.layout_cache.invalidate();
                 }
                 self.input.clear();
@@ -1585,6 +1682,9 @@ impl App {
                 help_lines.push("**Keyboard shortcuts:**".to_string());
                 help_lines.push("  `Ctrl+M`  Switch model".to_string());
                 help_lines.push("  `Ctrl+T`  Toggle thinking".to_string());
+                help_lines.push(
+                    "  `Ctrl+X`  Cycle security mode (Read-Write -> Read-Only -> YOLO)".to_string(),
+                );
                 help_lines.push("  `Shift+Tab`  Cycle favorite models".to_string());
                 help_lines.push("  `Ctrl+R`  Search history".to_string());
                 help_lines.push("  `Ctrl+G`  Edit in external editor".to_string());
@@ -1852,6 +1952,7 @@ impl App {
                 &model.provider,
                 &model.model_id,
                 self.thinking_enabled,
+                self.read_only,
                 self.current_session_id.as_deref(),
             )
         {
@@ -2706,6 +2807,7 @@ impl App {
             self.messages.get(index).map(|msg| match msg {
                 Message::Text(text) => bulletify(text),
                 Message::Error(err) => format_error_message(err),
+                Message::Warning(warn) => bulletify(warn),
                 Message::User(user_msg) => user_msg.display_text.clone(),
                 Message::AssistantThinking(msg) => {
                     let trimmed = msg.text.trim();
@@ -3107,7 +3209,7 @@ mod tests {
                 show_diffs: true,
                 lsp_enabled: true,
                 todo_enabled: true,
-                sandbox_enabled: true,
+                services: crate::services::Services::null(),
             },
             crate::output::OutputContext::null(),
         );
@@ -3162,7 +3264,7 @@ mod tests {
                 show_diffs: true,
                 lsp_enabled: true,
                 todo_enabled: true,
-                sandbox_enabled: true,
+                services: crate::services::Services::null(),
             },
             crate::output::OutputContext::null(),
         );

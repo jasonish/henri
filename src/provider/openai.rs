@@ -18,6 +18,7 @@ use crate::prompts;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
 };
+use crate::services::Services;
 use crate::sse;
 use crate::tools;
 use crate::usage;
@@ -80,6 +81,7 @@ pub(crate) struct OpenAiProvider {
     audience: String,
     thinking_enabled: bool,
     usage_tracker: &'static usage::Usage,
+    services: Services,
 }
 
 #[derive(Serialize)]
@@ -134,7 +136,7 @@ struct PendingToolCall {
 }
 
 impl OpenAiProvider {
-    pub(crate) fn try_new() -> Result<Self> {
+    pub(crate) fn try_new(services: Services) -> Result<Self> {
         let config = ConfigFile::load()?;
 
         // Find the first enabled OpenAI provider
@@ -159,6 +161,7 @@ impl OpenAiProvider {
             audience: openai.audience,
             thinking_enabled: true,
             usage_tracker: usage::openai(),
+            services,
         })
     }
 
@@ -451,7 +454,7 @@ impl OpenAiProvider {
         let instructions = self.codex_instructions().await;
         let input = self.build_codex_input(messages);
 
-        let tools: Vec<OpenAiTool> = tools::all_definitions()
+        let tools: Vec<OpenAiTool> = tools::all_definitions(&self.services)
             .await
             .into_iter()
             .map(|t| OpenAiTool {

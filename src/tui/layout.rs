@@ -135,6 +135,7 @@ pub(crate) fn message_display_height(message: &Message, width: u16) -> u16 {
     match message {
         Message::Text(text) => text_message_height(&bulletify(text), width),
         Message::Error(err) => text_message_height(&format_error_message(err), width),
+        Message::Warning(warn) => text_message_height(&bulletify(warn), width),
         Message::AssistantThinking(_)
         | Message::AssistantToolCalls(_)
         | Message::AssistantText(_) => unreachable!(),

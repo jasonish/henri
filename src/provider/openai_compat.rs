@@ -23,6 +23,7 @@ use crate::prompts;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
 };
+use crate::services::Services;
 use crate::tools;
 use crate::usage;
 
@@ -37,6 +38,7 @@ pub(crate) struct OpenAiChatConfig {
     pub model: String,
     pub usage_tracker: &'static usage::Usage,
     pub custom_headers: Option<HeaderMap>,
+    pub services: Services,
 }
 
 /// Trait for accessing model-specific configuration.
@@ -443,7 +445,7 @@ pub(crate) async fn build_request(
     let mut all_messages = vec![Message::system(prompts::system_prompt().join("\n\n"))];
     all_messages.extend(messages.iter().cloned());
 
-    let tools: Vec<OpenAiTool> = tools::all_definitions()
+    let tools: Vec<OpenAiTool> = tools::all_definitions(&config.services)
         .await
         .into_iter()
         .map(|t| OpenAiTool {
@@ -612,7 +614,7 @@ pub(crate) struct OpenAiCompatProvider {
 }
 
 impl OpenAiCompatProvider {
-    pub(crate) fn try_new(provider_name: &str) -> Result<Self> {
+    pub(crate) fn try_new(provider_name: &str, services: Services) -> Result<Self> {
         let config = ConfigFile::load()?;
         let openai_compat = config
             .get_provider(provider_name)
@@ -662,6 +664,7 @@ impl OpenAiCompatProvider {
             model: "default".to_string(),
             usage_tracker: usage::openai_compat(),
             custom_headers: None,
+            services,
         };
 
         Ok(Self {
@@ -675,6 +678,7 @@ impl OpenAiCompatProvider {
         provider_name: &str,
         config: crate::config::OpenAiCompatProviderConfig,
         usage_tracker: &'static usage::Usage,
+        services: Services,
     ) -> Self {
         let chat_config = OpenAiChatConfig {
             provider_name: provider_name.to_string(),
@@ -684,6 +688,7 @@ impl OpenAiCompatProvider {
             model: "default".to_string(),
             usage_tracker,
             custom_headers: None,
+            services,
         };
 
         Self {

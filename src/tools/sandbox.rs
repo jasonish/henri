@@ -152,6 +152,34 @@ pub(crate) fn check_write_access(
     validate_write_path(target, cwd)
 }
 
+pub(crate) fn create_read_only_ruleset() -> Option<RulesetCreated> {
+    let abi = ABI::V5;
+    let write_access = AccessFs::from_all(abi) & !AccessFs::from_read(abi);
+
+    let ruleset = Ruleset::default()
+        .handle_access(write_access)
+        .ok()?
+        .create()
+        .ok()?;
+
+    // Allow writes to /dev/null and /dev/tty for proper I/O handling
+    let write_files: Vec<PathBuf> = WRITE_FILES
+        .iter()
+        .filter_map(|f| {
+            let path = Path::new(f);
+            if path.exists() {
+                Some(canonicalize_existing(path))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    ruleset
+        .add_rules(path_beneath_rules(write_files, write_access))
+        .ok()
+}
+
 /// Create a Landlock ruleset for bash command execution.
 ///
 /// The ruleset restricts only write operations:

@@ -648,7 +648,9 @@ pub(crate) fn render_tools_menu(
 
     // Calculate popup dimensions - needs to be wider for descriptions
     let popup_width = 65.min(screen.width.saturating_sub(4));
-    let content_lines = menu.tools.len();
+    // Add extra line for read-only banner if active
+    let banner_lines = if menu.read_only { 1 } else { 0 };
+    let content_lines = menu.tools.len() + banner_lines;
     let popup_height = (content_lines as u16 + 2).min(screen.height.saturating_sub(4));
 
     // Center the popup
@@ -661,20 +663,40 @@ pub(crate) fn render_tools_menu(
 
     let mut lines: Vec<Line> = Vec::new();
 
+    // Show read-only banner if active
+    if menu.read_only {
+        lines.push(Line::from(vec![Span::styled(
+            " ⚠ Read-only mode: some tools are locked",
+            Style::default().fg(Color::Yellow).bg(bg),
+        )]));
+    }
+
     // Find max tool name length for alignment
     let max_name_len = menu.tools.iter().map(|t| t.name.len()).max().unwrap_or(0);
 
     for (i, tool) in menu.tools.iter().enumerate() {
         let is_selected = i == menu.selected_index;
         let prefix = if is_selected { ">" } else { " " };
-        let checkbox = if tool.is_enabled { "[x]" } else { "[ ]" };
-        let status_color = if tool.is_enabled {
-            Color::Green
+
+        // Locked tools show a lock icon instead of checkbox
+        let (checkbox, status_color) = if tool.is_read_only_locked {
+            ("🔒 ", Color::DarkGray)
+        } else if tool.is_enabled {
+            ("[x]", Color::Green)
         } else {
-            Color::DarkGray
+            ("[ ]", Color::DarkGray)
         };
 
-        let style = if is_selected {
+        // Locked tools are always dimmed
+        let style = if tool.is_read_only_locked {
+            if is_selected {
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .bg(Color::Rgb(48, 48, 48))
+            } else {
+                Style::default().fg(Color::DarkGray).bg(bg)
+            }
+        } else if is_selected {
             Style::default().fg(Color::Cyan).bg(Color::Rgb(48, 48, 48))
         } else {
             Style::default().fg(Color::White).bg(bg)

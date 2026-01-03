@@ -4,6 +4,7 @@
 pub(crate) enum Message {
     Text(String),
     Error(String),
+    Warning(String),
     User(UserMessage),
     AssistantThinking(ThinkingMessage),
     AssistantToolCalls(ToolCallsMessage),
