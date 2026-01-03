@@ -806,19 +806,15 @@ fn render_working_indicator(frame: &mut Frame, area: Rect, app: &App) {
             format!("({:.1}s)", duration)
         };
 
-        // Add context info when done and available
-        if !app.is_chatting {
-            if let (Some(ctx_tokens), Some(ctx_limit)) =
-                (app.last_context_tokens, app.context_limit)
-            {
-                let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
-                let limit_k = ctx_limit / 1000;
-                let pct = (ctx_tokens as f64 / ctx_limit as f64) * 100.0;
-                stats.push_str(&format!(" • ctx: {}k/{}k ({:.0}%)", ctx_k, limit_k, pct));
-            } else if let Some(ctx_tokens) = app.last_context_tokens {
-                let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
-                stats.push_str(&format!(" • ctx: {}k", ctx_k));
-            }
+        // Add context info when available (shown during tool loop and when done)
+        if let (Some(ctx_tokens), Some(ctx_limit)) = (app.last_context_tokens, app.context_limit) {
+            let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
+            let limit_k = ctx_limit / 1000;
+            let pct = (ctx_tokens as f64 / ctx_limit as f64) * 100.0;
+            stats.push_str(&format!(" • ctx: {}k/{}k ({:.0}%)", ctx_k, limit_k, pct));
+        } else if let Some(ctx_tokens) = app.last_context_tokens {
+            let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
+            stats.push_str(&format!(" • ctx: {}k", ctx_k));
         }
 
         (status.to_string(), Some(stats))

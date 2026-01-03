@@ -41,6 +41,11 @@ pub(crate) enum OutputEvent {
     Interrupted,
     /// Progress update during streaming
     WorkingProgress { total_tokens: u64 },
+    /// Context size update (input tokens from API response)
+    ContextUpdate {
+        input_tokens: u64,
+        context_limit: Option<u64>,
+    },
     /// Todo list updated
     TodoList { todos: Vec<crate::tools::TodoItem> },
     /// File was modified, here's the diff
@@ -231,6 +236,18 @@ pub(crate) fn emit_working_progress(
     _tokens_per_sec: f64,
 ) {
     ctx.emit(OutputEvent::WorkingProgress { total_tokens });
+}
+
+/// Emit context size update
+pub(crate) fn emit_context_update(
+    ctx: &OutputContext,
+    input_tokens: u64,
+    context_limit: Option<u64>,
+) {
+    ctx.emit(OutputEvent::ContextUpdate {
+        input_tokens,
+        context_limit,
+    });
 }
 
 /// Emit error message

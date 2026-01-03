@@ -559,7 +559,8 @@ impl OutputListener for CliListener {
             OutputEvent::Waiting
             | OutputEvent::Done
             | OutputEvent::Interrupted
-            | OutputEvent::WorkingProgress { .. } => {}
+            | OutputEvent::WorkingProgress { .. }
+            | OutputEvent::ContextUpdate { .. } => {}
 
             OutputEvent::AutoCompactStarting {
                 current_usage,

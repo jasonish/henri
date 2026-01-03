@@ -48,6 +48,8 @@
 - `/mcp` now auto-triggers on tab completion (like `/model` and `/settings`)
 - CLI `/mcp` menu now uses MultiSelect for toggling multiple servers at once
 - TUI MCP menu uses markdown-style checkboxes `[x]`/`[ ]`
+- TUI status line now displays context usage during tool loops, not just when
+  done - shows input tokens and context limit percentage for real-time feedback
 - TUI MCP toggle is now non-blocking with optimistic UI updates
 - MCP servers are now disabled by default on startup - use `/mcp` to
   enable them as needed

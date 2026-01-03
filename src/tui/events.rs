@@ -335,6 +335,13 @@ impl App {
                         self.streaming_tokens_display = total_tokens;
                     }
                 }
+                OutputEvent::ContextUpdate {
+                    input_tokens,
+                    context_limit,
+                } => {
+                    self.last_context_tokens = Some(input_tokens);
+                    self.context_limit = context_limit;
+                }
                 OutputEvent::TodoList { todos } => {
                     // Format display text for the todo list
                     let display_text = if todos.is_empty() {

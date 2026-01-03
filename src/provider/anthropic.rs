@@ -628,6 +628,8 @@ impl AnthropicProvider {
                     {
                         if let Some(input) = u.input_tokens {
                             usage::anthropic().record_input(input);
+                            let limit = Self::context_limit(&self.model);
+                            output::emit_context_update(output, input, limit);
                         }
                         if let Some(cache_create) = u.cache_creation_input_tokens {
                             usage::anthropic().add_cache_creation(cache_create);
