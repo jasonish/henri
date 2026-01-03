@@ -565,9 +565,28 @@ impl AntigravityProvider {
 
                     let status = response.status();
                     let status_code = status.as_u16();
+
+                    // Capture headers before consuming the response body
+                    let error_headers = crate::provider::transaction_log::header_map_to_hash_map(
+                        response.headers(),
+                    );
+
                     // If Unauthorized, fail immediately to trigger refresh in outer loop
                     if status_code == 401 {
                         let text = response.text().await.unwrap_or_default();
+
+                        crate::provider::transaction_log::log(
+                            &url,
+                            headers.clone(),
+                            request.clone(),
+                            error_headers,
+                            serde_json::json!({
+                                "error": true,
+                                "status": status_code,
+                                "body": text
+                            }),
+                        );
+
                         return Err(Error::Unauthorized(format!(
                             "Antigravity chat failed: {} - {}",
                             status, text
@@ -576,6 +595,18 @@ impl AntigravityProvider {
 
                     // For other errors, store and try next endpoint
                     let text = response.text().await.unwrap_or_default();
+
+                    crate::provider::transaction_log::log(
+                        &url,
+                        headers.clone(),
+                        request.clone(),
+                        error_headers,
+                        serde_json::json!({
+                            "error": true,
+                            "status": status_code,
+                            "body": text
+                        }),
+                    );
 
                     // Check for retryable errors (timeouts, overloaded, rate limits)
                     if super::is_retryable_status(status_code) || super::is_retryable_message(&text)

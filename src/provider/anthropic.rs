@@ -564,6 +564,18 @@ impl AnthropicProvider {
             let status_code = status.as_u16();
             let text = response.text().await.unwrap_or_default();
 
+            crate::provider::transaction_log::log(
+                API_URL,
+                req_headers.clone(),
+                serde_json::to_value(&request).unwrap_or_default(),
+                resp_headers,
+                serde_json::json!({
+                    "error": true,
+                    "status": status_code,
+                    "body": text
+                }),
+            );
+
             // Check for corrupted session state error (tool_use without tool_result)
             // This happens when a previous session crashed mid-tool-loop
             if text.contains("tool_use") && text.contains("tool_result") {

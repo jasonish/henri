@@ -194,9 +194,24 @@ async fn execute_chat_inner(
         ))
     })?;
 
+    let resp_headers = crate::provider::transaction_log::header_map_to_hash_map(response.headers());
+
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let message = response.text().await.unwrap_or_default();
+
+        crate::provider::transaction_log::log(
+            &url,
+            req_headers.clone(),
+            serde_json::to_value(&request).unwrap_or_default(),
+            resp_headers,
+            serde_json::json!({
+                "error": true,
+                "status": status,
+                "body": message
+            }),
+        );
+
         return Err(super::api_error(status, message));
     }
 
@@ -211,8 +226,6 @@ async fn execute_chat_inner(
     let mut received_reasoning = false;
     let mut usage_recorded = false;
     let mut raw_events: Vec<serde_json::Value> = Vec::new();
-
-    let resp_headers = crate::provider::transaction_log::header_map_to_hash_map(response.headers());
 
     let mut sse = crate::sse::SseStream::new(response.bytes_stream().map(|chunk| {
         if let Ok(ref bytes) = chunk {

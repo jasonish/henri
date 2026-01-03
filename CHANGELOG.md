@@ -6,6 +6,8 @@
 
 - Retry notifications during API errors now display as warnings instead of
   errors, preventing the TUI from incorrectly ending the chat session
+- Error responses (including 429 rate limits) are now logged to the transaction
+  log with headers captured, enabling debugging of API issues
 
 ## [0.3.0] - 2025-01-03
 

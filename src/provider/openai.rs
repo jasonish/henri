@@ -540,6 +540,19 @@ impl OpenAiProvider {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let message = response.text().await.unwrap_or_default();
+
+            crate::provider::transaction_log::log(
+                OPENAI_CODEX_URL,
+                req_headers.clone(),
+                serde_json::to_value(&request).unwrap_or_default(),
+                resp_headers,
+                serde_json::json!({
+                    "error": true,
+                    "status": status,
+                    "body": message
+                }),
+            );
+
             return Err(super::api_error(status, message));
         }
 

@@ -604,6 +604,18 @@ impl Provider for CopilotProvider {
             let status_code = status.as_u16();
             let text = response.text().await.unwrap_or_default();
 
+            crate::provider::transaction_log::log(
+                CHAT_URL,
+                req_headers.clone(),
+                serde_json::to_value(&request).unwrap_or_default(),
+                resp_headers,
+                serde_json::json!({
+                    "error": true,
+                    "status": status_code,
+                    "body": text
+                }),
+            );
+
             // Check for retryable errors (timeouts, overloaded, rate limits)
             if super::is_retryable_status(status_code) || super::is_retryable_message(&text) {
                 return Err(Error::Retryable {
@@ -881,6 +893,18 @@ impl CopilotProvider {
             let status = response.status();
             let status_code = status.as_u16();
             let text = response.text().await.unwrap_or_default();
+
+            crate::provider::transaction_log::log(
+                RESPONSES_URL,
+                req_headers.clone(),
+                serde_json::to_value(&request).unwrap_or_default(),
+                resp_headers,
+                serde_json::json!({
+                    "error": true,
+                    "status": status_code,
+                    "body": text
+                }),
+            );
 
             // Check for retryable errors (timeouts, overloaded, rate limits)
             if super::is_retryable_status(status_code) || super::is_retryable_message(&text) {

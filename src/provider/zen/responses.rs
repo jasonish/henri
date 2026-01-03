@@ -257,6 +257,13 @@ pub(super) async fn chat(
     let body_bytes = serde_json::to_vec(&request)?;
     usage::network_stats().record_tx(body_bytes.len() as u64);
 
+    let mut req_headers = std::collections::HashMap::new();
+    req_headers.insert(
+        "Authorization".to_string(),
+        format!("Bearer {}", ctx.api_key),
+    );
+    req_headers.insert("Content-Type".to_string(), "application/json".to_string());
+
     let response = ctx
         .client
         .post(&url)
@@ -272,9 +279,24 @@ pub(super) async fn chat(
             ))
         })?;
 
+    let resp_headers = crate::provider::transaction_log::header_map_to_hash_map(response.headers());
+
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let message = response.text().await.unwrap_or_default();
+
+        crate::provider::transaction_log::log(
+            &url,
+            req_headers,
+            serde_json::to_value(&request).unwrap_or_default(),
+            resp_headers,
+            serde_json::json!({
+                "error": true,
+                "status": status,
+                "body": message
+            }),
+        );
+
         return Err(crate::provider::api_error(status, message));
     }
 
