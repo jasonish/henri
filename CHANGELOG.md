@@ -16,6 +16,8 @@
 - `/sessions` command to list and switch between previous sessions for the
   current directory - sessions are now stored separately instead of
   overwriting each other
+- File path completion now supports tilde expansion (`~`) for home directory
+  paths in both TUI and CLI modes
 - Landlock sandbox for bash tool: restricts write access to cwd and temp
   directories. Use `--read-only` flag or cycle modes with Ctrl+X.
   - Allows writes to /dev/null and /dev/tty for git and other tools

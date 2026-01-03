@@ -39,9 +39,9 @@ impl FileCompleter {
         self.index = 0;
     }
 
-    /// Check if a word should trigger completion (starts with `.` or `/`)
+    /// Check if a word should trigger completion (starts with `.`, `/`, or `~`)
     pub(crate) fn should_complete(word: &str) -> bool {
-        word.starts_with('/') || word.starts_with('.')
+        word.starts_with('/') || word.starts_with('.') || word.starts_with('~')
     }
 
     /// Initialize completion matches for the given prefix
@@ -98,6 +98,51 @@ impl FileCompleter {
                     format!("{}/", parent.display())
                 };
                 (parent, file_name, prefix_str)
+            }
+        } else if prefix.starts_with('~') {
+            // Tilde expansion - expand ~ to home directory
+            let Some(home_dir) = dirs::home_dir() else {
+                return Vec::new();
+            };
+
+            if prefix == "~" {
+                // Just "~" - list home directory contents with "~/" prefix
+                (home_dir, String::new(), "~/".to_string())
+            } else if let Some(rel_path) = prefix.strip_prefix("~/") {
+                // Path starting with ~/
+                if rel_path.is_empty() {
+                    // Just "~/" - list home directory
+                    (home_dir, String::new(), "~/".to_string())
+                } else if prefix.ends_with('/') {
+                    // Path ends with "/" - list contents of that directory
+                    let dir_path = home_dir.join(rel_path);
+                    if dir_path.is_dir() {
+                        (dir_path, String::new(), prefix.to_string())
+                    } else {
+                        return Vec::new();
+                    }
+                } else {
+                    // Completing a partial filename
+                    let base_path = home_dir.join(rel_path);
+                    let parent = base_path.parent().unwrap_or(&home_dir);
+                    let file_name = base_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    // Build the prefix to prepend to results
+                    let rel_parent = parent.strip_prefix(&home_dir).unwrap_or(parent);
+                    let prefix_str = if rel_parent.as_os_str().is_empty() {
+                        "~/".to_string()
+                    } else {
+                        format!("~/{}/", rel_parent.display())
+                    };
+                    (parent.to_path_buf(), file_name, prefix_str)
+                }
+            } else {
+                // ~something without / - not a valid path pattern we handle
+                return Vec::new();
             }
         } else if prefix == "." {
             // Just "." - list current directory contents with "./" prefix
