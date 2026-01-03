@@ -162,6 +162,7 @@ enum Command {
         tool: ToolCommand,
     },
     /// Check for available upgrades
+    #[command(alias = "update", hide = true)]
     Upgrade,
 }
 

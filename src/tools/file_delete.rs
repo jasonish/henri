@@ -113,12 +113,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_nonexistent_file() {
+        // Use a path under /tmp so it passes sandbox checks but doesn't exist
+        let nonexistent_path = "/tmp/henri-test-nonexistent-file-12345.txt";
         let tool = FileDelete;
         let result = tool
             .execute(
                 "test-id",
                 serde_json::json!({
-                    "filePath": "/nonexistent/path/to/file.txt"
+                    "filePath": nonexistent_path
                 }),
                 &crate::output::OutputContext::null(),
                 &crate::services::Services::null(),

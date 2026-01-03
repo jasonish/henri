@@ -381,6 +381,11 @@ impl From<&SerializableContentBlock> for ContentBlock {
 
 /// Get the base sessions directory path.
 fn sessions_base_dir() -> PathBuf {
+    // Allow override via environment variable (used by tests)
+    if let Ok(dir) = std::env::var("HENRI_SESSIONS_DIR") {
+        return PathBuf::from(dir);
+    }
+
     dirs::home_dir()
         .map(|home| home.join(".cache").join("henri").join("sessions"))
         .unwrap_or_else(|| PathBuf::from(".cache/henri/sessions"))
@@ -935,7 +940,39 @@ pub(crate) fn replay_session(state: &SessionState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // Mutex to serialize tests that use HENRI_SESSIONS_DIR environment variable
+    static SESSION_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Helper to set up a temp sessions directory for tests.
+    /// Returns a guard that will clear the env var when dropped.
+    struct TestSessionsDir {
+        _temp_dir: TempDir,
+    }
+
+    impl TestSessionsDir {
+        fn new() -> Self {
+            let temp_dir = TempDir::new().unwrap();
+            // SAFETY: We hold SESSION_TEST_LOCK, so no concurrent env access in session tests
+            unsafe {
+                std::env::set_var("HENRI_SESSIONS_DIR", temp_dir.path());
+            }
+            Self {
+                _temp_dir: temp_dir,
+            }
+        }
+    }
+
+    impl Drop for TestSessionsDir {
+        fn drop(&mut self) {
+            // SAFETY: We hold SESSION_TEST_LOCK, so no concurrent env access in session tests
+            unsafe {
+                std::env::remove_var("HENRI_SESSIONS_DIR");
+            }
+        }
+    }
 
     #[test]
     fn test_session_path_consistency() {
@@ -956,6 +993,8 @@ mod tests {
 
     #[test]
     fn test_save_and_load_session() {
+        let _lock = SESSION_TEST_LOCK.lock().unwrap();
+        let _sessions_dir = TestSessionsDir::new();
         let temp_dir = TempDir::new().unwrap();
         let working_dir = temp_dir.path();
 
@@ -990,6 +1029,8 @@ mod tests {
 
     #[test]
     fn test_multiple_sessions() {
+        let _lock = SESSION_TEST_LOCK.lock().unwrap();
+        let _sessions_dir = TestSessionsDir::new();
         let temp_dir = TempDir::new().unwrap();
         let working_dir = temp_dir.path();
 
@@ -1045,6 +1086,8 @@ mod tests {
 
     #[test]
     fn test_save_and_load_session_read_only() {
+        let _lock = SESSION_TEST_LOCK.lock().unwrap();
+        let _sessions_dir = TestSessionsDir::new();
         let temp_dir = TempDir::new().unwrap();
         let working_dir = temp_dir.path();
 
@@ -1070,6 +1113,8 @@ mod tests {
 
     #[test]
     fn test_session_preview() {
+        let _lock = SESSION_TEST_LOCK.lock().unwrap();
+        let _sessions_dir = TestSessionsDir::new();
         let temp_dir = TempDir::new().unwrap();
         let working_dir = temp_dir.path();
 
@@ -1146,6 +1191,8 @@ mod tests {
 
     #[test]
     fn test_save_and_load_session_with_tool_results() {
+        let _lock = SESSION_TEST_LOCK.lock().unwrap();
+        let _sessions_dir = TestSessionsDir::new();
         let temp_dir = TempDir::new().unwrap();
         let working_dir = temp_dir.path();
 
