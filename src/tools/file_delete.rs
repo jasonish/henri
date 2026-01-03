@@ -50,7 +50,8 @@ impl Tool for FileDelete {
             Err(e) => return e,
         };
 
-        let path = Path::new(&input.file_path);
+        let expanded_path = super::expand_tilde(&input.file_path);
+        let path = Path::new(&expanded_path);
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         if let Err(message) = sandbox::check_write_access(path, &cwd, services.is_sandbox_enabled())

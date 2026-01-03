@@ -61,14 +61,14 @@ impl Tool for Glob {
             Err(e) => return e,
         };
 
-        let base_path = input.path.as_deref().unwrap_or(".");
-        let path = Path::new(base_path);
+        let base_path = super::expand_tilde(input.path.as_deref().unwrap_or("."));
+        let path = Path::new(&base_path);
         let limit = input.limit.unwrap_or(DEFAULT_LIMIT);
 
-        if let Err(e) = super::validate_path_exists(tool_use_id, path, base_path) {
+        if let Err(e) = super::validate_path_exists(tool_use_id, path, &base_path) {
             return e;
         }
-        if let Err(e) = super::validate_is_directory(tool_use_id, path, base_path) {
+        if let Err(e) = super::validate_is_directory(tool_use_id, path, &base_path) {
             return e;
         }
 
@@ -94,7 +94,7 @@ impl Tool for Glob {
                         Ok(path) => {
                             if path.is_file() {
                                 let display_path = path
-                                    .strip_prefix(base_path)
+                                    .strip_prefix(&base_path)
                                     .unwrap_or(&path)
                                     .to_string_lossy()
                                     .to_string();

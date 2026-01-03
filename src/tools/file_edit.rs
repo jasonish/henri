@@ -79,7 +79,8 @@ impl Tool for FileEdit {
             return ToolResult::error(tool_use_id, "oldString cannot be empty");
         }
 
-        let path = Path::new(&input.file_path);
+        let expanded_path = super::expand_tilde(&input.file_path);
+        let path = Path::new(&expanded_path);
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &input.file_path) {
             return e;

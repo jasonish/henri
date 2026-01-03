@@ -51,13 +51,13 @@ impl Tool for ListDir {
             Err(e) => return e,
         };
 
-        let dir_path = input.path.as_deref().unwrap_or(".");
-        let path = Path::new(dir_path);
+        let dir_path = super::expand_tilde(input.path.as_deref().unwrap_or("."));
+        let path = Path::new(&dir_path);
 
-        if let Err(e) = super::validate_path_exists(tool_use_id, path, dir_path) {
+        if let Err(e) = super::validate_path_exists(tool_use_id, path, &dir_path) {
             return e;
         }
-        if let Err(e) = super::validate_is_directory(tool_use_id, path, dir_path) {
+        if let Err(e) = super::validate_is_directory(tool_use_id, path, &dir_path) {
             return e;
         }
 

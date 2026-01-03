@@ -57,7 +57,8 @@ impl Tool for FileRead {
             Err(e) => return e,
         };
 
-        let path = Path::new(&input.filename);
+        let expanded_filename = super::expand_tilde(&input.filename);
+        let path = Path::new(&expanded_filename);
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &input.filename) {
             return e;

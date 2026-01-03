@@ -250,17 +250,17 @@ impl Tool for Grep {
             Err(e) => return e,
         };
 
-        let search_path = input.path.as_deref().unwrap_or(".");
-        let path = Path::new(search_path);
+        let search_path = super::expand_tilde(input.path.as_deref().unwrap_or("."));
+        let path = Path::new(&search_path);
 
-        if let Err(e) = super::validate_path_exists(tool_use_id, path, search_path) {
+        if let Err(e) = super::validate_path_exists(tool_use_id, path, &search_path) {
             return e;
         }
 
         let result = if self.has_ripgrep().await {
-            self.execute_rg(tool_use_id, &input, search_path).await
+            self.execute_rg(tool_use_id, &input, &search_path).await
         } else {
-            self.execute_grep(tool_use_id, &input, search_path).await
+            self.execute_grep(tool_use_id, &input, &search_path).await
         };
 
         match result {

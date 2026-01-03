@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Tilde expansion (`~`) support in all file tools (file_read, file_write,
+  file_edit, file_delete, list_dir, glob, grep)
+
 ### Fixed
 
 - Retry notifications during API errors now display as warnings instead of

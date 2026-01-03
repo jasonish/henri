@@ -141,7 +141,6 @@ impl FileCompleter {
                     (parent.to_path_buf(), file_name, prefix_str)
                 }
             } else {
-                // ~something without / - not a valid path pattern we handle
                 return Vec::new();
             }
         } else if prefix == "." {

@@ -79,7 +79,8 @@ impl Tool for FileWrite {
             Err(e) => return e,
         };
 
-        let path = Path::new(&input.file_path);
+        let expanded_path = super::expand_tilde(&input.file_path);
+        let path = Path::new(&expanded_path);
 
         if path.is_dir() {
             return ToolResult::error(

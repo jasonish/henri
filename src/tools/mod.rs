@@ -155,6 +155,38 @@ pub(crate) fn validate_is_file(
     }
 }
 
+/// Expand `~` to the user's home directory.
+///
+/// Supports:
+/// - `~` -> home directory
+/// - `~/path` -> home directory / path
+pub(crate) fn expand_tilde(path: &str) -> String {
+    // Only expand if path starts with ~ (and is exactly ~ or ~/...)
+    if !path.starts_with('~') {
+        return path.to_string();
+    }
+
+    // If it's exactly ~, return home directory
+    if path == "~" {
+        return dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.to_string());
+    }
+
+    // If it starts with ~/, expand ~ to home directory
+    if let Some(home) = dirs::home_dir() {
+        // Skip the ~ and use the rest of the path
+        let rest = &path[1..];
+        // home.join() doesn't work well with absolute paths like /foo, so
+        // we need to handle this by stripping the leading slash from rest
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        return home.join(rest).to_string_lossy().to_string();
+    }
+
+    // Couldn't determine home directory, return original
+    path.to_string()
+}
+
 /// Generates a one-liner description for a tool call (used for UI display)
 pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {
@@ -409,6 +441,37 @@ pub(crate) async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_expand_tilde_exact_tilde() {
+        let home = dirs::home_dir().map(|p| p.to_string_lossy().to_string());
+        if let Some(h) = home {
+            assert_eq!(expand_tilde("~"), h);
+        }
+    }
+
+    #[test]
+    fn test_expand_tilde_with_path() {
+        let home = dirs::home_dir().map(|p| p.to_string_lossy().to_string());
+        if let Some(h) = home {
+            assert_eq!(expand_tilde("~/Documents"), format!("{}/Documents", h));
+            assert_eq!(expand_tilde("~/foo/bar.txt"), format!("{}/foo/bar.txt", h));
+        }
+    }
+
+    #[test]
+    fn test_expand_tilde_no_change() {
+        assert_eq!(expand_tilde("/absolute/path"), "/absolute/path");
+        assert_eq!(expand_tilde("relative/path"), "relative/path");
+        assert_eq!(expand_tilde(""), "");
+    }
+
+    #[test]
+    fn test_expand_tilde_in_middle() {
+        // ~ should not be expanded in the middle of paths
+        let result = expand_tilde("foo/~bar");
+        assert_eq!(result, "foo/~bar");
+    }
 
     #[test]
     fn test_builtin_definitions_read_only() {
