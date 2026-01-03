@@ -493,9 +493,12 @@ impl AnthropicProvider {
             system.push(serde_json::json!({"type": "text", "text": part}));
         }
 
-        // Add cache control to the last system block to enable prompt caching
-        if let Some(last) = system.last_mut() {
-            last["cache_control"] = serde_json::json!({"type": "ephemeral"});
+        // Add cache control to the second-to-last system block to enable prompt caching.
+        // The last block is the timestamp which changes on every request, so we cache
+        // everything before it.
+        let len = system.len();
+        if len >= 2 {
+            system[len - 2]["cache_control"] = serde_json::json!({"type": "ephemeral"});
         }
 
         let built_messages = self.build_messages(messages);

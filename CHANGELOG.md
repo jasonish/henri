@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- Improved prompt caching for Anthropic provider by moving dynamic timestamp
+  to end of system prompt, allowing static content to be cached
 - Retry notifications during API errors now display as warnings instead of
   errors, preventing the TUI from incorrectly ending the chat session
 - Error responses (including 429 rate limits) are now logged to the transaction

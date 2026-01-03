@@ -76,11 +76,6 @@ pub(crate) fn system_prompt() -> Vec<String> {
 
     prompt.push(default_system_prompt().to_string());
 
-    prompt.push(format!(
-        "Current date and time is {}",
-        Local::now().format("%Y-%m-%d %H:%M:%S %Z")
-    ));
-
     if let Ok(cwd) = std::env::current_dir() {
         prompt.push(format!("Current working directory: {}", cwd.display()));
     }
@@ -101,6 +96,14 @@ pub(crate) fn system_prompt() -> Vec<String> {
         );
         prompt.push(instruction);
     }
+
+    // Timestamp goes last so it doesn't invalidate prompt caching.
+    // The cache_control marker is placed on the previous block (agent files),
+    // so the static content gets cached while the dynamic timestamp comes after.
+    prompt.push(format!(
+        "Current date and time is {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S %Z")
+    ));
 
     prompt
 }
