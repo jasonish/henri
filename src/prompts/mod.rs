@@ -16,6 +16,31 @@ pub(crate) const BUILD_AGENTS_MD_PROMPT: &str = include_str!("build-agents-md.md
 /// Default system prompt for AI assistants.
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("system.md");
 
+/// Maximum depth for project structure tree.
+const MAX_DEPTH: usize = 2;
+
+/// Maximum number of entries in project structure.
+const MAX_ENTRIES: usize = 500;
+
+/// Directories to skip in project structure.
+const SKIP_DIRS: &[&str] = &[
+    ".git",
+    ".github",
+    ".idea",
+    "node_modules",
+    "target",
+    "vendor",
+    "venv",
+    ".venv",
+    "__pycache__",
+    ".vscode",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    "coverage",
+];
+
 /// Returns the default system prompt.
 pub(crate) fn default_system_prompt() -> &'static str {
     DEFAULT_SYSTEM_PROMPT
@@ -60,6 +85,10 @@ pub(crate) fn system_prompt() -> Vec<String> {
         prompt.push(format!("Current working directory: {}", cwd.display()));
     }
 
+    if let Some(project_structure) = project_structure() {
+        prompt.push(project_structure);
+    }
+
     if let Some(git_guidelines) = git_guidelines_if_in_repo() {
         prompt.push(format!("<GitGuidelines>{}</GitGuidelines>", git_guidelines));
     }
@@ -74,6 +103,172 @@ pub(crate) fn system_prompt() -> Vec<String> {
     }
 
     prompt
+}
+
+/// Generates a project structure overview for the current directory.
+/// Returns None if no files found or on error.
+fn project_structure() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+
+    let entries = if is_git_directory() {
+        project_structure_from_git(&cwd)
+    } else {
+        project_structure_from_filesystem(&cwd)
+    }?;
+
+    if entries.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "<ProjectStructure>\n{}\n</ProjectStructure>",
+        entries
+    ))
+}
+
+/// Gets project structure from git repository.
+fn project_structure_from_git(_cwd: &PathBuf) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["ls-tree", "-r", "--name-only", "HEAD"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let mut tree = TreeBuilder::new(MAX_DEPTH, MAX_ENTRIES);
+
+    for line in stdout.lines() {
+        if let Some(depth) = path_depth(line)
+            && depth <= MAX_DEPTH
+            && !should_skip_path(line)
+        {
+            tree.add(line, depth);
+        }
+    }
+
+    tree.build()
+}
+
+/// Gets project structure from filesystem.
+fn project_structure_from_filesystem(cwd: &PathBuf) -> Option<String> {
+    use walkdir::WalkDir;
+
+    let mut tree = TreeBuilder::new(MAX_DEPTH, MAX_ENTRIES);
+
+    let walker = WalkDir::new(cwd)
+        .min_depth(1)
+        .max_depth(MAX_DEPTH + 1)
+        .into_iter();
+
+    for entry in walker.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let relative = path.strip_prefix(cwd).ok()?;
+        let path_str = relative.to_str()?;
+
+        if should_skip_path(path_str) {
+            continue;
+        }
+
+        let depth = path_depth(path_str).unwrap_or(MAX_DEPTH + 1);
+        if depth <= MAX_DEPTH {
+            tree.add(path_str, depth);
+        }
+    }
+
+    tree.build()
+}
+
+/// Returns the depth of a path (number of path separators).
+/// Returns None for empty paths.
+fn path_depth(path: &str) -> Option<usize> {
+    if path.is_empty() {
+        return None;
+    }
+    Some(path.chars().filter(|&c| c == '/' || c == '\\').count())
+}
+
+/// Checks if a path should be skipped based on its components.
+fn should_skip_path(path: &str) -> bool {
+    path.split(['/', '\\'])
+        .any(|component| SKIP_DIRS.contains(&component))
+}
+
+/// Builder for creating a tree representation of project structure.
+/// Prioritizes shallower entries over deeper ones when trimming.
+struct TreeBuilder {
+    max_depth: usize,
+    max_entries: usize,
+    /// Entries grouped by depth: entries_by_depth[0] = depth-0 entries, etc.
+    entries_by_depth: Vec<Vec<String>>,
+}
+
+impl TreeBuilder {
+    fn new(max_depth: usize, max_entries: usize) -> Self {
+        Self {
+            max_depth,
+            max_entries,
+            entries_by_depth: vec![Vec::new(); max_depth + 1],
+        }
+    }
+
+    fn add(&mut self, path: &str, depth: usize) {
+        if depth <= self.max_depth {
+            self.entries_by_depth[depth].push(path.to_string());
+        }
+    }
+
+    fn build(self) -> Option<String> {
+        let total: usize = self.entries_by_depth.iter().map(|v| v.len()).sum();
+        if total == 0 {
+            return None;
+        }
+
+        // Calculate how many entries to take from each depth level.
+        // Priority: depth 0 > depth 1 > depth 2, etc.
+        // Always take all entries from shallower depths before deeper ones.
+        let mut budget = self.max_entries;
+        let mut limits = vec![0usize; self.max_depth + 1];
+
+        for (depth, entries) in self.entries_by_depth.iter().enumerate() {
+            let take = entries.len().min(budget);
+            limits[depth] = take;
+            budget = budget.saturating_sub(take);
+        }
+
+        // Collect entries with their paths for sorting
+        let mut all_entries: Vec<(String, usize)> = Vec::new();
+
+        for (depth, entries) in self.entries_by_depth.iter().enumerate() {
+            for path in entries.iter().take(limits[depth]) {
+                all_entries.push((path.clone(), depth));
+            }
+        }
+
+        // Sort entries alphabetically by path for consistent tree-like output
+        all_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Format with indentation
+        let formatted: Vec<String> = all_entries
+            .iter()
+            .map(|(path, depth)| {
+                let indent = "  ".repeat(*depth);
+                format!("{}{}", indent, path)
+            })
+            .collect();
+
+        let mut result = formatted.join("\n");
+
+        // Add truncation notice if we didn't show everything
+        let shown: usize = limits.iter().sum();
+        if shown < total {
+            result.push_str(&format!("\n... ({} of {} entries shown)", shown, total));
+        }
+
+        Some(result)
+    }
 }
 
 /// A discovered agent configuration file.
@@ -153,5 +348,95 @@ fn determine_stop_directory(
     match home {
         Some(home_path) if cwd.starts_with(home_path) => Some(home_path.to_path_buf()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_path_depth() {
+        assert_eq!(path_depth(""), None);
+        assert_eq!(path_depth("file.txt"), Some(0));
+        assert_eq!(path_depth("dir/file.txt"), Some(1));
+        assert_eq!(path_depth("dir/subdir/file.txt"), Some(2));
+        assert_eq!(path_depth("a/b/c/d/e"), Some(4));
+    }
+
+    #[test]
+    fn test_should_skip_path() {
+        assert!(should_skip_path("node_modules/index.js"));
+        assert!(should_skip_path("target/debug/test"));
+        assert!(should_skip_path(".git/config"));
+        assert!(should_skip_path("vendor/lib.rs"));
+        assert!(should_skip_path("src/node_modules/test"));
+        assert!(!should_skip_path("src/main.rs"));
+        assert!(!should_skip_path("Cargo.toml"));
+        assert!(!should_skip_path("tests/it_works.rs"));
+    }
+
+    #[test]
+    fn test_tree_builder() {
+        let mut tree = TreeBuilder::new(2, 5);
+
+        // Add entries at different depths
+        tree.add("Cargo.toml", 0);
+        tree.add("README.md", 0);
+        tree.add("src/main.rs", 1);
+        tree.add("src/lib.rs", 1);
+        tree.add("src/tools/bash.rs", 2);
+        tree.add("src/tools/file_read.rs", 2);
+        tree.add("src/tools/grep.rs", 2);
+
+        let result = tree.build().unwrap();
+
+        // Depth 0 and 1 should always be included (4 entries)
+        assert!(result.contains("Cargo.toml"));
+        assert!(result.contains("README.md"));
+        assert!(result.contains("src/main.rs"));
+        assert!(result.contains("src/lib.rs"));
+
+        // Only 1 depth-2 entry fits in budget of 5
+        assert!(result.contains("src/tools/bash.rs"));
+
+        // These should be trimmed
+        assert!(!result.contains("file_read.rs"));
+        assert!(!result.contains("grep.rs"));
+
+        // Truncation message
+        assert!(result.contains("5 of 7 entries shown"));
+    }
+
+    #[test]
+    fn test_tree_builder_priority() {
+        // Test that shallower entries are always prioritized
+        let mut tree = TreeBuilder::new(2, 3);
+
+        // Add many deep entries first
+        tree.add("a/b/file1.rs", 2);
+        tree.add("a/b/file2.rs", 2);
+        tree.add("a/b/file3.rs", 2);
+
+        // Then add shallow entries
+        tree.add("Cargo.toml", 0);
+        tree.add("src/main.rs", 1);
+
+        let result = tree.build().unwrap();
+
+        // Shallow entries must be included despite being added last
+        assert!(result.contains("Cargo.toml"));
+        assert!(result.contains("src/main.rs"));
+
+        // Only 1 deep entry fits
+        assert!(result.contains("a/b/file1.rs"));
+        assert!(!result.contains("file2.rs"));
+        assert!(!result.contains("file3.rs"));
+    }
+
+    #[test]
+    fn test_tree_builder_empty() {
+        let tree = TreeBuilder::new(2, 100);
+        assert!(tree.build().is_none());
     }
 }

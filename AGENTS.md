@@ -88,53 +88,6 @@ use crate::provider::Message;
 
 ## Architecture
 
-```
-src/
-├── main.rs           # Entry point, CLI argument parsing (clap)
-├── error.rs          # Error types using thiserror
-├── config.rs         # Configuration file handling (~/.config/henri/)
-├── session.rs        # Session persistence (save/restore conversations)
-├── chat.rs           # Core chat loop logic
-├── compaction.rs     # Message history compaction
-├── history.rs        # Command history persistence
-├── usage.rs          # Token usage tracking
-├── output.rs         # Output formatting for shell mode
-├── custom_commands.rs # Custom slash commands from .md files
-├── prompts/          # System prompts and agent file discovery
-│   ├── mod.rs
-│   ├── git.md        # Git guidelines (embedded at compile time)
-│   └── build-agents-md.md
-├── provider/         # AI provider implementations
-│   ├── mod.rs        # Common types (Message, ContentBlock, etc.)
-│   ├── anthropic.rs  # Claude API
-│   ├── copilot.rs    # GitHub Copilot
-│   ├── openai.rs     # OpenAI API
-│   └── ...
-├── tools/            # Built-in tools for AI to use
-│   ├── mod.rs        # Tool trait and common types
-│   ├── bash.rs       # Shell command execution
-│   ├── file_read.rs
-│   ├── file_write.rs
-│   ├── file_edit.rs
-│   ├── file_list.rs
-│   ├── file_delete.rs
-│   └── grep.rs
-├── shell/            # Traditional REPL interface
-│   ├── mod.rs
-│   ├── input.rs      # User input handling
-│   └── listener.rs
-├── tui/              # Terminal UI (ratatui)
-│   ├── mod.rs        # Main TUI entry point
-│   ├── app.rs        # Application state
-│   ├── render.rs     # Rendering logic
-│   ├── input.rs      # Input editor
-│   ├── markdown.rs   # Markdown rendering
-│   └── ...
-├── mcp/              # Model Context Protocol support
-├── auth/             # Authentication (OAuth for Copilot, etc.)
-└── providers.rs      # Provider manager/registry
-```
-
 ### Key Patterns
 
 - **Async Runtime**: Uses `tokio` with multi-threaded runtime

@@ -4,6 +4,11 @@
 
 ### Added
 
+- Project structure overview in system prompt: automatically includes a
+  depth-limited tree of project files (up to depth 2, max 500 entries)
+  using `git ls-tree` for git repos or filesystem traversal otherwise.
+  Smart trimming prioritizes shallower entries over deeper ones, ensuring
+  top-level directories are always visible even in large projects.
 - Tilde expansion (`~`) support in all file tools (file_read, file_write,
   file_edit, file_delete, list_dir, glob, grep)
 
