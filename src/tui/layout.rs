@@ -118,6 +118,28 @@ pub(crate) fn compute_visible_segments(
 
 pub(crate) const USER_MESSAGE_PADDING: u16 = 0;
 
+/// Determines if a blank line spacer is needed when transitioning between message types.
+/// This centralizes the spacing logic for visual separation between different content blocks.
+pub(crate) fn needs_spacer_above(prev: &Message, current: &Message) -> bool {
+    use Message::*;
+    match (prev, current) {
+        // Add space before assistant text when following tool calls or thinking
+        (AssistantToolCalls(_), AssistantText(_)) => true,
+        (AssistantThinking(_), AssistantText(_)) => true,
+
+        // Add space before tool calls when following text or thinking
+        (AssistantText(_), AssistantToolCalls(_)) => true,
+        (AssistantThinking(_), AssistantToolCalls(_)) => true,
+
+        // Add space before thinking when following text or tool calls
+        (AssistantText(_), AssistantThinking(_)) => true,
+        (AssistantToolCalls(_), AssistantThinking(_)) => true,
+
+        // No spacer needed for other transitions
+        _ => false,
+    }
+}
+
 pub(crate) fn message_display_height(message: &Message, width: u16) -> u16 {
     match message {
         Message::AssistantThinking(msg) => {

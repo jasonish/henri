@@ -13,7 +13,7 @@ use super::commands::SLASH_MENU_MAX_VISIBLE;
 use super::layout::{
     INPUT_PROMPT_GAP, INPUT_PROMPT_WIDTH, MIN_MESSAGE_HEIGHT, USER_MESSAGE_PADDING,
     compute_visible_segments, current_prompt, cursor_position, input_display_lines,
-    text_message_height,
+    needs_spacer_above, text_message_height,
 };
 use super::messages::Message;
 use super::models::HISTORY_SEARCH_MAX_VISIBLE;
@@ -528,14 +528,42 @@ fn render_message(
 ) {
     use super::messages::{bulletify, format_error_message};
 
+    // Check if this message needs a spacer above it
+    let has_spacer =
+        index > 0 && needs_spacer_above(&app.messages[index - 1], &app.messages[index]);
+
+    // Adjust content area and skip for spacer
+    let (actual_area, actual_skip) = if has_spacer {
+        if adjusted_skip == 0 {
+            // Spacer is visible - offset content area by 1 row
+            let area = Rect {
+                x: content_area.x,
+                y: content_area.y.saturating_add(1),
+                width: content_area.width,
+                height: content_area.height.saturating_sub(1),
+            };
+            (area, 0)
+        } else {
+            // Spacer is scrolled off - reduce skip by 1
+            (content_area, adjusted_skip.saturating_sub(1))
+        }
+    } else {
+        (content_area, adjusted_skip)
+    };
+
+    // Don't render if no height left after spacer
+    if actual_area.height == 0 {
+        return;
+    }
+
     match &mut app.messages[index] {
         Message::Text(text) => {
             let content = bulletify(text);
             let mut ctx = RenderContext {
                 frame,
-                area: content_area,
+                area: actual_area,
                 message_idx: index,
-                skip_top: adjusted_skip,
+                skip_top: actual_skip,
                 selection,
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,
@@ -546,9 +574,9 @@ fn render_message(
             let content = format_error_message(err);
             let mut ctx = RenderContext {
                 frame,
-                area: content_area,
+                area: actual_area,
                 message_idx: index,
-                skip_top: adjusted_skip,
+                skip_top: actual_skip,
                 selection,
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,
@@ -559,9 +587,9 @@ fn render_message(
             let content = bulletify(warn);
             let mut ctx = RenderContext {
                 frame,
-                area: content_area,
+                area: actual_area,
                 message_idx: index,
-                skip_top: adjusted_skip,
+                skip_top: actual_skip,
                 selection,
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,
@@ -571,9 +599,9 @@ fn render_message(
         Message::AssistantThinking(msg) => {
             let mut ctx = RenderContext {
                 frame,
-                area: content_area,
+                area: actual_area,
                 message_idx: index,
-                skip_top: adjusted_skip,
+                skip_top: actual_skip,
                 selection,
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,
@@ -583,9 +611,9 @@ fn render_message(
         Message::AssistantToolCalls(msg) => {
             let mut ctx = RenderContext {
                 frame,
-                area: content_area,
+                area: actual_area,
                 message_idx: index,
-                skip_top: adjusted_skip,
+                skip_top: actual_skip,
                 selection,
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,
@@ -595,9 +623,9 @@ fn render_message(
         Message::AssistantText(msg) => {
             let mut ctx = RenderContext {
                 frame,
-                area: content_area,
+                area: actual_area,
                 message_idx: index,
-                skip_top: adjusted_skip,
+                skip_top: actual_skip,
                 selection,
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,
@@ -607,9 +635,9 @@ fn render_message(
         Message::Shell(shell) => {
             let mut ctx = RenderContext {
                 frame,
-                area: content_area,
+                area: actual_area,
                 message_idx: index,
-                skip_top: adjusted_skip,
+                skip_top: actual_skip,
                 selection,
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,
@@ -620,10 +648,10 @@ fn render_message(
             let display_text = user_msg.display_text.clone();
             render_user_message(
                 frame,
-                content_area,
+                actual_area,
                 app,
                 index,
-                adjusted_skip,
+                actual_skip,
                 selection,
                 &display_text,
             );
@@ -631,9 +659,9 @@ fn render_message(
         Message::Usage(usage_display) => {
             let mut ctx = RenderContext {
                 frame,
-                area: content_area,
+                area: actual_area,
                 message_idx: index,
-                skip_top: adjusted_skip,
+                skip_top: actual_skip,
                 selection,
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,
@@ -643,9 +671,9 @@ fn render_message(
         Message::TodoList(todo_display) => {
             let mut ctx = RenderContext {
                 frame,
-                area: content_area,
+                area: actual_area,
                 message_idx: index,
-                skip_top: adjusted_skip,
+                skip_top: actual_skip,
                 selection,
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,
@@ -655,9 +683,9 @@ fn render_message(
         Message::FileDiff(diff_display) => {
             let mut ctx = RenderContext {
                 frame,
-                area: content_area,
+                area: actual_area,
                 message_idx: index,
-                skip_top: adjusted_skip,
+                skip_top: actual_skip,
                 selection,
                 position_map: &mut app.position_map,
                 byte_offset_base: 0,

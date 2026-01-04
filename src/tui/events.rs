@@ -188,6 +188,13 @@ impl App {
                     self.mark_new_content_if_scrolled();
                 }
                 OutputEvent::Text(text) => {
+                    let last_is_streaming_text = matches!(
+                        self.messages.last(),
+                        Some(Message::AssistantText(msg)) if msg.is_streaming
+                    );
+                    if text.trim().is_empty() && !last_is_streaming_text {
+                        continue;
+                    }
                     // Check if we need a new message (current one is tool calls or thinking)
                     let needs_new_message = matches!(
                         self.messages.last(),

@@ -25,7 +25,7 @@ use crate::usage;
 use super::clipboard;
 use super::commands::filter_commands;
 use super::input::{InputEditor, next_char_boundary};
-use super::layout::{LayoutCache, message_display_height};
+use super::layout::{LayoutCache, message_display_height, needs_spacer_above};
 use super::messages::{
     Message, ShellEvent, ShellMessage, TextMessage, ThinkingMessage, ToolCallsMessage,
     UsageDisplay, UserMessage, bulletify, format_error_message, format_shell_display,
@@ -2539,7 +2539,16 @@ impl App {
             let heights: Vec<u16> = self
                 .messages
                 .iter()
-                .map(|m| message_display_height(m, width))
+                .enumerate()
+                .map(|(i, m)| {
+                    let base_height = message_display_height(m, width);
+                    let spacer = if i > 0 && needs_spacer_above(&self.messages[i - 1], m) {
+                        1
+                    } else {
+                        0
+                    };
+                    base_height.saturating_add(spacer)
+                })
                 .collect();
 
             self.layout_cache.heights = heights;

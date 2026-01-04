@@ -17,6 +17,8 @@
 
 ### Fixed
 
+- TUI: Fixed double blank lines appearing between thinking and tool call messages
+  caused by empty text events creating spurious spacer messages
 - TUI: `kill_to_end` (Ctrl+K) behavior improved for multiline input: now deletes
   to end of line (or deletes newline if at end) instead of truncating entire buffer,
   matching standard Emacs/readline behavior
