@@ -391,7 +391,28 @@ pub(crate) trait InputEditor {
 
     fn kill_to_end(&mut self) {
         let cursor = self.cursor();
-        self.input_mut().truncate(cursor);
+        let end_pos = {
+            let text = self.input();
+            if cursor >= text.len() {
+                return;
+            }
+            let bytes = text.as_bytes();
+            if bytes[cursor] == b'\n' {
+                None
+            } else {
+                let (_, end) = find_line_boundaries(text, cursor);
+                Some(end)
+            }
+        };
+
+        match end_pos {
+            Some(end) => {
+                self.input_mut().drain(cursor..end);
+            }
+            None => {
+                self.input_mut().remove(cursor);
+            }
+        }
     }
 
     fn clear_input(&mut self) {
@@ -624,5 +645,32 @@ mod tests {
         assert_eq!(editor.input(), "hello 😀 world");
         assert_eq!(editor.cursor(), 11); // 6 + 4 bytes (emoji) + 1 byte (space)
         assert!(editor.input.is_char_boundary(editor.cursor()));
+    }
+
+    #[test]
+    fn test_kill_to_end_multiline() {
+        let mut editor = TestEditor {
+            input: "line1\nline2\nline3".to_string(),
+            cursor: 0,
+        };
+
+        // Kill from start of line 1 (removes "line1", leaves "\n")
+        editor.kill_to_end();
+        assert_eq!(editor.input(), "\nline2\nline3");
+        assert_eq!(editor.cursor(), 0);
+
+        // Kill the newline (removes "\n", joins with line2)
+        editor.kill_to_end();
+        assert_eq!(editor.input(), "line2\nline3");
+        assert_eq!(editor.cursor(), 0);
+
+        // Move to middle of line 2
+        editor.set_cursor(2); // "li"
+        editor.kill_to_end();
+        assert_eq!(editor.input(), "li\nline3");
+
+        // Kill newline
+        editor.kill_to_end();
+        assert_eq!(editor.input(), "liline3");
     }
 }

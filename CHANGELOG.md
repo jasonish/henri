@@ -17,6 +17,9 @@
 
 ### Fixed
 
+- TUI: `kill_to_end` (Ctrl+K) behavior improved for multiline input: now deletes
+  to end of line (or deletes newline if at end) instead of truncating entire buffer,
+  matching standard Emacs/readline behavior
 - Improved prompt caching for Anthropic provider by moving dynamic timestamp
   to end of system prompt, allowing static content to be cached
 - Retry notifications during API errors now display as warnings instead of
