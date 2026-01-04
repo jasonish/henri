@@ -63,7 +63,7 @@ impl Error {
 
     /// Check if this error is retryable (server overloaded, timeout, etc.)
     pub(crate) fn is_retryable(&self) -> bool {
-        matches!(self, Error::Retryable { .. })
+        matches!(self, Error::Retryable { .. } | Error::Http(_))
     }
 }
 

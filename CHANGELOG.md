@@ -17,6 +17,8 @@
 
 ### Fixed
 
+- HTTP errors are now treated as retryable, enabling automatic retry logic for
+  transient network issues (not just explicit Retryable errors)
 - TUI: Fixed double blank lines appearing between thinking and tool call messages
   caused by empty text events creating spurious spacer messages
 - TUI: `kill_to_end` (Ctrl+K) behavior improved for multiline input: now deletes
