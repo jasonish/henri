@@ -1419,6 +1419,13 @@ impl App {
                 // Clear network stats
                 usage::network_stats().clear();
             }
+            Command::Truncate => {
+                // Interrupt any ongoing chat before truncating
+                self.chat_interrupted.store(true, Ordering::SeqCst);
+                self.truncate_messages();
+                self.input.clear();
+                self.cursor = 0;
+            }
             Command::Model => {
                 self.open_model_menu();
                 self.input.clear();
@@ -2119,6 +2126,57 @@ impl App {
             let _ = session::delete_session(&self.working_dir, session_id);
         }
         self.current_session_id = None;
+    }
+
+    pub(crate) fn truncate_messages(&mut self) {
+        // Keep only the last chat message
+        if self.chat_messages.len() > 1 {
+            let last_message = self.chat_messages.pop();
+            self.chat_messages.clear();
+            if let Some(msg) = last_message {
+                self.chat_messages.push(msg);
+            }
+        }
+
+        // Keep only the last display message
+        if self.messages.len() > 1 {
+            let last_display = self.messages.pop();
+            self.messages.clear();
+            if let Some(msg) = last_display {
+                self.messages.push(msg);
+            }
+        }
+
+        // Add info message
+        self.messages.push(Message::Text(
+            "Conversation history truncated to last message.".into(),
+        ));
+
+        self.pending_images.clear();
+        self.pending_prompts.clear();
+        self.streaming_tokens = None;
+        self.streaming_tokens_display = 0;
+        self.streaming_duration = None;
+        self.streaming_start_time = None;
+        self.last_context_tokens = None;
+        self.context_limit = None;
+        self.is_chatting = false;
+        self.is_compacting = false;
+        self.layout_cache.invalidate();
+        self.reset_scroll();
+
+        // Update saved session with truncated history
+        if let (Some(session_id), Some(pm)) = (&self.current_session_id, &self.provider_manager) {
+            let _ = session::save_session(
+                &self.working_dir,
+                &self.chat_messages,
+                &pm.current_provider(),
+                pm.current_model_id(),
+                self.thinking_enabled,
+                self.read_only,
+                Some(session_id),
+            );
+        }
     }
 
     /// Dump the current conversation context as formatted JSON

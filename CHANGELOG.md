@@ -4,6 +4,8 @@
 
 ### Added
 
+- `/truncate` command to keep only the last message and clear the rest of the
+  conversation history, useful for starting fresh while preserving context
 - Project structure overview in system prompt: automatically includes a
   depth-limited tree of project files (up to depth 2, max 500 entries)
   using `git ls-tree` for git repos or filesystem traversal otherwise.

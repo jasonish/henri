@@ -43,6 +43,7 @@ pub(crate) enum Command {
     Status,
     StopTransactionLogging,
     Tools,
+    Truncate,
     Usage,
 }
 
@@ -277,6 +278,12 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         command: Command::Tools,
         name: "tools",
         description: "Enable/disable built-in tools",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Truncate,
+        name: "truncate",
+        description: "Keep only the last message and clear the rest",
         availability: Availability::Always,
     },
     SlashCommand {

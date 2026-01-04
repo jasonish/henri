@@ -45,6 +45,7 @@ enum CommandResult {
     Settings,
     Mcp,
     Tools,
+    Truncate,
     SetReadWrite,
     SetReadOnly,
     SetYolo,
@@ -175,6 +176,12 @@ fn handle_command(
                 "Conversation history cleared.".into(),
             ));
             CommandResult::ClearHistory
+        }
+        Command::Truncate => {
+            output.emit(output::OutputEvent::Info(
+                "Conversation history truncated to last message.".into(),
+            ));
+            CommandResult::Truncate
         }
         Command::StartTransactionLogging => CommandResult::StartTransactionLogging,
         Command::StopTransactionLogging => CommandResult::StopTransactionLogging,
@@ -1139,6 +1146,27 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                             }
                             current_session_id = None;
                             crate::usage::network_stats().clear();
+                        }
+                        CommandResult::Truncate => {
+                            if messages.len() > 1 {
+                                let last_message = messages.pop();
+                                messages.clear();
+                                if let Some(msg) = last_message {
+                                    messages.push(msg);
+                                }
+                            }
+                            // Update session with truncated history
+                            if let Some(ref session_id) = current_session_id {
+                                let _ = session::save_session(
+                                    &working_dir,
+                                    &messages,
+                                    &provider_manager.current_provider(),
+                                    provider_manager.current_model_id(),
+                                    thinking_state.enabled,
+                                    read_only,
+                                    Some(session_id),
+                                );
+                            }
                         }
                         CommandResult::SelectModel => {
                             if select_model(&mut provider_manager) {
