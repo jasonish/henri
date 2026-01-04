@@ -11,6 +11,9 @@
   top-level directories are always visible even in large projects.
 - Tilde expansion (`~`) support in all file tools (file_read, file_write,
   file_edit, file_delete, list_dir, glob, grep)
+- Line length truncation in file_read tool: lines exceeding 2048 characters
+  are now truncated with total length reported, preventing memory issues
+  when reading files with extremely long lines
 
 ### Fixed
 

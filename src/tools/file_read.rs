@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
-use serde::Deserialize;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
+use serde::Deserialize;
+
 use super::{Tool, ToolDefinition, ToolResult};
+
+/// Maximum number of characters to return per line before truncation.
+const MAX_LINE_LENGTH: usize = 2048;
 
 /// Tool for reading file contents
 pub(crate) struct FileRead;
@@ -78,7 +82,7 @@ impl Tool for FileRead {
         let mut output = String::new();
         let mut line_count = 0;
 
-        for (line_num, line_result) in reader.lines().enumerate() {
+        for (line_num, line_result) in BoundedLineReader::new(reader, MAX_LINE_LENGTH).enumerate() {
             // Skip lines before offset
             if line_num < offset {
                 continue;
@@ -92,9 +96,18 @@ impl Tool for FileRead {
             }
 
             match line_result {
-                Ok(line) => {
+                Ok((line, truncated_total)) => {
                     // Format with 1-based line numbers for display
-                    output.push_str(&format!("{:6}\t{}\n", line_num + 1, line));
+                    if let Some(total_len) = truncated_total {
+                        output.push_str(&format!(
+                            "{:6}\t{}... <truncated, total length: {}>\n",
+                            line_num + 1,
+                            line,
+                            total_len
+                        ));
+                    } else {
+                        output.push_str(&format!("{:6}\t{}\n", line_num + 1, line));
+                    }
                     line_count += 1;
                 }
                 Err(e) => {
@@ -117,6 +130,126 @@ impl Tool for FileRead {
         }
 
         ToolResult::success(tool_use_id, output)
+    }
+}
+
+/// An iterator that reads lines with bounded memory usage.
+///
+/// Each line is limited to `max_len` characters. If a line exceeds this limit,
+/// it is truncated and the total original length is reported.
+struct BoundedLineReader<R> {
+    reader: BufReader<R>,
+    max_len: usize,
+    done: bool,
+}
+
+impl<R: Read> BoundedLineReader<R> {
+    fn new(reader: BufReader<R>, max_len: usize) -> Self {
+        Self {
+            reader,
+            max_len,
+            done: false,
+        }
+    }
+
+    /// Reads the next line, returning (content, Option<total_length_if_truncated>)
+    fn read_next_line(&mut self) -> std::io::Result<Option<(String, Option<usize>)>> {
+        if self.done {
+            return Ok(None);
+        }
+
+        let mut line = Vec::with_capacity(self.max_len.min(1024));
+        let mut total_len = 0usize;
+        let mut found_newline = false;
+
+        // Phase 1: Read up to max_len bytes, looking for newline
+        while line.len() < self.max_len {
+            let buf = self.reader.fill_buf()?;
+            if buf.is_empty() {
+                self.done = true;
+                break;
+            }
+
+            let remaining = self.max_len - line.len();
+            let search_len = buf.len().min(remaining);
+
+            if let Some(pos) = buf[..search_len].iter().position(|&b| b == b'\n') {
+                // Found newline within our limit
+                line.extend_from_slice(&buf[..pos]);
+                total_len += pos;
+                self.reader.consume(pos + 1); // consume including newline
+                found_newline = true;
+                break;
+            } else if search_len < buf.len() {
+                // We hit our max_len limit before finding newline
+                line.extend_from_slice(&buf[..search_len]);
+                total_len += search_len;
+                self.reader.consume(search_len);
+                break;
+            } else {
+                // Consume entire buffer, keep looking
+                line.extend_from_slice(buf);
+                total_len += buf.len();
+                let to_consume = buf.len();
+                self.reader.consume(to_consume);
+            }
+        }
+
+        // Check if we have anything
+        if line.is_empty() && self.done && total_len == 0 {
+            return Ok(None);
+        }
+
+        // Phase 2: If we didn't find a newline, check if there's more content to skip
+        let truncated_total = if !found_newline && !self.done {
+            // Check if the next character is a newline (line exactly at limit)
+            let buf = self.reader.fill_buf()?;
+            if buf.is_empty() {
+                self.done = true;
+                None // Line ended at EOF, exactly at limit - not truncated
+            } else if buf[0] == b'\n' {
+                // Next char is newline - line was exactly at limit, not truncated
+                self.reader.consume(1);
+                None
+            } else {
+                // There's more content - this line is truly truncated
+                loop {
+                    let buf = self.reader.fill_buf()?;
+                    if buf.is_empty() {
+                        self.done = true;
+                        break;
+                    }
+
+                    if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                        total_len += pos;
+                        self.reader.consume(pos + 1);
+                        break;
+                    } else {
+                        total_len += buf.len();
+                        let to_consume = buf.len();
+                        self.reader.consume(to_consume);
+                    }
+                }
+                Some(total_len)
+            }
+        } else {
+            None
+        };
+
+        let line_str = String::from_utf8_lossy(&line).into_owned();
+        Ok(Some((line_str, truncated_total)))
+    }
+}
+
+impl<R: Read> Iterator for BoundedLineReader<R> {
+    type Item = std::io::Result<(String, Option<usize>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.read_next_line() {
+            Ok(Some(line)) => Some(Ok(line)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
+        }
     }
 }
 
@@ -156,5 +289,104 @@ mod tests {
             .await;
         assert!(result.is_error);
         assert!(result.content.contains("not a file"));
+    }
+
+    #[test]
+    fn test_bounded_line_reader_normal_lines() {
+        let content = "line one\nline two\nline three\n";
+        let reader = BufReader::new(content.as_bytes());
+        let lines: Vec<_> = BoundedLineReader::new(reader, 100)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], ("line one".to_string(), None));
+        assert_eq!(lines[1], ("line two".to_string(), None));
+        assert_eq!(lines[2], ("line three".to_string(), None));
+    }
+
+    #[test]
+    fn test_bounded_line_reader_truncation() {
+        // Create a line that exceeds the limit
+        let long_line = "a".repeat(5000);
+        let content = format!("{}\nshort line\n", long_line);
+        let reader = BufReader::new(content.as_bytes());
+        let lines: Vec<_> = BoundedLineReader::new(reader, 100)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(lines.len(), 2);
+        // First line should be truncated
+        assert_eq!(lines[0].0.len(), 100);
+        assert_eq!(lines[0].1, Some(5000)); // Original length
+        // Second line should be normal
+        assert_eq!(lines[1], ("short line".to_string(), None));
+    }
+
+    #[test]
+    fn test_bounded_line_reader_exact_limit() {
+        let line = "a".repeat(100);
+        let content = format!("{}\n", line);
+        let reader = BufReader::new(content.as_bytes());
+        let lines: Vec<_> = BoundedLineReader::new(reader, 100)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(lines.len(), 1);
+        // Exactly at limit should not be truncated
+        assert_eq!(lines[0], (line, None));
+    }
+
+    #[test]
+    fn test_bounded_line_reader_one_over_limit() {
+        let line = "a".repeat(101);
+        let content = format!("{}\n", line);
+        let reader = BufReader::new(content.as_bytes());
+        let lines: Vec<_> = BoundedLineReader::new(reader, 100)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(lines.len(), 1);
+        // One over limit should be truncated
+        assert_eq!(lines[0].0.len(), 100);
+        assert_eq!(lines[0].1, Some(101));
+    }
+
+    #[test]
+    fn test_bounded_line_reader_no_trailing_newline() {
+        let content = "line one\nline two";
+        let reader = BufReader::new(content.as_bytes());
+        let lines: Vec<_> = BoundedLineReader::new(reader, 100)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], ("line one".to_string(), None));
+        assert_eq!(lines[1], ("line two".to_string(), None));
+    }
+
+    #[test]
+    fn test_bounded_line_reader_empty_file() {
+        let content = "";
+        let reader = BufReader::new(content.as_bytes());
+        let lines: Vec<_> = BoundedLineReader::new(reader, 100)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_bounded_line_reader_empty_lines() {
+        let content = "\n\n\n";
+        let reader = BufReader::new(content.as_bytes());
+        let lines: Vec<_> = BoundedLineReader::new(reader, 100)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], ("".to_string(), None));
+        assert_eq!(lines[1], ("".to_string(), None));
+        assert_eq!(lines[2], ("".to_string(), None));
     }
 }
