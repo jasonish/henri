@@ -114,7 +114,7 @@ pub(crate) struct SessionInfo {
     pub id: String,
     pub saved_at: DateTime<Utc>,
     pub model_id: String,
-    pub message_count: usize,
+    pub _message_count: usize,
     /// First user message (truncated) for preview
     pub preview: Option<String>,
 }
@@ -122,19 +122,8 @@ pub(crate) struct SessionInfo {
 impl SessionInfo {
     /// Format this session info as a display string for menus.
     pub(crate) fn display_string(&self) -> String {
-        let preview = self
-            .preview
-            .as_ref()
-            .map(|p| format!(" - {}", p))
-            .unwrap_or_default();
-        format!(
-            "{} ({}, {} msgs, {}){}",
-            self.id,
-            self.model_id,
-            self.message_count,
-            format_age(&self.saved_at),
-            preview
-        )
+        let preview = self.preview.as_deref().unwrap_or("No preview");
+        format!("{} ({})", preview, format_age(&self.saved_at))
     }
 }
 
@@ -591,7 +580,7 @@ fn load_session_info(path: &Path) -> Option<SessionInfo> {
         id: session_id,
         saved_at: meta.saved_at,
         model_id: meta.model_id,
-        message_count,
+        _message_count: message_count,
         preview,
     })
 }
@@ -1138,7 +1127,7 @@ mod tests {
 
         let sessions = list_sessions(working_dir);
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].message_count, 2);
+        assert_eq!(sessions[0]._message_count, 2);
         assert!(sessions[0].preview.is_some());
         assert!(
             sessions[0]

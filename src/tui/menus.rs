@@ -846,25 +846,28 @@ pub(crate) fn render_sessions_menu(
                 Style::default().fg(Color::Rgb(128, 128, 128)).bg(bg)
             };
 
-            // Truncate preview to fit (char-safe)
-            let max_preview_chars = popup_width as usize - 45;
+            // Truncate preview to fit (char-safe) - leave space for date at right
+            let max_preview_chars = popup_width as usize - 20;
             let preview_display = crate::session::truncate_str(&preview, max_preview_chars);
+
+            let age_text = age.to_string();
+
+            // Calculate spacer to right-align date
+            let used_width = 2 + preview_display.chars().count() + age_text.chars().count();
+            let spacer_width = popup_width
+                .saturating_sub(used_width as u16)
+                .saturating_sub(2);
 
             lines.push(Line::from(vec![
                 Span::styled(format!("{} ", prefix), style),
-                Span::styled(
-                    format!(
-                        "{} · {} msgs · {}",
-                        session.model_id, session.message_count, age
-                    ),
-                    style,
-                ),
                 Span::styled(preview_display, muted_style),
+                Span::raw(" ".repeat(spacer_width as usize)),
+                Span::styled(age_text, style),
             ]));
         }
     }
 
-    let title = format!(" Sessions ({}) ", filtered.len());
+    let title = format!(" Sessions ({}) - ESC to exit ", filtered.len());
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
