@@ -4,6 +4,10 @@
 
 ### Added
 
+- `/undo` command to remove the most recent turn (user message and assistant
+  response) from conversation history
+- `/forget` command to remove the oldest turn from conversation history,
+  useful for managing context window size
 - `/truncate` command to keep only the last message and clear the rest of the
   conversation history, useful for starting fresh while preserving context
 - Project structure overview in system prompt: automatically includes a

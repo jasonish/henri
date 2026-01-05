@@ -97,7 +97,7 @@ fn build_history_xml(messages: &[Message]) -> String {
         // If so, we'll merge those results into this assistant message
         let tool_results = if msg.role == Role::Assistant && i + 1 < messages.len() {
             let next_msg = &messages[i + 1];
-            if next_msg.role == Role::User && is_tool_result_only_message(next_msg) {
+            if next_msg.is_tool_result_only() {
                 extract_tool_results(next_msg)
             } else {
                 HashMap::new()
@@ -107,7 +107,7 @@ fn build_history_xml(messages: &[Message]) -> String {
         };
 
         // Skip tool-result-only user messages (they're merged into the previous assistant message)
-        if msg.role == Role::User && is_tool_result_only_message(msg) {
+        if msg.is_tool_result_only() {
             i += 1;
             continue;
         }
@@ -196,19 +196,6 @@ fn build_history_xml(messages: &[Message]) -> String {
     xml
 }
 
-/// Check if a message contains only tool results (no other content).
-fn is_tool_result_only_message(msg: &Message) -> bool {
-    match &msg.content {
-        MessageContent::Text(_) => false,
-        MessageContent::Blocks(blocks) => {
-            !blocks.is_empty()
-                && blocks
-                    .iter()
-                    .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
-        }
-    }
-}
-
 /// Returns the system prompt for summarization
 pub(crate) fn summarization_system_prompt() -> &'static str {
     SUMMARIZATION_SYSTEM_PROMPT
@@ -235,18 +222,12 @@ pub(crate) fn segment_messages(
     let mut preserve_from_idx = messages.len();
 
     for (idx, msg) in messages.iter().enumerate().rev() {
-        if msg.role == Role::User {
-            // Check if this is a tool_result message (user message containing only tool results)
-            let is_tool_result = matches!(&msg.content, MessageContent::Blocks(blocks)
-                if blocks.iter().all(|b| matches!(b, ContentBlock::ToolResult { .. })));
-
-            if !is_tool_result {
-                turn_count += 1;
-                if turn_count > preserve_recent_turns {
-                    break;
-                }
-                preserve_from_idx = idx;
+        if msg.role == Role::User && !msg.is_tool_result_only() {
+            turn_count += 1;
+            if turn_count > preserve_recent_turns {
+                break;
             }
+            preserve_from_idx = idx;
         }
     }
 
@@ -608,46 +589,5 @@ mod tests {
         // Tool result message should be merged (only 1 user message)
         let user_message_count = xml.matches("<message role=\"user\">").count();
         assert_eq!(user_message_count, 1);
-    }
-
-    #[test]
-    fn test_is_tool_result_only_message() {
-        // Text message - not tool result only
-        let text_msg = Message::user("Hello");
-        assert!(!is_tool_result_only_message(&text_msg));
-
-        // Tool result only
-        let tool_result_msg = Message {
-            role: Role::User,
-            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
-                tool_use_id: "id".to_string(),
-                content: "result".to_string(),
-                is_error: false,
-            }]),
-        };
-        assert!(is_tool_result_only_message(&tool_result_msg));
-
-        // Mixed content - not tool result only
-        let mixed_msg = Message {
-            role: Role::User,
-            content: MessageContent::Blocks(vec![
-                ContentBlock::Text {
-                    text: "Here's what I found".to_string(),
-                },
-                ContentBlock::ToolResult {
-                    tool_use_id: "id".to_string(),
-                    content: "result".to_string(),
-                    is_error: false,
-                },
-            ]),
-        };
-        assert!(!is_tool_result_only_message(&mixed_msg));
-
-        // Empty blocks
-        let empty_msg = Message {
-            role: Role::User,
-            content: MessageContent::Blocks(vec![]),
-        };
-        assert!(!is_tool_result_only_message(&empty_msg));
     }
 }

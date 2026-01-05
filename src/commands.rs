@@ -44,6 +44,8 @@ pub(crate) enum Command {
     StopTransactionLogging,
     Tools,
     Truncate,
+    Undo,
+    Forget,
     Usage,
 }
 
@@ -284,6 +286,18 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         command: Command::Truncate,
         name: "truncate",
         description: "Keep only the last message and clear the rest",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Undo,
+        name: "undo",
+        description: "Remove the most recent turn (user message and response)",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Forget,
+        name: "forget",
+        description: "Remove the oldest turn from conversation history",
         availability: Availability::Always,
     },
     SlashCommand {

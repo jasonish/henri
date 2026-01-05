@@ -1426,6 +1426,20 @@ impl App {
                 self.input.clear();
                 self.cursor = 0;
             }
+            Command::Undo => {
+                // Interrupt any ongoing chat before modifying history
+                self.chat_interrupted.store(true, Ordering::SeqCst);
+                self.undo_last_turn();
+                self.input.clear();
+                self.cursor = 0;
+            }
+            Command::Forget => {
+                // Interrupt any ongoing chat before modifying history
+                self.chat_interrupted.store(true, Ordering::SeqCst);
+                self.forget_first_turn();
+                self.input.clear();
+                self.cursor = 0;
+            }
             Command::Model => {
                 self.open_model_menu();
                 self.input.clear();
@@ -2176,6 +2190,151 @@ impl App {
                 self.read_only,
                 Some(session_id),
             );
+        }
+    }
+
+    /// Remove the most recent turn (user message and assistant response) from conversation.
+    pub(crate) fn undo_last_turn(&mut self) {
+        let removed = crate::provider::remove_last_turn(&mut self.chat_messages);
+
+        if removed > 0 {
+            // Remove display messages from the end until we've removed a user message
+            // Display messages may include thinking, tool calls, text, shell output, etc.
+            let mut removed_user = false;
+            while let Some(msg) = self.messages.last() {
+                if removed_user {
+                    // We've already removed the user message for this turn, stop
+                    break;
+                }
+                if matches!(msg, Message::User { .. }) {
+                    removed_user = true;
+                }
+                if matches!(
+                    msg,
+                    Message::User { .. }
+                        | Message::AssistantThinking { .. }
+                        | Message::AssistantToolCalls { .. }
+                        | Message::AssistantText { .. }
+                        | Message::Shell { .. }
+                        | Message::FileDiff { .. }
+                ) {
+                    self.messages.pop();
+                } else {
+                    break;
+                }
+            }
+
+            self.pending_images.clear();
+            self.pending_prompts.clear();
+            self.streaming_tokens = None;
+            self.streaming_tokens_display = 0;
+            self.streaming_duration = None;
+            self.streaming_start_time = None;
+            self.is_chatting = false;
+            self.is_compacting = false;
+            self.layout_cache.invalidate();
+            self.reset_scroll();
+
+            // Update saved session
+            if let (Some(session_id), Some(pm)) = (&self.current_session_id, &self.provider_manager)
+            {
+                let _ = session::save_session(
+                    &self.working_dir,
+                    &self.chat_messages,
+                    &pm.current_provider(),
+                    pm.current_model_id(),
+                    self.thinking_enabled,
+                    self.read_only,
+                    Some(session_id),
+                );
+            }
+        } else {
+            self.messages
+                .push(Message::Text("No messages to undo.".into()));
+        }
+    }
+
+    /// Remove the oldest turn (first user message and assistant response) from conversation.
+    pub(crate) fn forget_first_turn(&mut self) {
+        let removed = crate::provider::remove_first_turn(&mut self.chat_messages);
+
+        if removed > 0 {
+            // Remove display messages from the first turn.
+            // First, skip past any leading status messages that appear before the first
+            // User message (e.g., "Loaded session..." from restore). We only remove these
+            // if they're followed by a User message that we're about to remove.
+            let has_user_message = self
+                .messages
+                .iter()
+                .any(|m| matches!(m, Message::User { .. }));
+
+            if has_user_message {
+                // Remove leading status messages before the first User message
+                while !self.messages.is_empty()
+                    && matches!(
+                        &self.messages[0],
+                        Message::Text(_)
+                            | Message::Error(_)
+                            | Message::Warning(_)
+                            | Message::Usage(_)
+                            | Message::TodoList(_)
+                    )
+                {
+                    self.messages.remove(0);
+                }
+            }
+
+            // Now remove messages from the first turn until we hit the next user message
+            let mut removed_display = 0;
+            while !self.messages.is_empty() {
+                let msg = &self.messages[0];
+                if removed_display > 0 && matches!(msg, Message::User { .. }) {
+                    // Hit the next turn's user message, stop
+                    break;
+                }
+                if matches!(
+                    msg,
+                    Message::User { .. }
+                        | Message::AssistantThinking { .. }
+                        | Message::AssistantToolCalls { .. }
+                        | Message::AssistantText { .. }
+                        | Message::Shell { .. }
+                        | Message::FileDiff { .. }
+                ) {
+                    self.messages.remove(0);
+                    removed_display += 1;
+                } else {
+                    break;
+                }
+            }
+
+            self.pending_images.clear();
+            self.pending_prompts.clear();
+            self.streaming_tokens = None;
+            self.streaming_tokens_display = 0;
+            self.streaming_duration = None;
+            self.streaming_start_time = None;
+            self.is_chatting = false;
+            self.is_compacting = false;
+            self.layout_cache.invalidate();
+            self.reset_scroll();
+
+            // Update saved session
+            if let (Some(session_id), Some(pm)) = (&self.current_session_id, &self.provider_manager)
+            {
+                let _ = session::save_session(
+                    &self.working_dir,
+                    &self.chat_messages,
+                    &pm.current_provider(),
+                    pm.current_model_id(),
+                    self.thinking_enabled,
+                    self.read_only,
+                    Some(session_id),
+                );
+            }
+        } else {
+            self.messages
+                .push(Message::Text("No messages to forget.".into()));
         }
     }
 

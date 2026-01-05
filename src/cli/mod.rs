@@ -46,6 +46,8 @@ enum CommandResult {
     Mcp,
     Tools,
     Truncate,
+    Undo,
+    Forget,
     SetReadWrite,
     SetReadOnly,
     SetYolo,
@@ -183,6 +185,8 @@ fn handle_command(
             ));
             CommandResult::Truncate
         }
+        Command::Undo => CommandResult::Undo,
+        Command::Forget => CommandResult::Forget,
         Command::StartTransactionLogging => CommandResult::StartTransactionLogging,
         Command::StopTransactionLogging => CommandResult::StopTransactionLogging,
         Command::Model => CommandResult::SelectModel,
@@ -1166,6 +1170,53 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                                     read_only,
                                     Some(session_id),
                                 );
+                            }
+                        }
+                        CommandResult::Undo => {
+                            let removed = crate::provider::remove_last_turn(&mut messages);
+                            if removed > 0 {
+                                output.emit(output::OutputEvent::Info(
+                                    "Removed last turn from conversation.".into(),
+                                ));
+                                // Update session
+                                if let Some(ref session_id) = current_session_id {
+                                    let _ = session::save_session(
+                                        &working_dir,
+                                        &messages,
+                                        &provider_manager.current_provider(),
+                                        provider_manager.current_model_id(),
+                                        thinking_state.enabled,
+                                        read_only,
+                                        Some(session_id),
+                                    );
+                                }
+                            } else {
+                                output
+                                    .emit(output::OutputEvent::Info("No messages to undo.".into()));
+                            }
+                        }
+                        CommandResult::Forget => {
+                            let removed = crate::provider::remove_first_turn(&mut messages);
+                            if removed > 0 {
+                                output.emit(output::OutputEvent::Info(
+                                    "Removed oldest turn from conversation.".into(),
+                                ));
+                                // Update session
+                                if let Some(ref session_id) = current_session_id {
+                                    let _ = session::save_session(
+                                        &working_dir,
+                                        &messages,
+                                        &provider_manager.current_provider(),
+                                        provider_manager.current_model_id(),
+                                        thinking_state.enabled,
+                                        read_only,
+                                        Some(session_id),
+                                    );
+                                }
+                            } else {
+                                output.emit(output::OutputEvent::Info(
+                                    "No messages to forget.".into(),
+                                ));
                             }
                         }
                         CommandResult::SelectModel => {

@@ -84,12 +84,84 @@ impl Message {
         }
     }
 
+    #[cfg(test)]
+    fn assistant_text(content: impl Into<String>) -> Self {
+        Self {
+            role: Role::Assistant,
+            content: MessageContent::Text(content.into()),
+        }
+    }
+
     pub(crate) fn system(content: impl Into<String>) -> Self {
         Self {
             role: Role::System,
             content: MessageContent::Text(content.into()),
         }
     }
+
+    /// Returns true if this is a user message containing only ToolResult blocks.
+    ///
+    /// These are intermediate messages in a tool call loop, not the start of a new user turn.
+    pub(crate) fn is_tool_result_only(&self) -> bool {
+        if self.role != Role::User {
+            return false;
+        }
+        match &self.content {
+            MessageContent::Text(_) => false,
+            MessageContent::Blocks(blocks) => {
+                !blocks.is_empty()
+                    && blocks
+                        .iter()
+                        .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            }
+        }
+    }
+}
+
+/// Remove the most recent turn from a message history.
+///
+/// A "turn" consists of a user message with actual content (not just tool results),
+/// followed by any number of assistant responses and tool-result-only user messages
+/// that form the tool call loop, ending with the final assistant response.
+///
+/// Returns the number of messages removed.
+pub(crate) fn remove_last_turn(messages: &mut Vec<Message>) -> usize {
+    let mut removed = 0;
+    let mut removed_real_user = false;
+    while !messages.is_empty() {
+        // After removing a real user message, we've completed removing one turn
+        if removed_real_user {
+            break;
+        }
+        let last = messages.last().unwrap();
+        if last.role == Role::User && !last.is_tool_result_only() {
+            removed_real_user = true;
+        }
+        messages.pop();
+        removed += 1;
+    }
+    removed
+}
+
+/// Remove the oldest turn from a message history.
+///
+/// A "turn" consists of a user message with actual content (not just tool results),
+/// followed by any number of assistant responses and tool-result-only user messages
+/// that form the tool call loop, ending with the final assistant response.
+///
+/// Returns the number of messages removed.
+pub(crate) fn remove_first_turn(messages: &mut Vec<Message>) -> usize {
+    let mut removed = 0;
+    while !messages.is_empty() {
+        // After removing at least one message, stop if the next
+        // is a real user message (start of the next turn)
+        if removed > 0 && messages[0].role == Role::User && !messages[0].is_tool_result_only() {
+            break;
+        }
+        messages.remove(0);
+        removed += 1;
+    }
+    removed
 }
 
 /// A tool call requested by the model
@@ -211,5 +283,182 @@ pub(crate) fn api_error(status: u16, message: String) -> crate::error::Error {
         crate::error::Error::Retryable { status, message }
     } else {
         crate::error::Error::Api { status, message }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_tool_result_only() {
+        // Text message - not tool result only
+        let text_msg = Message::user("Hello");
+        assert!(!text_msg.is_tool_result_only());
+
+        // Tool result only
+        let tool_result_msg = Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "id".to_string(),
+                content: "result".to_string(),
+                is_error: false,
+            }]),
+        };
+        assert!(tool_result_msg.is_tool_result_only());
+
+        // Mixed content - not tool result only
+        let mixed_msg = Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "Here's what I found".to_string(),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "id".to_string(),
+                    content: "result".to_string(),
+                    is_error: false,
+                },
+            ]),
+        };
+        assert!(!mixed_msg.is_tool_result_only());
+
+        // Empty blocks
+        let empty_msg = Message {
+            role: Role::User,
+            content: MessageContent::Blocks(vec![]),
+        };
+        assert!(!empty_msg.is_tool_result_only());
+
+        // Assistant message with tool result - should return false (wrong role)
+        let assistant_tool_result = Message {
+            role: Role::Assistant,
+            content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                tool_use_id: "id".to_string(),
+                content: "result".to_string(),
+                is_error: false,
+            }]),
+        };
+        assert!(!assistant_tool_result.is_tool_result_only());
+    }
+
+    #[test]
+    fn test_remove_last_turn_simple() {
+        // Simple case: user + assistant
+        let mut messages = vec![Message::user("Hello"), Message::assistant_text("Hi there")];
+        let removed = remove_last_turn(&mut messages);
+        assert_eq!(removed, 2);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_remove_last_turn_with_tool_calls() {
+        // Turn with tool calls: user -> assistant(tool_use) -> user(tool_result) -> assistant
+        let mut messages = vec![
+            Message::user("Find files"),
+            Message::assistant_blocks(vec![ContentBlock::ToolUse {
+                id: "1".into(),
+                name: "glob".into(),
+                input: serde_json::json!({}),
+                thought_signature: None,
+            }]),
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "1".into(),
+                    content: "file.txt".into(),
+                    is_error: false,
+                }]),
+            },
+            Message::assistant_text("Found file.txt"),
+        ];
+        let removed = remove_last_turn(&mut messages);
+        assert_eq!(removed, 4);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_remove_last_turn_preserves_previous() {
+        // Two turns: should only remove the last one
+        let mut messages = vec![
+            Message::user("First"),
+            Message::assistant_text("Response 1"),
+            Message::user("Second"),
+            Message::assistant_text("Response 2"),
+        ];
+        let removed = remove_last_turn(&mut messages);
+        assert_eq!(removed, 2);
+        assert_eq!(messages.len(), 2);
+        // First turn should remain
+        assert!(matches!(messages[0].content, MessageContent::Text(ref t) if t == "First"));
+    }
+
+    #[test]
+    fn test_remove_last_turn_empty() {
+        let mut messages: Vec<Message> = vec![];
+        let removed = remove_last_turn(&mut messages);
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn test_remove_first_turn_simple() {
+        // Simple case: user + assistant
+        let mut messages = vec![Message::user("Hello"), Message::assistant_text("Hi there")];
+        let removed = remove_first_turn(&mut messages);
+        assert_eq!(removed, 2);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_remove_first_turn_preserves_later() {
+        // Two turns: should only remove the first one
+        let mut messages = vec![
+            Message::user("First"),
+            Message::assistant_text("Response 1"),
+            Message::user("Second"),
+            Message::assistant_text("Response 2"),
+        ];
+        let removed = remove_first_turn(&mut messages);
+        assert_eq!(removed, 2);
+        assert_eq!(messages.len(), 2);
+        // Second turn should remain
+        assert!(matches!(messages[0].content, MessageContent::Text(ref t) if t == "Second"));
+    }
+
+    #[test]
+    fn test_remove_first_turn_with_tool_calls() {
+        // Turn with tool calls followed by simple turn
+        let mut messages = vec![
+            Message::user("Find files"),
+            Message::assistant_blocks(vec![ContentBlock::ToolUse {
+                id: "1".into(),
+                name: "glob".into(),
+                input: serde_json::json!({}),
+                thought_signature: None,
+            }]),
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "1".into(),
+                    content: "file.txt".into(),
+                    is_error: false,
+                }]),
+            },
+            Message::assistant_text("Found file.txt"),
+            Message::user("Thanks"),
+            Message::assistant_text("You're welcome"),
+        ];
+        let removed = remove_first_turn(&mut messages);
+        assert_eq!(removed, 4);
+        assert_eq!(messages.len(), 2);
+        // Second turn should remain
+        assert!(matches!(messages[0].content, MessageContent::Text(ref t) if t == "Thanks"));
+    }
+
+    #[test]
+    fn test_remove_first_turn_empty() {
+        let mut messages: Vec<Message> = vec![];
+        let removed = remove_first_turn(&mut messages);
+        assert_eq!(removed, 0);
     }
 }
