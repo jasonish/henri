@@ -1,2 +1,9 @@
 /target
 henri-transactions.json
+
+# Editor temp files
+*~
+\#*\#
+.\#*
+*.swp
+*.swo
