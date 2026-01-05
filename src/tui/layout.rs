@@ -123,6 +123,9 @@ pub(crate) const USER_MESSAGE_PADDING: u16 = 0;
 pub(crate) fn needs_spacer_above(prev: &Message, current: &Message) -> bool {
     use Message::*;
     match (prev, current) {
+        // Always separate todo list updates from surrounding content
+        (TodoList(_), _) | (_, TodoList(_)) => true,
+
         // Add space before assistant text when following tool calls or thinking
         (AssistantToolCalls(_), AssistantText(_)) => true,
         (AssistantThinking(_), AssistantText(_)) => true,
