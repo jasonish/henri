@@ -19,6 +19,9 @@
 
 ### Fixed
 
+- TUI: Text after code blocks no longer appears muted/gray. Fixed mismatch
+  between syntax highlighter and renderer fence detection causing text to
+  incorrectly receive code theme colors instead of normal foreground
 - TUI: History navigation state now resets when editing input, preventing
   unexpected history recall after typing
 - Context size display now includes cache read tokens for accurate context

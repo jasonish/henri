@@ -97,10 +97,12 @@ fn find_next_code_block(text: &str, start: usize) -> Option<CodeBlock> {
 
 /// Find the closing ``` fence, accounting for nested code blocks
 fn find_closing_fence(text: &str) -> Option<usize> {
-    // Simple approach: find ``` at the start of a line
+    // Use starts_with rather than exact match to handle cases where LLMs
+    // produce closing fences with trailing content. This matches the behavior
+    // in render_markdown_with_selection which uses trim().starts_with("```").
     let mut pos = 0;
     for line in text.lines() {
-        if line.trim() == "```" {
+        if line.trim().starts_with("```") {
             return Some(pos);
         }
         pos += line.len() + 1; // +1 for newline
