@@ -230,7 +230,8 @@ impl App {
                         // Store context stats for display in working indicator
                         // (only for normal chats, not compaction)
                         if let Some(ref model) = self.current_model {
-                            self.last_context_tokens = get_last_input_for_provider(model.provider);
+                            self.last_context_tokens =
+                                get_last_context_for_provider(model.provider);
                             self.context_limit =
                                 crate::provider::context_limit(model.provider, &model.model_id);
                         }
@@ -472,15 +473,17 @@ impl App {
     }
 }
 
-/// Get last input tokens for a provider, if usage tracking is available
-fn get_last_input_for_provider(provider: crate::providers::ModelProvider) -> Option<u64> {
+/// Get last context size for a provider, if usage tracking is available
+fn get_last_context_for_provider(provider: crate::providers::ModelProvider) -> Option<u64> {
     let input = match provider {
-        crate::providers::ModelProvider::Claude => crate::usage::anthropic().last_input(),
-        crate::providers::ModelProvider::Antigravity => crate::usage::antigravity().last_input(),
-        crate::providers::ModelProvider::OpenCodeZen => crate::usage::zen().last_input(),
-        crate::providers::ModelProvider::OpenAiCompat => crate::usage::openai_compat().last_input(),
-        crate::providers::ModelProvider::OpenAi => crate::usage::openai().last_input(),
-        crate::providers::ModelProvider::OpenRouter => crate::usage::openrouter().last_input(),
+        crate::providers::ModelProvider::Claude => crate::usage::anthropic().last_context(),
+        crate::providers::ModelProvider::Antigravity => crate::usage::antigravity().last_context(),
+        crate::providers::ModelProvider::OpenCodeZen => crate::usage::zen().last_context(),
+        crate::providers::ModelProvider::OpenAiCompat => {
+            crate::usage::openai_compat().last_context()
+        }
+        crate::providers::ModelProvider::OpenAi => crate::usage::openai().last_context(),
+        crate::providers::ModelProvider::OpenRouter => crate::usage::openrouter().last_context(),
         crate::providers::ModelProvider::GitHubCopilot => return None, // Copilot doesn't report tokens
     };
     // Only return if we actually have usage data

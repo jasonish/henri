@@ -281,6 +281,11 @@ impl Usage {
         self.last_input_tokens.load(Ordering::Relaxed)
     }
 
+    /// Get total context size (input tokens + cache read tokens)
+    pub(crate) fn last_context(&self) -> u64 {
+        self.last_input() + self.last_cache_read_tokens.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn turn_total(&self) -> u64 {
         self.turn_total_tokens.load(Ordering::Relaxed)
     }

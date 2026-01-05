@@ -641,16 +641,21 @@ impl AnthropicProvider {
                     if let Some(msg) = &event.message
                         && let Some(u) = &msg.usage
                     {
+                        let mut total_context = 0u64;
                         if let Some(input) = u.input_tokens {
                             usage::anthropic().record_input(input);
-                            let limit = Self::context_limit(&self.model);
-                            output::emit_context_update(output, input, limit);
+                            total_context += input;
                         }
                         if let Some(cache_create) = u.cache_creation_input_tokens {
                             usage::anthropic().add_cache_creation(cache_create);
                         }
                         if let Some(cache_read) = u.cache_read_input_tokens {
                             usage::anthropic().add_cache_read(cache_read);
+                            total_context += cache_read;
+                        }
+                        if total_context > 0 {
+                            let limit = Self::context_limit(&self.model);
+                            output::emit_context_update(output, total_context, limit);
                         }
                     }
                 }

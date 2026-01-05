@@ -19,6 +19,8 @@
 
 ### Fixed
 
+- Context size display now includes cache read tokens for accurate context
+  window usage reporting (previously only showed input tokens)
 - HTTP errors are now treated as retryable, enabling automatic retry logic for
   transient network issues (not just explicit Retryable errors)
 - TUI: Fixed double blank lines appearing between thinking and tool call messages
