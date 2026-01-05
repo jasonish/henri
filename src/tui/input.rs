@@ -225,6 +225,8 @@ pub(crate) trait InputEditor {
     fn cursor(&self) -> usize;
     fn set_cursor(&mut self, pos: usize);
 
+    fn on_input_mutation(&mut self) {}
+
     fn insert_str_at_cursor(&mut self, s: &str) {
         let cursor = self.cursor();
         // Ensure cursor is at a valid UTF-8 character boundary
@@ -235,6 +237,7 @@ pub(crate) trait InputEditor {
         };
         self.input_mut().insert_str(cursor, s);
         self.set_cursor(cursor + s.len());
+        self.on_input_mutation();
     }
 
     fn backspace(&mut self) {
@@ -243,6 +246,7 @@ pub(crate) trait InputEditor {
         if let Some((idx, _ch)) = input[..cursor].char_indices().last() {
             input.drain(idx..cursor);
             self.set_cursor(idx);
+            self.on_input_mutation();
         }
     }
 
@@ -256,6 +260,7 @@ pub(crate) trait InputEditor {
         if let Some((_, ch)) = iter.next() {
             let next = cursor + ch.len_utf8();
             input.drain(cursor..next);
+            self.on_input_mutation();
         }
     }
 
@@ -282,6 +287,7 @@ pub(crate) trait InputEditor {
 
         if pos > cursor {
             self.input_mut().drain(cursor..pos);
+            self.on_input_mutation();
         }
     }
 
@@ -377,6 +383,7 @@ pub(crate) trait InputEditor {
         if new_cursor < original {
             self.input_mut().drain(new_cursor..original);
             self.set_cursor(new_cursor);
+            self.on_input_mutation();
         }
     }
 
@@ -387,6 +394,7 @@ pub(crate) trait InputEditor {
         }
         self.input_mut().drain(0..cursor);
         self.set_cursor(0);
+        self.on_input_mutation();
     }
 
     fn kill_to_end(&mut self) {
@@ -408,9 +416,11 @@ pub(crate) trait InputEditor {
         match end_pos {
             Some(end) => {
                 self.input_mut().drain(cursor..end);
+                self.on_input_mutation();
             }
             None => {
                 self.input_mut().remove(cursor);
+                self.on_input_mutation();
             }
         }
     }
@@ -418,6 +428,7 @@ pub(crate) trait InputEditor {
     fn clear_input(&mut self) {
         self.input_mut().clear();
         self.set_cursor(0);
+        self.on_input_mutation();
     }
 }
 

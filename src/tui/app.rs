@@ -3028,6 +3028,11 @@ impl InputEditor for App {
             super::input::prev_char_boundary(&self.input, pos)
         };
     }
+
+    fn on_input_mutation(&mut self) {
+        self.history_index = None;
+        self.input_stash.clear();
+    }
 }
 
 /// Extract display text from user replay segments

@@ -19,6 +19,8 @@
 
 ### Fixed
 
+- TUI: History navigation state now resets when editing input, preventing
+  unexpected history recall after typing
 - Context size display now includes cache read tokens for accurate context
   window usage reporting (previously only showed input tokens)
 - HTTP errors are now treated as retryable, enabling automatic retry logic for
