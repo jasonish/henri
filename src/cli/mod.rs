@@ -40,7 +40,10 @@ enum CommandResult {
     StopTransactionLogging,
     Compact,
     CountTokens,
-    CustomPrompt(String),
+    CustomPrompt {
+        prompt: String,
+        model: Option<String>,
+    },
     Sessions,
     Settings,
     Mcp,
@@ -89,9 +92,10 @@ fn handle_command(
     };
 
     match cmd {
-        Command::BuildAgentsMd => {
-            CommandResult::CustomPrompt(crate::prompts::BUILD_AGENTS_MD_PROMPT.to_string())
-        }
+        Command::BuildAgentsMd => CommandResult::CustomPrompt {
+            prompt: crate::prompts::BUILD_AGENTS_MD_PROMPT.to_string(),
+            model: None,
+        },
         Command::Quit => CommandResult::Quit,
         Command::Tui => CommandResult::SwitchToTui,
         Command::Cli => {
@@ -232,7 +236,10 @@ fn handle_command(
         Command::Custom { name, args } => {
             if let Some(custom) = custom_commands.iter().find(|c| c.name == name) {
                 let prompt = custom_commands::substitute_variables(&custom.prompt, &args);
-                CommandResult::CustomPrompt(prompt)
+                CommandResult::CustomPrompt {
+                    prompt,
+                    model: custom.model.clone(),
+                }
             } else {
                 output.emit(output::OutputEvent::Error(format!(
                     "Custom command '{}' not found",
@@ -1119,12 +1126,14 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                 }
 
                 let input = content.trim_end_matches('\n').to_string();
+                let mut resolved_input = input.clone();
+                let mut model_override_spec: Option<String> = None;
 
                 let is_custom_prompt = if input.trim_start().starts_with('/') {
                     let current_provider = provider_manager.current_provider();
                     let cmd_result =
                         handle_command(&input, current_provider, &custom_commands, &output);
-                    let is_custom = matches!(cmd_result, CommandResult::CustomPrompt(_));
+                    let is_custom = matches!(cmd_result, CommandResult::CustomPrompt { .. });
 
                     match cmd_result {
                         CommandResult::Quit => return Ok(ExitStatus::Quit),
@@ -1339,10 +1348,10 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                                 }
                             }
                         }
-                        CommandResult::CustomPrompt(prompt) => {
+                        CommandResult::CustomPrompt { prompt, model } => {
                             println!("\n{}\n", prompt);
-                            let user_msg = Message::user(&prompt);
-                            messages.push(user_msg);
+                            resolved_input = prompt.clone();
+                            model_override_spec = model;
                         }
                         CommandResult::Sessions => {
                             if let Some(selected) = show_sessions_menu(&working_dir) {
@@ -1415,12 +1424,6 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                     continue;
                 }
 
-                // Add regular input to messages if not already added
-                if !input.trim_start().starts_with('/') && !input.trim_start().starts_with('!') {
-                    let user_msg = Message::user(&input);
-                    messages.push(user_msg);
-                }
-
                 // Handle shell commands starting with '!'
                 if input.trim_start().starts_with('!') {
                     let cmd = input.trim_start().strip_prefix('!').unwrap_or("");
@@ -1442,95 +1445,191 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
                     continue;
                 }
 
+                let mut model_override = None;
+                if let Some(model_spec) = model_override_spec.as_deref() {
+                    model_override = Some(apply_model_override(
+                        &mut provider_manager,
+                        &mut messages,
+                        &mut thinking_state,
+                        model_spec,
+                    ));
+                }
+
                 output::start_spinner(&output, "Waiting...");
 
-                let messages_count = messages.len();
-                let current_provider = provider_manager.current_provider();
-                let model_id = provider_manager.current_model_id().to_string();
+                run_chat_with_images(
+                    &mut provider_manager,
+                    &mut messages,
+                    &mut thinking_state,
+                    &resolved_input,
+                    pasted_images,
+                    read_only,
+                    &working_dir,
+                    &mut current_session_id,
+                    &output,
+                )
+                .await;
 
-                // Validate image support for current model
-                if !pasted_images.is_empty() && !supports_images(current_provider, &model_id) {
-                    output::stop_spinner(&output);
-                    eprintln!(
-                        "Error: Model {}/{} does not support images.",
-                        current_provider.id(),
-                        model_id
-                    );
-                    continue;
-                }
-
-                // Create message with text and images
-                let message = if pasted_images.is_empty() {
-                    Message::user(&input)
-                } else {
-                    let mut blocks = Vec::new();
-
-                    if !input.trim().is_empty() {
-                        blocks.push(ContentBlock::Text { text: input });
-                    }
-
-                    for image in pasted_images {
-                        blocks.push(ContentBlock::Image {
-                            mime_type: image.mime_type,
-                            data: image.data,
-                        });
-                    }
-
-                    Message {
-                        role: Role::User,
-                        content: MessageContent::Blocks(blocks),
-                    }
-                };
-
-                messages.push(message);
-
-                // Set thinking state
-                provider_manager.set_thinking_enabled(thinking_state.enabled);
-                provider_manager.set_thinking_mode(thinking_state.mode.clone());
-
-                let interrupted = Arc::new(AtomicBool::new(false));
-
-                let result =
-                    run_chat_loop(&mut provider_manager, &mut messages, &interrupted, &output)
-                        .await;
-
-                match result {
-                    Err(error::Error::Interrupted) => {
-                        output::stop_spinner(&output);
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        print!("\x1b[2K\rCancelled\n");
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                        messages.truncate(messages_count);
-                    }
-                    Err(e) => {
-                        output::stop_spinner(&output);
-                        eprintln!("Error: {}", e);
-                        messages.truncate(messages_count);
-                    }
-                    Ok(()) => {
-                        print_usage_for_provider(&provider_manager);
-
-                        match session::save_session(
-                            &working_dir,
-                            &messages,
-                            &provider_manager.current_provider(),
-                            provider_manager.current_model_id(),
-                            thinking_state.enabled,
-                            read_only,
-                            current_session_id.as_deref(),
-                        ) {
-                            Ok(id) => current_session_id = Some(id),
-                            Err(e) => eprintln!("Warning: Failed to save session: {}", e),
-                        }
-                    }
-                }
+                restore_model_override(
+                    &mut provider_manager,
+                    &mut messages,
+                    &mut thinking_state,
+                    model_override,
+                );
             }
         }
     }
-
     // Unreachable due to loop structure
     #[allow(unreachable_code)]
     Ok(ExitStatus::Quit)
+}
+
+struct ModelOverride {
+    provider: ModelProvider,
+    model_id: String,
+    custom_provider: Option<String>,
+    thinking_state: ThinkingState,
+}
+
+fn apply_model_override(
+    provider_manager: &mut ProviderManager,
+    messages: &mut [Message],
+    thinking_state: &mut ThinkingState,
+    model_spec: &str,
+) -> ModelOverride {
+    let original = ModelOverride {
+        provider: provider_manager.current_provider(),
+        model_id: provider_manager.current_model_id().to_string(),
+        custom_provider: provider_manager
+            .current_custom_provider()
+            .map(|s| s.to_string()),
+        thinking_state: thinking_state.clone(),
+    };
+    let (provider, model_id, custom_provider) = crate::providers::parse_model_spec(model_spec);
+    let provider_changed = provider_manager.set_model(provider, model_id, custom_provider);
+    if provider_changed {
+        crate::provider::transform_thinking_for_provider_switch(messages);
+    }
+    *thinking_state = provider_manager.default_thinking();
+    provider_manager.set_thinking_enabled(thinking_state.enabled);
+    provider_manager.set_thinking_mode(thinking_state.mode.clone());
+    original
+}
+
+fn restore_model_override(
+    provider_manager: &mut ProviderManager,
+    messages: &mut [Message],
+    thinking_state: &mut ThinkingState,
+    original: Option<ModelOverride>,
+) {
+    let Some(original) = original else {
+        return;
+    };
+    let provider_changed = provider_manager.set_model(
+        original.provider,
+        original.model_id,
+        original.custom_provider,
+    );
+    if provider_changed {
+        crate::provider::transform_thinking_for_provider_switch(messages);
+    }
+    *thinking_state = original.thinking_state;
+    provider_manager.set_thinking_enabled(thinking_state.enabled);
+    provider_manager.set_thinking_mode(thinking_state.mode.clone());
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_chat_with_images(
+    provider_manager: &mut ProviderManager,
+    messages: &mut Vec<Message>,
+    thinking_state: &mut ThinkingState,
+    input: &str,
+    pasted_images: Vec<PastedImage>,
+    read_only: bool,
+    working_dir: &std::path::Path,
+    current_session_id: &mut Option<String>,
+    output: &output::OutputContext,
+) {
+    let messages_count = messages.len();
+    let current_provider = provider_manager.current_provider();
+    let model_id = provider_manager.current_model_id().to_string();
+
+    // Validate image support for current model
+    if !pasted_images.is_empty() && !supports_images(current_provider, &model_id) {
+        output::stop_spinner(output);
+        eprintln!(
+            "Error: Model {}/{} does not support images.",
+            current_provider.id(),
+            model_id
+        );
+        return;
+    }
+
+    // Create message with text and images
+    let message = if pasted_images.is_empty() {
+        Message::user(input)
+    } else {
+        let mut blocks = Vec::new();
+
+        if !input.trim().is_empty() {
+            blocks.push(ContentBlock::Text {
+                text: input.to_string(),
+            });
+        }
+
+        for image in pasted_images {
+            blocks.push(ContentBlock::Image {
+                mime_type: image.mime_type,
+                data: image.data,
+            });
+        }
+
+        Message {
+            role: Role::User,
+            content: MessageContent::Blocks(blocks),
+        }
+    };
+
+    messages.push(message);
+
+    // Set thinking state
+    provider_manager.set_thinking_enabled(thinking_state.enabled);
+    provider_manager.set_thinking_mode(thinking_state.mode.clone());
+
+    let interrupted = Arc::new(AtomicBool::new(false));
+
+    let result = run_chat_loop(provider_manager, messages, &interrupted, output).await;
+
+    match result {
+        Err(error::Error::Interrupted) => {
+            output::stop_spinner(output);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            print!("\x1b[2K\rCancelled\n");
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+            messages.truncate(messages_count);
+        }
+        Err(e) => {
+            output::stop_spinner(output);
+            eprintln!("Error: {}", e);
+            messages.truncate(messages_count);
+        }
+        Ok(()) => {
+            print_usage_for_provider(provider_manager);
+
+            match session::save_session(
+                working_dir,
+                messages,
+                &provider_manager.current_provider(),
+                provider_manager.current_model_id(),
+                thinking_state.enabled,
+                read_only,
+                current_session_id.as_deref(),
+            ) {
+                Ok(id) => *current_session_id = Some(id),
+                Err(e) => eprintln!("Warning: Failed to save session: {}", e),
+            }
+        }
+    }
 }
 
 /// Print usage statistics for the current provider

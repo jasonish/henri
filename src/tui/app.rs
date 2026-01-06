@@ -51,6 +51,18 @@ pub(crate) struct PendingPrompt {
     pub(crate) input: String,
     pub(crate) images: Vec<PendingImage>,
     pub(crate) display_text: String,
+    pub(crate) model_override: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ModelOverride {
+    provider: crate::providers::ModelProvider,
+    model_id: String,
+    custom_provider: Option<String>,
+    thinking_enabled: bool,
+    thinking_mode: Option<String>,
+    thinking_available: bool,
+    current_model: Option<ModelChoice>,
 }
 
 /// State for an in-progress compaction operation
@@ -161,7 +173,9 @@ pub(crate) struct App {
     pub(crate) input_scroll: u16, // lines scrolled within the input box (0 = top visible)
     // Pending content to show in external pager (bat)
     pub(crate) pending_pager_content: Option<String>,
-    // Custom commands loaded from .claude/commands/*.md
+    // State to restore after a model override completes
+    pub(crate) model_override_state: Option<ModelOverride>,
+    // Custom commands loaded from .henri/commands/, .claude/commands/, etc.
     pub(crate) custom_commands: Vec<CustomCommand>,
     // Show network statistics in status line
     pub(crate) show_network_stats: bool,
@@ -376,6 +390,7 @@ impl App {
             is_cleared: false,
             input_scroll: 0,
             pending_pager_content: None,
+            model_override_state: None,
             custom_commands: crate::custom_commands::load_custom_commands()
                 .unwrap_or_else(|_| Vec::new()),
             show_network_stats: config.show_network_stats,
@@ -1384,7 +1399,7 @@ impl App {
         self.reset_scroll();
 
         // Start chat interaction if provider is available
-        self.start_chat(trimmed, pending_images, display_text);
+        self.start_chat(trimmed, pending_images, display_text, None);
     }
 
     fn handle_slash_command(&mut self, cmd: Command) {
@@ -1725,7 +1740,7 @@ impl App {
                     // Display custom command prompt as user input
                     let display_text = super::messages::bulletify(&prompt);
                     // Treat custom command as user input (no images for custom commands)
-                    self.start_chat(prompt, Vec::new(), display_text);
+                    self.start_chat(prompt, Vec::new(), display_text, custom.model.clone());
                 } else {
                     self.messages.push(Message::Error(format!(
                         "Custom command '{}' not found",
@@ -1748,7 +1763,7 @@ impl App {
                 let display_text = super::messages::bulletify(&prompt);
 
                 // Treat as user input and start chat
-                self.start_chat(prompt, Vec::new(), display_text);
+                self.start_chat(prompt, Vec::new(), display_text, None);
                 self.input.clear();
                 self.cursor = 0;
             }
@@ -1761,6 +1776,7 @@ impl App {
         user_input: String,
         images: Vec<PendingImage>,
         display_text: String,
+        model_override: Option<String>,
     ) {
         // If there's a pending chat result, try to receive it first to restore provider_manager
         // This handles the race condition where user submits a new message right after
@@ -1790,6 +1806,7 @@ impl App {
                 input: user_input,
                 images,
                 display_text,
+                model_override,
             });
             return;
         }
@@ -1845,9 +1862,82 @@ impl App {
 
         // Reset interrupted flag and mark chat as starting
         self.chat_interrupted.store(false, Ordering::SeqCst);
+        if let Some(model_spec) = model_override.as_deref() {
+            let original = self.apply_model_override(model_spec);
+            self.model_override_state = Some(original);
+        }
         self.is_chatting = true;
         self.chat_task_spawned = false;
         self.layout_cache.invalidate();
+    }
+
+    fn apply_model_override(&mut self, model_spec: &str) -> ModelOverride {
+        // Get current model info from provider_manager (which always has a model)
+        let Some(ref pm) = self.provider_manager else {
+            // If no provider_manager, return a placeholder that won't change anything
+            return ModelOverride {
+                provider: crate::providers::ModelProvider::OpenCodeZen,
+                model_id: String::new(),
+                custom_provider: None,
+                thinking_enabled: self.thinking_enabled,
+                thinking_mode: self.thinking_mode.clone(),
+                thinking_available: self.thinking_available,
+                current_model: self.current_model.clone(),
+            };
+        };
+
+        let original = ModelOverride {
+            provider: pm.current_provider(),
+            model_id: pm.current_model_id().to_string(),
+            custom_provider: pm.current_custom_provider().map(|s| s.to_string()),
+            thinking_enabled: self.thinking_enabled,
+            thinking_mode: self.thinking_mode.clone(),
+            thinking_available: self.thinking_available,
+            current_model: self.current_model.clone(),
+        };
+
+        let (provider, model_id, custom_provider) = crate::providers::parse_model_spec(model_spec);
+
+        // Need to reborrow mutably for set_model
+        let pm = self.provider_manager.as_mut().unwrap();
+        let provider_changed = pm.set_model(provider, model_id.clone(), custom_provider.clone());
+        if provider_changed {
+            crate::provider::transform_thinking_for_provider_switch(&mut self.chat_messages);
+        }
+        self.thinking_available = super::supports_thinking(provider, &model_id);
+        let thinking_state = crate::providers::default_thinking_state(provider, &model_id);
+        self.thinking_enabled = thinking_state.enabled;
+        self.thinking_mode = thinking_state.mode;
+        self.current_model = Some(ModelChoice {
+            provider,
+            model_id,
+            custom_provider,
+            is_favorite: false,
+        });
+
+        original
+    }
+
+    pub(crate) fn restore_model_override(&mut self, original: Option<ModelOverride>) {
+        let Some(original) = original else {
+            return;
+        };
+
+        if let Some(ref mut pm) = self.provider_manager {
+            let provider_changed = pm.set_model(
+                original.provider,
+                original.model_id.clone(),
+                original.custom_provider.clone(),
+            );
+            if provider_changed {
+                crate::provider::transform_thinking_for_provider_switch(&mut self.chat_messages);
+            }
+        }
+
+        self.thinking_enabled = original.thinking_enabled;
+        self.thinking_mode = original.thinking_mode;
+        self.thinking_available = original.thinking_available;
+        self.current_model = original.current_model;
     }
 
     /// Start a compaction operation (manual /compact command)
@@ -3449,12 +3539,22 @@ mod tests {
         app.is_chatting = true;
 
         // Try to start chat
-        app.start_chat("Prompt 1".to_string(), Vec::new(), "Prompt 1".to_string());
+        app.start_chat(
+            "Prompt 1".to_string(),
+            Vec::new(),
+            "Prompt 1".to_string(),
+            None,
+        );
         assert_eq!(app.pending_prompts.len(), 1);
         assert_eq!(app.pending_prompts[0].input, "Prompt 1");
 
         // Add another
-        app.start_chat("Prompt 2".to_string(), Vec::new(), "Prompt 2".to_string());
+        app.start_chat(
+            "Prompt 2".to_string(),
+            Vec::new(),
+            "Prompt 2".to_string(),
+            None,
+        );
         assert_eq!(app.pending_prompts.len(), 2);
         assert_eq!(app.pending_prompts[1].input, "Prompt 2");
 
@@ -3469,7 +3569,7 @@ mod tests {
         assert_eq!(app.pending_prompts.len(), 1);
 
         // start_chat should now NOT queue since is_chatting is false (and chat_result_rx is None)
-        app.start_chat(next.input, Vec::new(), next.display_text);
+        app.start_chat(next.input, Vec::new(), next.display_text, None);
 
         // Queue should still have only "Prompt 2" (size 1), Prompt 1 was NOT added back
         assert_eq!(app.pending_prompts.len(), 1);

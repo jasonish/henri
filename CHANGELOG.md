@@ -4,6 +4,10 @@
 
 ### Added
 
+- Custom commands now support model specification via frontmatter: add a `model`
+  field (e.g., `model: claude/claude-haiku-4-5`) in YAML or TOML frontmatter
+  to temporarily switch models when executing a custom command. The original
+  model is automatically restored after the chat completes.
 - `/undo` command to remove the most recent turn (user message and assistant
   response) from conversation history
 - `/forget` command to remove the oldest turn from conversation history,

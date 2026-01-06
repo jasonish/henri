@@ -1073,7 +1073,7 @@ impl ProviderManager {
 
 /// Parse a model string like "zen/big-pickle" or "ollama/llama3.2" into (provider, model_id, custom_provider_name)
 /// Returns (provider_type, model_id, optional_custom_provider_name)
-fn parse_model_spec(spec: &str) -> (ModelProvider, String, Option<String>) {
+pub(crate) fn parse_model_spec(spec: &str) -> (ModelProvider, String, Option<String>) {
     if let Some((prefix, model)) = spec.split_once('/') {
         // Check for built-in providers first
         let provider = match prefix {

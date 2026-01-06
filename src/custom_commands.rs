@@ -19,6 +19,13 @@ pub(crate) struct CustomCommand {
     pub name: String,
     pub description: String,
     pub prompt: String,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CommandFrontmatter {
+    description: Option<String>,
+    model: Option<String>,
 }
 
 /// Load all custom commands from multiple directories.
@@ -95,11 +102,12 @@ pub(crate) fn load_custom_commands() -> io::Result<Vec<CustomCommand>> {
             if let Some(name) = name
                 && let Ok(content) = fs::read_to_string(path)
             {
-                let (description, prompt) = parse_command_file(&content);
+                let (description, prompt, model) = parse_command_file(&content);
                 all_commands.push(CustomCommand {
                     name,
                     description: format!("{} {}", description, label),
                     prompt,
+                    model,
                 });
             }
         }
@@ -112,21 +120,19 @@ pub(crate) fn load_custom_commands() -> io::Result<Vec<CustomCommand>> {
 /// Handles front-matter (YAML, TOML) if present.
 /// If front-matter has a "description" field, uses that.
 /// Otherwise, first line after front-matter is the description.
-fn parse_command_file(content: &str) -> (String, String) {
+fn parse_command_file(content: &str) -> (String, String, Option<String>) {
     let content = content.trim();
 
     // Try to parse and extract front-matter
-    if let Some((frontmatter_desc, body)) = parse_frontmatter(content) {
-        // If front-matter has a description, use it
-        if let Some(desc) = frontmatter_desc {
-            return (desc, body.to_string());
+    if let Some((frontmatter, body)) = parse_frontmatter(content) {
+        if let Some(desc) = frontmatter.description.as_ref() {
+            return (desc.clone(), body.to_string(), frontmatter.model);
         }
-        // Otherwise, use first line of body as description
         if let Some(first_line_end) = body.find('\n') {
             let description = body[..first_line_end].trim().to_string();
-            return (description, body.to_string());
+            return (description, body.to_string(), frontmatter.model);
         } else {
-            return (body.to_string(), body.to_string());
+            return (body.to_string(), body.to_string(), frontmatter.model);
         }
     }
 
@@ -134,15 +140,15 @@ fn parse_command_file(content: &str) -> (String, String) {
     if let Some(first_line_end) = content.find('\n') {
         let description = content[..first_line_end].trim().to_string();
         let prompt = content.to_string();
-        (description, prompt)
+        (description, prompt, None)
     } else {
-        (content.to_string(), content.to_string())
+        (content.to_string(), content.to_string(), None)
     }
 }
 
 /// Parse front-matter from content.
-/// Returns (optional description from front-matter, body content without front-matter)
-fn parse_frontmatter(content: &str) -> Option<(Option<String>, &str)> {
+/// Returns front-matter and body content without front-matter.
+fn parse_frontmatter(content: &str) -> Option<(CommandFrontmatter, &str)> {
     let content = content.trim_start();
 
     // YAML front-matter (---...---)
@@ -152,8 +158,8 @@ fn parse_frontmatter(content: &str) -> Option<(Option<String>, &str)> {
         let frontmatter = &content[4..4 + end_pos];
         let body = content[4 + end_pos + 5..].trim_start();
 
-        let description = extract_description_from_yaml(frontmatter);
-        return Some((description, body));
+        let frontmatter = extract_frontmatter_from_yaml(frontmatter);
+        return Some((frontmatter, body));
     }
 
     // TOML front-matter (+++...+++)
@@ -163,33 +169,53 @@ fn parse_frontmatter(content: &str) -> Option<(Option<String>, &str)> {
         let frontmatter = &content[4..4 + end_pos];
         let body = content[4 + end_pos + 5..].trim_start();
 
-        let description = extract_description_from_toml(frontmatter);
-        return Some((description, body));
+        let frontmatter = extract_frontmatter_from_toml(frontmatter);
+        return Some((frontmatter, body));
     }
 
     None
 }
 
-/// Extract description field from YAML front-matter
-fn extract_description_from_yaml(yaml: &str) -> Option<String> {
-    if let Ok(value) = serde_yaml_ng::from_str::<HashMap<String, JsonValue>>(yaml)
-        && let Some(desc) = value.get("description")
-        && let Some(s) = desc.as_str()
-    {
-        return Some(s.to_string());
+/// Extract description and model fields from YAML front-matter.
+fn extract_frontmatter_from_yaml(yaml: &str) -> CommandFrontmatter {
+    let mut frontmatter = CommandFrontmatter {
+        description: None,
+        model: None,
+    };
+
+    if let Ok(value) = serde_yaml_ng::from_str::<HashMap<String, JsonValue>>(yaml) {
+        frontmatter.description = value
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        frontmatter.model = value
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
     }
-    None
+
+    frontmatter
 }
 
-/// Extract description field from TOML front-matter
-fn extract_description_from_toml(toml_str: &str) -> Option<String> {
-    if let Ok(value) = toml::from_str::<HashMap<String, toml::Value>>(toml_str)
-        && let Some(desc) = value.get("description")
-        && let Some(s) = desc.as_str()
-    {
-        return Some(s.to_string());
+/// Extract description and model fields from TOML front-matter.
+fn extract_frontmatter_from_toml(toml_str: &str) -> CommandFrontmatter {
+    let mut frontmatter = CommandFrontmatter {
+        description: None,
+        model: None,
+    };
+
+    if let Ok(value) = toml::from_str::<HashMap<String, toml::Value>>(toml_str) {
+        frontmatter.description = value
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        frontmatter.model = value
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
     }
-    None
+
+    frontmatter
 }
 
 /// Parse arguments respecting quotes (single and double).
@@ -322,11 +348,12 @@ mod tests {
                 .unwrap();
 
             let content = std::fs::read_to_string(path).unwrap();
-            let (description, prompt) = parse_command_file(&content);
+            let (description, prompt, model) = parse_command_file(&content);
             all_commands.push(CustomCommand {
                 name,
                 description,
                 prompt,
+                model,
             });
         }
 
@@ -357,8 +384,26 @@ author: "Test Author"
 # Main Content
 This is the actual command content."#;
 
-        let (description, prompt) = parse_command_file(content);
+        let (description, prompt, model) = parse_command_file(content);
         assert_eq!(description, "Test command from YAML");
+        assert!(prompt.starts_with("# Main Content"));
+        assert!(!prompt.contains("---"));
+        assert!(model.is_none());
+    }
+
+    #[test]
+    fn test_parse_yaml_frontmatter_with_model() {
+        let content = r#"---
+description: "Test command from YAML"
+model: "claude/claude-haiku-4-5"
+---
+
+# Main Content
+This is the actual command content."#;
+
+        let (description, prompt, model) = parse_command_file(content);
+        assert_eq!(description, "Test command from YAML");
+        assert_eq!(model.as_deref(), Some("claude/claude-haiku-4-5"));
         assert!(prompt.starts_with("# Main Content"));
         assert!(!prompt.contains("---"));
     }
@@ -373,8 +418,29 @@ author = "Test Author"
 # Main Content
 This is the actual command content."#;
 
-        let (description, prompt) = parse_command_file(content);
+        let (description, prompt, model) = parse_command_file(content);
         assert_eq!(description, "Test command from TOML");
+        assert!(prompt.starts_with("# Main Content"));
+        assert!(!prompt.contains("+++"));
+        assert!(model.is_none());
+    }
+
+    #[test]
+    fn test_parse_toml_frontmatter_with_model() {
+        let content = r#"+++
+description = "Test command from TOML"
+model = "openrouter/anthropic/claude-3.5-haiku"
++++
+
+# Main Content
+This is the actual command content."#;
+
+        let (description, prompt, model) = parse_command_file(content);
+        assert_eq!(description, "Test command from TOML");
+        assert_eq!(
+            model.as_deref(),
+            Some("openrouter/anthropic/claude-3.5-haiku")
+        );
         assert!(prompt.starts_with("# Main Content"));
         assert!(!prompt.contains("+++"));
     }
@@ -389,19 +455,21 @@ date: "2025-01-15"
 First line is description
 This is the actual command content."#;
 
-        let (description, prompt) = parse_command_file(content);
+        let (description, prompt, model) = parse_command_file(content);
         assert_eq!(description, "First line is description");
         assert!(prompt.starts_with("First line is description"));
         assert!(!prompt.contains("---"));
+        assert!(model.is_none());
     }
 
     #[test]
     fn test_parse_no_frontmatter() {
         let content = "Simple description\nCommand content here";
 
-        let (description, prompt) = parse_command_file(content);
+        let (description, prompt, model) = parse_command_file(content);
         assert_eq!(description, "Simple description");
         assert_eq!(prompt, content);
+        assert!(model.is_none());
     }
 
     #[test]

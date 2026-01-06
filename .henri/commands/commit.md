@@ -1,3 +1,7 @@
+---
+model: claude/claude-haiku-4-5
+---
+
 Create a git commit for the current changes.
 
 Respect any of the users custom instructions: $ARGUMENTS
