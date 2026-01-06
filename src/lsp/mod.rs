@@ -350,7 +350,6 @@ impl LspClient {
     }
 
     /// Initialize the LSP server
-    #[allow(deprecated)] // root_path and root_uri are deprecated but still used for compatibility
     async fn initialize(&mut self, root_path: &Path) -> Result<()> {
         let root_uri = path_to_uri(root_path).ok_or_else(|| {
             Error::Lsp(format!(
@@ -361,8 +360,6 @@ impl LspClient {
 
         let params = InitializeParams {
             process_id: Some(std::process::id()),
-            root_path: Some(root_path.to_string_lossy().to_string()),
-            root_uri: Some(root_uri.clone()),
             capabilities: ClientCapabilities {
                 text_document: Some(lsp_types::TextDocumentClientCapabilities {
                     publish_diagnostics: Some(
