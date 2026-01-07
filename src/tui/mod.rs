@@ -45,7 +45,7 @@ use crate::session::RestoredSession;
 
 use crate::commands::{ExitStatus, ModeTransferSession};
 use app::App;
-use clipboard::copy_selection;
+use clipboard::{copy_selection, copy_to_primary};
 use draw::draw;
 use input::{
     InputEditor, find_line_boundaries, find_word_boundaries, prev_char_boundary,
@@ -1030,7 +1030,7 @@ async fn run_app(
                                 }
                             }
                             MouseEventKind::Up(MouseButton::Left) => {
-                                // Finalize selection and copy to clipboard
+                                // Finalize selection and copy to clipboard + primary selection
                                 if let Some((start, end)) = app.input_selection.is_active()
                                     .then(|| app.input_selection.ordered())
                                     .flatten()
@@ -1038,24 +1038,33 @@ async fn run_app(
                                     let text = app.input
                                         [start.min(app.input.len())..end.min(app.input.len())]
                                         .to_string();
-                                    if !text.is_empty()
-                                        && let Err(e) = copy_selection(&text) {
+                                    if !text.is_empty() {
+                                        // Copy to primary selection (for middle-click paste)
+                                        if let Err(e) = copy_to_primary(&text) {
                                             app.messages.push(Message::Error(format!(
-                                                "Copy failed: {}",
+                                                "Copy to primary failed: {}",
                                                 e
                                             )));
                                             app.layout_cache.invalidate();
                                         }
+                                        // Also copy to clipboard (for Ctrl+V paste)
+                                        let _ = copy_selection(&text);
+                                    }
                                 } else if app.selection.is_active()
                                     && let Some(text) = app.get_selected_text()
                                         && !text.is_empty()
-                                            && let Err(e) = copy_selection(&text) {
-                                                app.messages.push(Message::Error(format!(
-                                                    "Copy failed: {}",
-                                                    e
-                                                )));
-                                                app.layout_cache.invalidate();
-                                            }
+                                {
+                                    // Copy to primary selection (for middle-click paste)
+                                    if let Err(e) = copy_to_primary(&text) {
+                                        app.messages.push(Message::Error(format!(
+                                            "Copy to primary failed: {}",
+                                            e
+                                        )));
+                                        app.layout_cache.invalidate();
+                                    }
+                                    // Also copy to clipboard (for Ctrl+V paste)
+                                    let _ = copy_selection(&text);
+                                }
                             }
                             MouseEventKind::Down(MouseButton::Middle) => {
                                 // Paste from primary selection on middle click

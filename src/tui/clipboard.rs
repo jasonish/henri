@@ -38,6 +38,42 @@ pub(crate) fn copy_selection(text: &str) -> Result<(), String> {
     Err("No clipboard tool available (install wl-copy or xclip)".to_string())
 }
 
+/// Copy text to PRIMARY selection (for middle-click paste)
+/// This is what terminals do when you select text with the mouse.
+pub(crate) fn copy_to_primary(text: &str) -> Result<(), String> {
+    // Try wl-copy with primary selection (Wayland)
+    if let Ok(mut child) = Command::new("wl-copy")
+        .arg("--primary")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        let _ = child.wait();
+        return Ok(());
+    }
+
+    // Try xclip with primary selection (X11)
+    if let Ok(mut child) = Command::new("xclip")
+        .args(["-selection", "primary"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes());
+        }
+        let _ = child.wait();
+        return Ok(());
+    }
+
+    Err("No clipboard tool available (install wl-copy or xclip)".to_string())
+}
+
 /// Try to paste text from clipboard
 pub(crate) fn paste_text() -> io::Result<String> {
     // Try wl-paste for text first

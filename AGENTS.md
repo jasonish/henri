@@ -106,3 +106,5 @@ use crate::provider::Message;
 - Session files are stored in `~/.local/share/henri/sessions/` (hashed by working directory)
 - Configuration is in `~/.config/henri/config.toml`
 - Prompts in `src/prompts/` are embedded at compile time via `include_str!`
+- When reviewing code, follow review instructions from .henri/commands/review.md
+- When committing code, follow review instructions from .henri/commands/commit.md

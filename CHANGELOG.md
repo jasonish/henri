@@ -4,6 +4,9 @@
 
 ### Added
 
+- TUI: Mouse text selection now copies to PRIMARY selection (for middle-click
+  paste) in addition to the clipboard (for Ctrl+V paste), matching standard
+  terminal behavior
 - CLI: Slash commands now supported in non-interactive mode via `henri cli "/command"`.
   Available commands include `/quit`, `/exit`, and `/claude-usage` (when Claude OAuth
   is configured). Unknown commands error with exit code 1.
