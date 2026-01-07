@@ -343,8 +343,8 @@ async fn run_app(
                     tick_updated = true;
                 }
 
-                // Advance spinner when chatting or compacting
-                if app.is_chatting || app.is_compacting {
+                // Advance spinner when chatting, compacting, or fetching
+                if app.is_chatting || app.is_compacting || app.is_fetching {
                     app.spinner_frame = app.spinner_frame.wrapping_add(1);
                     tick_updated = true;
                 }

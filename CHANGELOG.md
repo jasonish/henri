@@ -4,6 +4,8 @@
 
 ### Added
 
+- TUI: Visual feedback (spinner) when fetching rate limits with `/claude-usage`
+  command
 - Custom commands now support model specification via frontmatter: add a `model`
   field (e.g., `model: claude/claude-haiku-4-5`) in YAML or TOML frontmatter
   to temporarily switch models when executing a custom command. The original
@@ -27,6 +29,10 @@
 
 ### Fixed
 
+- TUI: Usage display (rate limits) rendering had styling bug where first
+  character received incorrect styling due to misaligned segment map
+- TUI: Added proper spacing above Usage messages for visual separation from
+  surrounding content
 - TUI: Text after code blocks no longer appears muted/gray. Fixed mismatch
   between syntax highlighter and renderer fence detection causing text to
   incorrectly receive code theme colors instead of normal foreground

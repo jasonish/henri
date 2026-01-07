@@ -93,6 +93,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
     // Working indicator: spinner line + empty line = 2 lines
     let working_indicator_height = if app.is_chatting
         || app.is_compacting
+        || app.is_fetching
         || app.streaming_tokens.is_some()
         || app.streaming_duration.is_some()
     {
@@ -801,19 +802,21 @@ fn render_user_message(
 /// Render the working indicator (spinner + stats)
 fn render_working_indicator(frame: &mut Frame, area: Rect, app: &App) {
     // Area is 2 lines: spinner + text, then empty line below
-    let spinner = if app.is_chatting || app.is_compacting {
+    let spinner = if app.is_chatting || app.is_compacting || app.is_fetching {
         SPINNER_FRAMES[app.spinner_frame % SPINNER_FRAMES.len()]
     } else {
         "✓" // Checkmark when done
     };
-    let spinner_color = if app.is_chatting || app.is_compacting {
+    let spinner_color = if app.is_chatting || app.is_compacting || app.is_fetching {
         Color::Cyan
     } else {
         Color::Green
     };
     let spinner_span = Span::styled(spinner, Style::default().fg(spinner_color));
 
-    let (left_text, right_text) = if app.is_compacting {
+    let (left_text, right_text) = if app.is_fetching {
+        (" Fetching...".to_string(), None)
+    } else if app.is_compacting {
         (" Compacting...".to_string(), None)
     } else if let Some(duration) = app.streaming_duration {
         let status = if app.is_chatting {

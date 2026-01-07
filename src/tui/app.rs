@@ -135,6 +135,7 @@ pub(crate) struct App {
     pub(crate) is_chatting: bool,
     pub(crate) is_thinking: bool,
     pub(crate) is_compacting: bool,
+    pub(crate) is_fetching: bool,
     pub(crate) compaction_state: Option<CompactionState>,
     pub(crate) chat_task_spawned: bool,
     // Selection state
@@ -363,6 +364,7 @@ impl App {
             is_chatting: false,
             is_thinking: false,
             is_compacting: false,
+            is_fetching: false,
             compaction_state: None,
             chat_task_spawned: false,
             selection: Selection::default(),
@@ -1554,6 +1556,7 @@ impl App {
                     self.input.clear();
                     self.cursor = 0;
                     self.reset_scroll();
+                    self.is_fetching = true;
 
                     let shell_tx = self.shell_tx.clone();
                     tokio::spawn(async move {
@@ -3019,6 +3022,7 @@ impl App {
                     if self.is_cleared {
                         break;
                     }
+                    self.is_fetching = false;
                     // Remove the "Fetching rate limits..." message
                     if let Some(pos) = self.messages.iter().position(
                         |m| matches!(m, Message::Text(t) if t == "Fetching rate limits..."),
@@ -3035,6 +3039,7 @@ impl App {
                     updated = true;
                 }
                 ShellEvent::UsageError(err) => {
+                    self.is_fetching = false;
                     // Remove the "Fetching rate limits..." message
                     if let Some(pos) = self.messages.iter().position(
                         |m| matches!(m, Message::Text(t) if t == "Fetching rate limits..."),
