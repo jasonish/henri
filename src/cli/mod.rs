@@ -919,6 +919,70 @@ fn build_prompt(
     }
 }
 
+/// Run a slash command in non-interactive mode.
+/// Returns ExitStatus::Quit on success, exits with code 1 on error.
+async fn run_noninteractive_command(
+    input: &str,
+    custom_commands: &[custom_commands::CustomCommand],
+    output: &output::OutputContext,
+) -> std::io::Result<ExitStatus> {
+    let input = input.trim();
+
+    // Handle /exit as an alias for /quit
+    if input == "/exit" {
+        return Ok(ExitStatus::Quit);
+    }
+
+    let Some(cmd_str) = input.strip_prefix('/') else {
+        eprintln!("Error: Expected a command starting with '/'");
+        std::process::exit(1);
+    };
+
+    let Some(cmd) = commands::parse(cmd_str, custom_commands) else {
+        eprintln!("Error: Unknown command: {}", input);
+        eprintln!("Run 'henri cli' and type /help for available commands.");
+        std::process::exit(1);
+    };
+
+    match cmd {
+        commands::Command::Quit => Ok(ExitStatus::Quit),
+        commands::Command::Usage => {
+            if !commands::has_claude_oauth_provider() {
+                eprintln!(
+                    "Error: /claude-usage requires a Claude provider with OAuth authentication."
+                );
+                std::process::exit(1);
+            }
+            output::start_spinner(output, "Fetching rate limits...");
+            match usage::fetch_anthropic_rate_limits().await {
+                Ok(limits) => {
+                    output::stop_spinner(output);
+                    limits.display();
+                    Ok(ExitStatus::Quit)
+                }
+                Err(e) => {
+                    output::stop_spinner(output);
+                    eprintln!("Error: Failed to fetch rate limits: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        commands::Command::Help => {
+            eprintln!("Error: /help is only available in interactive mode.");
+            eprintln!("Run 'henri cli' to enter interactive mode.");
+            std::process::exit(1);
+        }
+        _ => {
+            eprintln!(
+                "Error: Command {} is only available in interactive mode.",
+                input
+            );
+            eprintln!("Run 'henri cli' to enter interactive mode.");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Arguments specific to the CLI interface
 pub(crate) struct CliArgs {
     pub model: Option<String>,
@@ -970,6 +1034,13 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
     // Non-interactive mode: run single prompt and exit
     if !args.prompt.is_empty() {
         let prompt = args.prompt.join(" ");
+
+        // Handle slash commands in non-interactive mode
+        if prompt.trim().starts_with('/') {
+            let custom_commands = custom_commands::load_custom_commands().unwrap_or_default();
+            return run_noninteractive_command(&prompt, &custom_commands, &output).await;
+        }
+
         let mut messages = vec![Message::user(&prompt)];
         let interrupted = Arc::new(AtomicBool::new(false));
 

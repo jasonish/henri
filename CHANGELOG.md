@@ -4,6 +4,9 @@
 
 ### Added
 
+- CLI: Slash commands now supported in non-interactive mode via `henri cli "/command"`.
+  Available commands include `/quit`, `/exit`, and `/claude-usage` (when Claude OAuth
+  is configured). Unknown commands error with exit code 1.
 - TUI: Visual feedback (spinner) when fetching rate limits with `/claude-usage`
   command
 - Custom commands now support model specification via frontmatter: add a `model`
