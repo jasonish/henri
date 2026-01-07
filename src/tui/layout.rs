@@ -358,12 +358,6 @@ fn count_wrapped_lines(text: &str, width: usize) -> usize {
         }
 
         screen_col += ch_width;
-
-        if screen_col == effective_width {
-            lines += 1;
-            screen_col = 0;
-        }
-
         prev_was_whitespace = is_whitespace;
     }
 

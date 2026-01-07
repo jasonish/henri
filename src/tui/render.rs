@@ -517,11 +517,6 @@ pub(crate) fn render_markdown_with_selection(
 
         screen_col += ch_width;
 
-        if screen_col == effective_width {
-            screen_row += 1;
-            screen_col = 0;
-        }
-
         if screen_row >= ctx.area.height as i32 {
             break;
         }
