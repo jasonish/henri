@@ -422,6 +422,23 @@ async fn run_app(
                     tick_updated = true;
                 }
 
+                if !app.is_chatting && app.chat_result_rx.is_none() {
+                    if let Some(original) = app.model_override_state.take() {
+                        app.restore_model_override(Some(original));
+                        tick_updated = true;
+                    }
+
+                    if let Some(next) = app.pending_prompts.pop_front() {
+                        app.start_chat(
+                            next.input,
+                            next.images,
+                            next.display_text,
+                            next.model_override,
+                        );
+                        tick_updated = true;
+                    }
+                }
+
                 // Update LSP server count
                 let lsp_mgr = crate::lsp::manager();
                 let count = lsp_mgr.server_count().await;

@@ -250,22 +250,10 @@ impl App {
                         {
                             self.current_session_id = Some(id)
                         }
+                    }
 
-                        // Check for queued prompts
-                        if !self.pending_prompts.is_empty() {
-                            if let Some(original) = self.model_override_state.take() {
-                                self.restore_model_override(Some(original));
-                            }
-                            let next = self.pending_prompts.pop_front().unwrap();
-                            self.start_chat(
-                                next.input,
-                                next.images,
-                                next.display_text,
-                                next.model_override,
-                            );
-                        } else if let Some(original) = self.model_override_state.take() {
-                            self.restore_model_override(Some(original));
-                        }
+                    if let Some(original) = self.model_override_state.take() {
+                        self.restore_model_override(Some(original));
                     }
 
                     self.is_chatting = false;

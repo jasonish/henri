@@ -48,6 +48,9 @@
 - Error responses (including 429 rate limits) are now logged to the transaction
   log with headers captured, enabling debugging of API issues
 - TUI: Todo list messages now have visual spacing from surrounding content
+- TUI: Model override state is now properly restored when chat is interrupted or
+  encounters an error, preventing the model selection from being stuck after
+  a failed custom command execution
 
 ## [0.3.0] - 2025-01-03
 
