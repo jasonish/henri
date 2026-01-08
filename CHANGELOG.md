@@ -64,6 +64,12 @@
   encounters an error, preventing the model selection from being stuck after
   a failed custom command execution
 
+### Internal
+
+- Refactored Antigravity system instruction into separate prompt file
+  (`src/prompts/antigravity.md`) for improved maintainability and consistency
+  with other provider prompts
+
 ## [0.3.0] - 2025-01-03
 
 ### Added

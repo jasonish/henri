@@ -44,6 +44,9 @@ struct AuthState {
     project_id: Option<String>,
 }
 
+/// Antigravity system instruction prompt embedded at compile time.
+const ANTIGRAVITY_SYSTEM_INSTRUCTION: &str = include_str!("../prompts/antigravity.md");
+
 /// Tracks streaming progress for periodic updates
 struct ProgressTracker {
     start: Option<Instant>,
@@ -419,10 +422,9 @@ impl AntigravityProvider {
             })
             .collect();
 
-        // Build system instruction
         let mut system_parts = vec![
-            serde_json::json!({"text": "You are an AI coding assistant."}),
-            serde_json::json!({"text": "Your name is Henri"}),
+            serde_json::json!({"text": ANTIGRAVITY_SYSTEM_INSTRUCTION}),
+            serde_json::json!({"text": "Your name is Henri."}),
         ];
 
         for part in system_prompt() {
@@ -435,6 +437,7 @@ impl AntigravityProvider {
         let mut request = serde_json::json!({
             "contents": self.build_messages(messages),
             "systemInstruction": {
+                "role": "user",
                 "parts": system_parts
             },
             "tools": [{
@@ -493,7 +496,8 @@ impl AntigravityProvider {
             "userAgent": "antigravity",
             "requestId": request_id,
             "model": &self.model,
-            "request": inner_request
+            "request": inner_request,
+            "requestType": "agent"
         })
     }
 
