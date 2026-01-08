@@ -1,5 +1,4 @@
 ---
-model: claude/claude-opus-4-5
 ---
 
 Review uncommitted changes.

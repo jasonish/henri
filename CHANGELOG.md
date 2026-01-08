@@ -35,6 +35,7 @@
 
 ### Fixed
 
+- TUI: Fixed an issue where an extra blank line was rendered when text fit exactly within the viewport width
 - History: Made concurrent appends safe by removing in-process file rewrites
   that could drop entries from other processes. History now appends during
   normal operation and only trims in-memory; file compaction to the

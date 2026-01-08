@@ -333,12 +333,6 @@ pub(crate) fn render_text_with_selection(
 
         screen_col += ch_width;
 
-        // Handle exact width boundary
-        if screen_col == effective_width {
-            screen_row += 1;
-            screen_col = 0;
-        }
-
         // Stop if we've gone past the visible area
         if screen_row >= ctx.area.height as i32 {
             break;
