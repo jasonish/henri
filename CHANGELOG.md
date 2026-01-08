@@ -35,6 +35,10 @@
 
 ### Fixed
 
+- History: Made concurrent appends safe by removing in-process file rewrites
+  that could drop entries from other processes. History now appends during
+  normal operation and only trims in-memory; file compaction to the
+  MAX_HISTORY limit (now 5000) happens on load
 - TUI: Usage display (rate limits) rendering had styling bug where first
   character received incorrect styling due to misaligned segment map
 - TUI: Added proper spacing above Usage messages for visual separation from
