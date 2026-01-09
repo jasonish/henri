@@ -135,10 +135,11 @@ pub async fn fetch_anthropic_rate_limits() -> Result<RateLimits> {
     let response = client
         .http_client()
         .post(API_URL)
-        .header("Content-Type", "application/json")
+        .header("content-type", "application/json")
+        .header("user-agent", "claude-cli/2.1.2 (external, cli)")
         .header("anthropic-version", ANTHROPIC_VERSION)
-        .header("Authorization", format!("Bearer {}", access_token))
         .header("anthropic-beta", ANTHROPIC_BETA)
+        .header("authorization", format!("Bearer {}", access_token))
         .json(&request)
         .send()
         .await

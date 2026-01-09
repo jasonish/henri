@@ -35,6 +35,8 @@
 
 ### Fixed
 
+- Anthropic provider: HTTP headers now use lowercase naming and include user-agent
+  matching Claude CLI format, ensuring better compatibility with rate limit endpoints
 - TUI: Improved text selection within thinking blocks by properly handling indentation and line wrapping
 - TUI: Fixed an issue where an extra blank line was rendered when text fit exactly within the viewport width
 - History: Made concurrent appends safe by removing in-process file rewrites
