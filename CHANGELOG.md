@@ -35,6 +35,7 @@
 
 ### Fixed
 
+- TUI: Improved text selection within thinking blocks by properly handling indentation and line wrapping
 - TUI: Fixed an issue where an extra blank line was rendered when text fit exactly within the viewport width
 - History: Made concurrent appends safe by removing in-process file rewrites
   that could drop entries from other processes. History now appends during

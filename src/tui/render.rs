@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Rendering functions for the TUI
 
-use ratatui::{prelude::*, widgets::Paragraph};
+use ratatui::{
+    prelude::*,
+    widgets::{Paragraph, Wrap},
+};
 
 use super::layout::{DIFF_GUTTER_WIDTH, TAB_WIDTH, char_display_width, word_display_width};
 use super::markdown::{
@@ -1121,7 +1124,7 @@ pub(crate) fn render_todo_list_with_selection(
     }
 }
 
-/// Render a thinking message with indentation
+/// Render a thinking message with indentation using Paragraph with selection support
 pub(crate) fn render_thinking_message(
     ctx: &mut RenderContext<'_, '_>,
     msg: &ThinkingMessage,
@@ -1147,7 +1150,142 @@ pub(crate) fn render_thinking_message(
         indented.pop();
     }
 
-    render_markdown_with_selection(ctx, &indented, bg_color, Some(Color::DarkGray));
+    let effective_width = (ctx.area.width as usize).saturating_sub(1).max(1);
+
+    // Populate PositionMap to enable mouse selection
+    // This logic mimics the wrapping behavior of Paragraph/Layout to map clicks to byte offsets
+    let mut screen_row = 0;
+    let mut screen_col = 0;
+    let mut prev_was_whitespace = true;
+
+    for (byte_idx, ch) in indented.char_indices() {
+        if ch == '\n' {
+            screen_row += 1;
+            screen_col = 0;
+            prev_was_whitespace = true;
+            continue;
+        }
+
+        let ch_width = char_display_width(ch);
+        if ch_width == 0 {
+            continue;
+        }
+
+        let is_whitespace = ch.is_whitespace();
+
+        // Word wrap logic to match Paragraph
+        if !is_whitespace && prev_was_whitespace && screen_col > 0 {
+            let word_len = word_display_width(&indented, byte_idx);
+            if word_len <= effective_width && screen_col + word_len > effective_width {
+                screen_row += 1;
+                screen_col = 0;
+            }
+        }
+
+        // Character wrap logic
+        if screen_col + ch_width > effective_width {
+            screen_row += 1;
+            screen_col = 0;
+        }
+
+        // Register position if visible
+        if screen_row < ctx.area.height as usize {
+            let x = ctx.area.x + screen_col as u16;
+            let y = ctx.area.y + screen_row as u16;
+            ctx.position_map
+                .set(x, y, ContentPosition::new(ctx.message_idx, byte_idx));
+        }
+
+        screen_col += ch_width;
+        if screen_col == effective_width {
+            screen_row += 1;
+            screen_col = 0;
+        }
+        prev_was_whitespace = is_whitespace;
+    }
+
+    // Determine styles
+    let mut base_style = Style::default().fg(Color::DarkGray);
+    if let Some(bg) = bg_color {
+        base_style = base_style.bg(bg);
+    }
+    let selected_style = Style::default()
+        .fg(Color::White)
+        .bg(Color::Rgb(60, 60, 120));
+
+    // Calculate selection range within this message
+    let (sel_start, sel_end) = if let Some((s, e)) = ctx.selection.ordered() {
+        if s.message_idx <= ctx.message_idx && e.message_idx >= ctx.message_idx {
+            let start = if s.message_idx == ctx.message_idx {
+                s.byte_offset
+            } else {
+                0
+            };
+            let end = if e.message_idx == ctx.message_idx {
+                e.byte_offset
+            } else {
+                indented.len()
+            };
+            (start, end)
+        } else {
+            (0, 0)
+        }
+    } else {
+        (0, 0)
+    };
+
+    // Build styled lines for Paragraph
+    // We split into explicit Lines so Paragraph respects the hard breaks from the model
+    let mut lines_vec = Vec::new();
+    let mut line_start = 0;
+
+    for line_str_raw in indented.split_inclusive('\n') {
+        let line_len_full = line_str_raw.len();
+        let line_end_full = line_start + line_len_full;
+
+        // Strip trailing \n for display (Paragraph adds line breaks between Lines)
+        let line_str_display = line_str_raw.trim_end_matches(['\n', '\r']);
+        let line_end_display = line_start + line_str_display.len();
+
+        let mut spans = Vec::new();
+
+        // Intersect [line_start, line_end_display) with [sel_start, sel_end)
+        let s = sel_start.max(line_start).min(line_end_display);
+        let e = sel_end.max(line_start).min(line_end_display);
+
+        // Helper to add a span
+        let mut add_span = |from: usize, to: usize, style: Style| {
+            if from < to {
+                // Determine indices relative to this line string
+                let rel_from = from - line_start;
+                let rel_to = to - line_start;
+                if let Some(text) = line_str_display.get(rel_from..rel_to) {
+                    spans.push(Span::styled(text, style));
+                }
+            }
+        };
+
+        // 1. Before selection
+        add_span(line_start, s, base_style);
+        // 2. Selected
+        add_span(s, e, selected_style);
+        // 3. After selection
+        add_span(e, line_end_display, base_style);
+
+        lines_vec.push(Line::from(spans));
+
+        line_start = line_end_full;
+    }
+
+    let paragraph = Paragraph::new(lines_vec).wrap(Wrap { trim: false });
+
+    // Render with adjusted width to match layout calculation
+    let mut area = ctx.area;
+    if area.width > 0 {
+        area.width = area.width.saturating_sub(1);
+    }
+
+    ctx.frame.render_widget(paragraph, area);
 }
 
 /// Render a tool calls message with indentation
