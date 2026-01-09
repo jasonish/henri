@@ -55,37 +55,10 @@ impl Default for LayoutCache {
     }
 }
 
-/// Get the display width of a list item prefix (e.g., "1. ", "- ", "10. ").
-/// Returns the width if the line starts with a list marker, otherwise None.
-pub(crate) fn list_prefix_width(line: &str) -> Option<usize> {
-    let trimmed = line.trim_start();
-    let leading_spaces = line.len() - trimmed.len();
-
-    // Check for bullet list: "- " or "* "
-    if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
-        return Some(leading_spaces + 2);
-    }
-
-    // Check for numbered list: "N. " where N is one or more digits
-    let bytes = trimmed.as_bytes();
-    if !bytes.is_empty() && bytes[0].is_ascii_digit() {
-        let mut i = 0;
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        // Check for ". " after digits
-        if i < bytes.len() && bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
-            return Some(leading_spaces + i + 2);
-        }
-    }
-
-    None
-}
-
-/// Wrap a single line with a hanging indent for list items.
+/// Wrap a single line with word wrapping.
 /// Returns a vector of wrapped lines (as String).
-/// If the line is not a list item or doesn't need wrapping, returns a single-element vec.
-pub(crate) fn wrap_line_with_hanging_indent(line: &str, width: usize) -> Vec<String> {
+/// If the line doesn't need wrapping, returns a single-element vec.
+pub(crate) fn wrap_line(line: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![line.to_string()];
     }
@@ -97,9 +70,6 @@ pub(crate) fn wrap_line_with_hanging_indent(line: &str, width: usize) -> Vec<Str
     if line_width <= effective_width {
         return vec![line.to_string()];
     }
-
-    let indent_width = list_prefix_width(line).unwrap_or(0);
-    let indent_str: String = " ".repeat(indent_width);
 
     let mut result = Vec::new();
     let mut current_line = String::new();
@@ -132,9 +102,8 @@ pub(crate) fn wrap_line_with_hanging_indent(line: &str, width: usize) -> Vec<Str
                 if !current_line.is_empty() {
                     result.push(current_line);
                 }
-                // Continuation lines get the hanging indent
-                current_line = format!("{}{}", indent_str, word);
-                current_width = indent_width + word_width;
+                current_line = word.to_string();
+                current_width = word_width;
             }
 
             // Skip whitespace between words
@@ -339,7 +308,7 @@ pub(crate) fn thinking_message_display_height(msg: &ThinkingMessage, width: u16)
     let mut total_lines = 0usize;
     for line in trimmed.lines() {
         let line = line.trim_end();
-        let wrapped = wrap_line_with_hanging_indent(line, effective_width);
+        let wrapped = wrap_line(line, effective_width);
         total_lines += wrapped.len();
     }
 
@@ -461,6 +430,12 @@ fn count_wrapped_lines(text: &str, width: usize) -> usize {
             screen_col = 0;
         }
 
+        // Skip whitespace that ends up at column 0 after wrapping (outside code blocks)
+        if is_whitespace && screen_col == 0 && !in_code_block {
+            prev_was_whitespace = true;
+            continue;
+        }
+
         screen_col += ch_width;
         prev_was_whitespace = is_whitespace;
     }
@@ -540,6 +515,12 @@ pub(crate) fn input_display_lines(input: &str, width: u16) -> usize {
             wrapped = true;
         }
 
+        // Skip whitespace that ends up at column 0 after wrapping
+        if is_whitespace && screen_col == 0 && wrapped {
+            prev_was_whitespace = true;
+            continue;
+        }
+
         screen_col += ch_width;
 
         if screen_col == effective_width {
@@ -613,6 +594,12 @@ pub(crate) fn cursor_position(input: &str, cursor: usize, width: u16) -> (u16, u
             wrapped = true;
         }
 
+        // Skip whitespace that ends up at column 0 after wrapping
+        if is_whitespace && col == 0 && wrapped {
+            prev_was_whitespace = true;
+            continue;
+        }
+
         col += ch_width;
 
         if col == effective_width {
@@ -635,5 +622,64 @@ pub(crate) fn current_prompt(input: &str) -> &'static str {
         SHELL_PROMPT
     } else {
         INPUT_PROMPT
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_whitespace_at_wrap_boundary_not_rendered() {
+        // When a space character causes a line wrap (because it doesn't fit),
+        // it should be skipped rather than rendered at the start of the next line.
+        // This tests the fix for misaligned wrapped text.
+
+        // With width 10, effective_width is 9.
+        let width: u16 = 10;
+
+        // "abcdefgh " = 9 chars (8 letters + 1 space), fits exactly
+        // Then "ij" should appear at the start of line 2
+        let text = "abcdefgh ij";
+
+        let lines = input_display_lines(text, width);
+        assert_eq!(lines, 2, "should wrap to 2 lines");
+
+        // Cursor right after the space (at 'i') should be at line 1, col 0
+        // "abcdefgh " = 9 bytes (indices 0-8), 'i' is at index 9
+        let (line, col) = cursor_position(text, 9, width);
+        assert_eq!(line, 1, "cursor at 'i' should be on second line");
+        assert_eq!(col, 0, "cursor at 'i' should be at column 0");
+
+        // Now test where space itself causes the wrap:
+        // "abcdefghi " - 'i' fills position 8 (last), space at position 9 wraps
+        // With effective_width 9, positions 0-8 fit, position 9 wraps
+        let text2 = "abcdefghi jk";
+
+        let lines2 = input_display_lines(text2, width);
+        assert_eq!(lines2, 2, "should wrap to 2 lines");
+
+        // The space at index 9 should cause a wrap and then be skipped
+        // 'j' at index 10 should be at line 1, col 0
+        let (line2, col2) = cursor_position(text2, 10, width);
+        assert_eq!(line2, 1, "'j' should be on second line");
+        assert_eq!(col2, 0, "'j' should be at column 0 (space was skipped)");
+    }
+
+    #[test]
+    fn test_wrapped_line_count_matches_render() {
+        // Verify that line counting is consistent for various wrap scenarios
+        let width: u16 = 15; // effective_width = 14
+
+        // Simple case: fits on one line
+        assert_eq!(input_display_lines("hello world", width), 1);
+
+        // Word wrap case: "hello " fits, "beautiful" wraps
+        assert_eq!(input_display_lines("hello beautiful", width), 2);
+
+        // Multiple wraps
+        let long_text = "one two three four five six";
+        let lines = input_display_lines(long_text, width);
+        assert!(lines >= 2, "long text should wrap to multiple lines");
     }
 }

@@ -38,6 +38,11 @@
 - Anthropic provider: HTTP headers now use lowercase naming and include user-agent
   matching Claude CLI format, ensuring better compatibility with rate limit endpoints
 - TUI: Improved text selection within thinking blocks by properly handling indentation and line wrapping
+- TUI: Fixed wrapped lines starting with a space when whitespace caused the wrap;
+  whitespace at column 0 after wrapping is now skipped for cleaner text display
+- TUI: Removed hanging indent from wrapped list items; continuation lines now
+  start at column 0 instead of aligning with list content
+- TUI: API error messages that are JSON are now pretty-printed for readability
 - TUI: Fixed an issue where an extra blank line was rendered when text fit exactly within the viewport width
 - History: Made concurrent appends safe by removing in-process file rewrites
   that could drop entries from other processes. History now appends during

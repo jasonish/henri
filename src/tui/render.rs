@@ -4,8 +4,7 @@
 use ratatui::{prelude::*, widgets::Paragraph};
 
 use super::layout::{
-    DIFF_GUTTER_WIDTH, TAB_WIDTH, char_display_width, word_display_width,
-    wrap_line_with_hanging_indent,
+    DIFF_GUTTER_WIDTH, TAB_WIDTH, char_display_width, word_display_width, wrap_line,
 };
 use super::markdown::{
     MarkdownStyle, align_markdown_tables, find_markdown_spans, get_markdown_style,
@@ -148,6 +147,12 @@ pub(crate) fn render_input_with_selection(
             logical_row += 1;
             screen_col = 0;
             wrapped = true;
+        }
+
+        // Skip whitespace that ends up at column 0 after wrapping
+        if is_whitespace && screen_col == 0 && wrapped {
+            prev_was_whitespace = true;
+            continue;
         }
 
         // Stop if we're past the visible area
@@ -309,6 +314,12 @@ pub(crate) fn render_text_with_selection(
             screen_col = 0;
         }
 
+        // Skip whitespace that ends up at column 0 after wrapping (outside code blocks)
+        if is_whitespace && screen_col == 0 && !in_code_block {
+            prev_was_whitespace = true;
+            continue;
+        }
+
         // Check if this character is visible
         if screen_row >= 0 && screen_row < ctx.area.height as i32 {
             let y = ctx.area.y + screen_row as u16;
@@ -460,6 +471,12 @@ pub(crate) fn render_markdown_with_selection(
         if screen_col + ch_width > effective_width {
             screen_row += 1;
             screen_col = 0;
+        }
+
+        // Skip whitespace that ends up at column 0 after wrapping (outside code blocks)
+        if is_whitespace && screen_col == 0 && !in_code_block {
+            prev_was_whitespace = true;
+            continue;
         }
 
         if screen_row >= 0 && screen_row < ctx.area.height as i32 {
@@ -1145,7 +1162,7 @@ pub(crate) fn render_thinking_message(
     let mut wrapped_lines: Vec<String> = Vec::new();
     for line in trimmed.lines() {
         let line = line.trim_end();
-        let line_wrapped = wrap_line_with_hanging_indent(line, effective_width);
+        let line_wrapped = wrap_line(line, effective_width);
         wrapped_lines.extend(line_wrapped);
     }
 

@@ -54,9 +54,17 @@ pub(crate) enum Error {
 impl Error {
     /// Returns a concise message suitable for display in the TUI.
     /// For API errors, returns just the response body without the status prefix.
+    /// If the message is JSON, it will be pretty-printed.
     pub(crate) fn tui_message(&self) -> String {
         match self {
-            Error::Api { message, .. } | Error::Retryable { message, .. } => message.clone(),
+            Error::Api { message, .. } | Error::Retryable { message, .. } => {
+                // Try to pretty-print if it's JSON
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(message) {
+                    serde_json::to_string_pretty(&json).unwrap_or_else(|_| message.clone())
+                } else {
+                    message.clone()
+                }
+            }
             other => other.to_string(),
         }
     }

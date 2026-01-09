@@ -442,7 +442,9 @@ fn render_pending_prompts(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-/// Render text with word-wrapping matching the input editor's behavior
+/// Render text with word-wrapping matching the input editor's behavior.
+/// Note: This function is used for prompt dialogs (e.g., pending file confirmations)
+/// which contain plain text without code blocks, so no code block tracking is needed.
 fn render_wrapped_text(frame: &mut Frame, area: Rect, text: &str, style: Style) {
     use super::layout::{char_display_width, word_display_width};
 
@@ -492,6 +494,12 @@ fn render_wrapped_text(frame: &mut Frame, area: Rect, text: &str, style: Style) 
         if screen_col + ch_width > effective_width {
             screen_row += 1;
             screen_col = 0;
+        }
+
+        // Skip whitespace that ends up at column 0 after wrapping
+        if is_whitespace && screen_col == 0 {
+            prev_was_whitespace = true;
+            continue;
         }
 
         // Stop if we're past the visible area
