@@ -21,11 +21,25 @@ use crate::sse;
 use crate::tools;
 use crate::usage;
 
-pub(crate) const API_URL: &str = "https://api.anthropic.com/v1/messages";
+pub(crate) const API_URL: &str = "https://api.anthropic.com/v1/messages?beta=true";
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
-pub(crate) const ANTHROPIC_BETA: &str = "oauth-2025-04-20,claude-code-20250219,interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14";
+pub(crate) const ANTHROPIC_BETA: &str =
+    "oauth-2025-04-20,interleaved-thinking-2025-05-14,claude-code-20250219";
+const TOOL_PREFIX: &str = "oc_";
+
+fn add_tool_prefix(name: &str) -> String {
+    if name.starts_with(TOOL_PREFIX) {
+        name.to_string()
+    } else {
+        format!("{TOOL_PREFIX}{name}")
+    }
+}
+
+fn strip_tool_prefix(name: &str) -> String {
+    name.strip_prefix(TOOL_PREFIX).unwrap_or(name).to_string()
+}
 
 const ANTHROPIC_MODELS: &[&str] = &["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"];
 
@@ -453,7 +467,7 @@ impl AnthropicProvider {
             .await
             .into_iter()
             .map(|t| AnthropicTool {
-                name: t.name,
+                name: add_tool_prefix(&t.name),
                 description: t.description,
                 input_schema: t.input_schema,
                 cache_control: None,
@@ -485,7 +499,7 @@ impl AnthropicProvider {
 
         // Claude-specific identity
         let mut system = vec![
-            serde_json::json!({"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}),
+            serde_json::json!({"type": "text", "text": include_str!("../prompts/claude-code-system-prompt.md")}),
             serde_json::json!({"type": "text", "text": "Your name is Henri"}),
         ];
 
@@ -528,15 +542,14 @@ impl AnthropicProvider {
         usage::network_stats().record_tx(body_bytes.len() as u64);
 
         let mut req_headers = std::collections::HashMap::new();
-        req_headers.insert("Content-Type".to_string(), "application/json".to_string());
+        req_headers.insert("content-type".to_string(), "application/json".to_string());
         req_headers.insert(
             "anthropic-version".to_string(),
             ANTHROPIC_VERSION.to_string(),
         );
         req_headers.insert("anthropic-beta".to_string(), ANTHROPIC_BETA.to_string());
-        req_headers.insert("Accept".to_string(), "text/event-stream".to_string());
         req_headers.insert(
-            "Authorization".to_string(),
+            "authorization".to_string(),
             format!("Bearer {}", access_token),
         );
 
@@ -544,11 +557,11 @@ impl AnthropicProvider {
             .client
             .http_client()
             .post(API_URL)
-            .header("Content-Type", "application/json")
+            .header("content-type", "application/json")
+            .header("user-agent", "claude-cli/2.1.2 (external, cli)")
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("anthropic-beta", ANTHROPIC_BETA)
-            .header("Accept", "text/event-stream")
-            .header("Authorization", format!("Bearer {}", access_token))
+            .header("authorization", format!("Bearer {}", access_token))
             .body(body_bytes)
             .send()
             .await
@@ -777,17 +790,18 @@ impl AnthropicProvider {
                                 let input: serde_json::Value =
                                     serde_json::from_str(&tool.input_json)
                                         .unwrap_or(serde_json::json!({}));
+                                let stripped_name = strip_tool_prefix(&tool.name);
 
                                 tool_calls.push(ToolCall {
                                     id: tool.id.clone(),
-                                    name: tool.name.clone(),
+                                    name: stripped_name.clone(),
                                     input: input.clone(),
                                     thought_signature: None,
                                 });
 
                                 content_blocks.push(ContentBlock::ToolUse {
                                     id: tool.id,
-                                    name: tool.name,
+                                    name: stripped_name,
                                     input,
                                     thought_signature: None,
                                 });
@@ -900,10 +914,11 @@ impl AnthropicProvider {
             .client
             .http_client()
             .post(url)
-            .header("Content-Type", "application/json")
+            .header("content-type", "application/json")
+            .header("user-agent", "claude-cli/2.1.2 (external, cli)")
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("anthropic-beta", ANTHROPIC_BETA)
-            .header("Authorization", format!("Bearer {}", access_token))
+            .header("authorization", format!("Bearer {}", access_token))
             .json(&count_request)
             .send()
             .await
