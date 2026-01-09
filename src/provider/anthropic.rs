@@ -26,19 +26,45 @@ const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub(crate) const ANTHROPIC_BETA: &str =
-    "oauth-2025-04-20,interleaved-thinking-2025-05-14,claude-code-20250219";
-const TOOL_PREFIX: &str = "oc_";
+    "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14";
 
-fn add_tool_prefix(name: &str) -> String {
-    if name.starts_with(TOOL_PREFIX) {
-        name.to_string()
-    } else {
-        format!("{TOOL_PREFIX}{name}")
+const CLAUDE_CODE_VERSION: &str = "2.1.2";
+
+/// Map Henri tool names to Claude Code's exact tool names.
+/// Claude Code uses PascalCase names for its tools.
+fn to_claude_code_name(name: &str) -> String {
+    match name {
+        "file_read" => "Read".to_string(),
+        "file_write" => "Write".to_string(),
+        "file_edit" => "Edit".to_string(),
+        "file_delete" => "FileDelete".to_string(),
+        "bash" => "Bash".to_string(),
+        "grep" => "Grep".to_string(),
+        "glob" => "Glob".to_string(),
+        "list_dir" => "LS".to_string(),
+        "fetch" => "Fetch".to_string(),
+        "todo_read" => "TodoRead".to_string(),
+        "todo_write" => "TodoWrite".to_string(),
+        other => other.to_string(),
     }
 }
 
-fn strip_tool_prefix(name: &str) -> String {
-    name.strip_prefix(TOOL_PREFIX).unwrap_or(name).to_string()
+/// Map Claude Code tool names back to Henri's tool names.
+fn from_claude_code_name(name: &str) -> String {
+    match name {
+        "Read" => "file_read".to_string(),
+        "Write" => "file_write".to_string(),
+        "Edit" => "file_edit".to_string(),
+        "FileDelete" => "file_delete".to_string(),
+        "Bash" => "bash".to_string(),
+        "Grep" => "grep".to_string(),
+        "Glob" => "glob".to_string(),
+        "LS" => "list_dir".to_string(),
+        "Fetch" => "fetch".to_string(),
+        "TodoRead" => "todo_read".to_string(),
+        "TodoWrite" => "todo_write".to_string(),
+        other => other.to_string(),
+    }
 }
 
 const ANTHROPIC_MODELS: &[&str] = &["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"];
@@ -467,7 +493,7 @@ impl AnthropicProvider {
             .await
             .into_iter()
             .map(|t| AnthropicTool {
-                name: add_tool_prefix(&t.name),
+                name: to_claude_code_name(&t.name),
                 description: t.description,
                 input_schema: t.input_schema,
                 cache_control: None,
@@ -558,7 +584,11 @@ impl AnthropicProvider {
             .http_client()
             .post(API_URL)
             .header("content-type", "application/json")
-            .header("user-agent", "claude-cli/2.1.2 (external, cli)")
+            .header(
+                "user-agent",
+                format!("claude-cli/{} (external, cli)", CLAUDE_CODE_VERSION),
+            )
+            .header("x-app", "cli")
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("anthropic-beta", ANTHROPIC_BETA)
             .header("authorization", format!("Bearer {}", access_token))
@@ -790,7 +820,7 @@ impl AnthropicProvider {
                                 let input: serde_json::Value =
                                     serde_json::from_str(&tool.input_json)
                                         .unwrap_or(serde_json::json!({}));
-                                let stripped_name = strip_tool_prefix(&tool.name);
+                                let stripped_name = from_claude_code_name(&tool.name);
 
                                 tool_calls.push(ToolCall {
                                     id: tool.id.clone(),
@@ -915,7 +945,11 @@ impl AnthropicProvider {
             .http_client()
             .post(url)
             .header("content-type", "application/json")
-            .header("user-agent", "claude-cli/2.1.2 (external, cli)")
+            .header(
+                "user-agent",
+                format!("claude-cli/{} (external, cli)", CLAUDE_CODE_VERSION),
+            )
+            .header("x-app", "cli")
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("anthropic-beta", ANTHROPIC_BETA)
             .header("authorization", format!("Bearer {}", access_token))
