@@ -1139,16 +1139,12 @@ pub(crate) fn render_thinking_message(
         return;
     }
 
-    // Indent thinking text
-    let mut indented = String::new();
-    for line in trimmed.lines() {
-        indented.push_str("  ");
-        indented.push_str(line.trim_end());
-        indented.push('\n');
-    }
-    if indented.ends_with('\n') {
-        indented.pop();
-    }
+    // Build text without indentation
+    let text = trimmed
+        .lines()
+        .map(|line| line.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let effective_width = (ctx.area.width as usize).saturating_sub(1).max(1);
 
@@ -1158,7 +1154,7 @@ pub(crate) fn render_thinking_message(
     let mut screen_col = 0;
     let mut prev_was_whitespace = true;
 
-    for (byte_idx, ch) in indented.char_indices() {
+    for (byte_idx, ch) in text.char_indices() {
         if ch == '\n' {
             screen_row += 1;
             screen_col = 0;
@@ -1175,7 +1171,7 @@ pub(crate) fn render_thinking_message(
 
         // Word wrap logic to match Paragraph
         if !is_whitespace && prev_was_whitespace && screen_col > 0 {
-            let word_len = word_display_width(&indented, byte_idx);
+            let word_len = word_display_width(&text, byte_idx);
             if word_len <= effective_width && screen_col + word_len > effective_width {
                 screen_row += 1;
                 screen_col = 0;
@@ -1224,7 +1220,7 @@ pub(crate) fn render_thinking_message(
             let end = if e.message_idx == ctx.message_idx {
                 e.byte_offset
             } else {
-                indented.len()
+                text.len()
             };
             (start, end)
         } else {
@@ -1239,7 +1235,7 @@ pub(crate) fn render_thinking_message(
     let mut lines_vec = Vec::new();
     let mut line_start = 0;
 
-    for line_str_raw in indented.split_inclusive('\n') {
+    for line_str_raw in text.split_inclusive('\n') {
         let line_len_full = line_str_raw.len();
         let line_end_full = line_start + line_len_full;
 

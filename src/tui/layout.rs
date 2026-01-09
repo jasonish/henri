@@ -227,18 +227,14 @@ pub(crate) fn thinking_message_display_height(msg: &ThinkingMessage, width: u16)
         return 0;
     }
 
-    // Build the indented text to match what will actually be rendered
-    let mut indented = String::new();
-    for line in trimmed.lines() {
-        indented.push_str("  ");
-        indented.push_str(line.trim_end());
-        indented.push('\n');
-    }
-    if indented.ends_with('\n') {
-        indented.pop();
-    }
+    // Build the text to match what will actually be rendered
+    let text = trimmed
+        .lines()
+        .map(|line| line.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    let lines = count_wrapped_lines(&indented, width as usize);
+    let lines = count_wrapped_lines(&text, width as usize);
     lines.min(u16::MAX as usize) as u16
 }
 
