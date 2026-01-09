@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Rendering functions for the TUI
 
-use ratatui::{
-    prelude::*,
-    widgets::{Paragraph, Wrap},
-};
+use ratatui::{prelude::*, widgets::Paragraph};
 
-use super::layout::{DIFF_GUTTER_WIDTH, TAB_WIDTH, char_display_width, word_display_width};
+use super::layout::{
+    DIFF_GUTTER_WIDTH, TAB_WIDTH, char_display_width, word_display_width,
+    wrap_line_with_hanging_indent,
+};
 use super::markdown::{
     MarkdownStyle, align_markdown_tables, find_markdown_spans, get_markdown_style,
 };
@@ -1124,7 +1124,7 @@ pub(crate) fn render_todo_list_with_selection(
     }
 }
 
-/// Render a thinking message with indentation using Paragraph with selection support
+/// Render a thinking message using Paragraph with selection support
 pub(crate) fn render_thinking_message(
     ctx: &mut RenderContext<'_, '_>,
     msg: &ThinkingMessage,
@@ -1139,49 +1139,33 @@ pub(crate) fn render_thinking_message(
         return;
     }
 
-    // Build text without indentation
-    let text = trimmed
-        .lines()
-        .map(|line| line.trim_end())
-        .collect::<Vec<_>>()
-        .join("\n");
-
     let effective_width = (ctx.area.width as usize).saturating_sub(1).max(1);
 
+    // Pre-wrap lines with hanging indent for list items
+    let mut wrapped_lines: Vec<String> = Vec::new();
+    for line in trimmed.lines() {
+        let line = line.trim_end();
+        let line_wrapped = wrap_line_with_hanging_indent(line, effective_width);
+        wrapped_lines.extend(line_wrapped);
+    }
+
+    // Build the wrapped text for position mapping and selection
+    let text = wrapped_lines.join("\n");
+
     // Populate PositionMap to enable mouse selection
-    // This logic mimics the wrapping behavior of Paragraph/Layout to map clicks to byte offsets
     let mut screen_row = 0;
     let mut screen_col = 0;
-    let mut prev_was_whitespace = true;
 
     for (byte_idx, ch) in text.char_indices() {
         if ch == '\n' {
             screen_row += 1;
             screen_col = 0;
-            prev_was_whitespace = true;
             continue;
         }
 
         let ch_width = char_display_width(ch);
         if ch_width == 0 {
             continue;
-        }
-
-        let is_whitespace = ch.is_whitespace();
-
-        // Word wrap logic to match Paragraph
-        if !is_whitespace && prev_was_whitespace && screen_col > 0 {
-            let word_len = word_display_width(&text, byte_idx);
-            if word_len <= effective_width && screen_col + word_len > effective_width {
-                screen_row += 1;
-                screen_col = 0;
-            }
-        }
-
-        // Character wrap logic
-        if screen_col + ch_width > effective_width {
-            screen_row += 1;
-            screen_col = 0;
         }
 
         // Register position if visible
@@ -1193,11 +1177,6 @@ pub(crate) fn render_thinking_message(
         }
 
         screen_col += ch_width;
-        if screen_col == effective_width {
-            screen_row += 1;
-            screen_col = 0;
-        }
-        prev_was_whitespace = is_whitespace;
     }
 
     // Determine styles
@@ -1230,8 +1209,7 @@ pub(crate) fn render_thinking_message(
         (0, 0)
     };
 
-    // Build styled lines for Paragraph
-    // We split into explicit Lines so Paragraph respects the hard breaks from the model
+    // Build styled lines for Paragraph (no wrapping needed - we pre-wrapped)
     let mut lines_vec = Vec::new();
     let mut line_start = 0;
 
@@ -1239,7 +1217,7 @@ pub(crate) fn render_thinking_message(
         let line_len_full = line_str_raw.len();
         let line_end_full = line_start + line_len_full;
 
-        // Strip trailing \n for display (Paragraph adds line breaks between Lines)
+        // Strip trailing \n for display
         let line_str_display = line_str_raw.trim_end_matches(['\n', '\r']);
         let line_end_display = line_start + line_str_display.len();
 
@@ -1252,7 +1230,6 @@ pub(crate) fn render_thinking_message(
         // Helper to add a span
         let mut add_span = |from: usize, to: usize, style: Style| {
             if from < to {
-                // Determine indices relative to this line string
                 let rel_from = from - line_start;
                 let rel_to = to - line_start;
                 if let Some(text) = line_str_display.get(rel_from..rel_to) {
@@ -1273,7 +1250,34 @@ pub(crate) fn render_thinking_message(
         line_start = line_end_full;
     }
 
-    let paragraph = Paragraph::new(lines_vec).wrap(Wrap { trim: false });
+    // Handle case where text doesn't end with newline
+    if !text.ends_with('\n') && line_start < text.len() {
+        let line_str_display = &text[line_start..];
+        let line_end_display = text.len();
+
+        let mut spans = Vec::new();
+        let s = sel_start.max(line_start).min(line_end_display);
+        let e = sel_end.max(line_start).min(line_end_display);
+
+        let mut add_span = |from: usize, to: usize, style: Style| {
+            if from < to {
+                let rel_from = from - line_start;
+                let rel_to = to - line_start;
+                if let Some(text) = line_str_display.get(rel_from..rel_to) {
+                    spans.push(Span::styled(text, style));
+                }
+            }
+        };
+
+        add_span(line_start, s, base_style);
+        add_span(s, e, selected_style);
+        add_span(e, line_end_display, base_style);
+
+        lines_vec.push(Line::from(spans));
+    }
+
+    // No wrapping needed - lines are pre-wrapped
+    let paragraph = Paragraph::new(lines_vec);
 
     // Render with adjusted width to match layout calculation
     let mut area = ctx.area;

@@ -55,6 +55,112 @@ impl Default for LayoutCache {
     }
 }
 
+/// Get the display width of a list item prefix (e.g., "1. ", "- ", "10. ").
+/// Returns the width if the line starts with a list marker, otherwise None.
+pub(crate) fn list_prefix_width(line: &str) -> Option<usize> {
+    let trimmed = line.trim_start();
+    let leading_spaces = line.len() - trimmed.len();
+
+    // Check for bullet list: "- " or "* "
+    if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+        return Some(leading_spaces + 2);
+    }
+
+    // Check for numbered list: "N. " where N is one or more digits
+    let bytes = trimmed.as_bytes();
+    if !bytes.is_empty() && bytes[0].is_ascii_digit() {
+        let mut i = 0;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        // Check for ". " after digits
+        if i < bytes.len() && bytes[i] == b'.' && i + 1 < bytes.len() && bytes[i + 1] == b' ' {
+            return Some(leading_spaces + i + 2);
+        }
+    }
+
+    None
+}
+
+/// Wrap a single line with a hanging indent for list items.
+/// Returns a vector of wrapped lines (as String).
+/// If the line is not a list item or doesn't need wrapping, returns a single-element vec.
+pub(crate) fn wrap_line_with_hanging_indent(line: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![line.to_string()];
+    }
+
+    let effective_width = width.saturating_sub(1).max(1);
+    let line_width: usize = line.chars().map(char_display_width).sum();
+
+    // If line fits, no wrapping needed
+    if line_width <= effective_width {
+        return vec![line.to_string()];
+    }
+
+    let indent_width = list_prefix_width(line).unwrap_or(0);
+    let indent_str: String = " ".repeat(indent_width);
+
+    let mut result = Vec::new();
+    let mut current_line = String::new();
+    let mut current_width = 0;
+
+    // Split into words for word wrapping
+    let mut chars = line.char_indices().peekable();
+    let mut word_start = 0;
+
+    while let Some((idx, ch)) = chars.next() {
+        let is_last = chars.peek().is_none();
+
+        // Detect word boundaries
+        if ch.is_whitespace() || is_last {
+            let word_end = if is_last { line.len() } else { idx };
+            let word = &line[word_start..word_end];
+            let word_width: usize = word.chars().map(char_display_width).sum();
+
+            // Check if word fits on current line
+            let space_needed = if current_line.is_empty() { 0 } else { 1 };
+            if current_width + space_needed + word_width <= effective_width {
+                if !current_line.is_empty() {
+                    current_line.push(' ');
+                    current_width += 1;
+                }
+                current_line.push_str(word);
+                current_width += word_width;
+            } else {
+                // Word doesn't fit, start new line
+                if !current_line.is_empty() {
+                    result.push(current_line);
+                }
+                // Continuation lines get the hanging indent
+                current_line = format!("{}{}", indent_str, word);
+                current_width = indent_width + word_width;
+            }
+
+            // Skip whitespace between words
+            word_start = idx + ch.len_utf8();
+            while let Some((_, c)) = chars.peek() {
+                if c.is_whitespace() {
+                    word_start += c.len_utf8();
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    if !current_line.is_empty() {
+        result.push(current_line);
+    }
+
+    if result.is_empty() {
+        vec![line.to_string()]
+    } else {
+        result
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct MessageSegment {
     pub index: usize,
@@ -227,15 +333,17 @@ pub(crate) fn thinking_message_display_height(msg: &ThinkingMessage, width: u16)
         return 0;
     }
 
-    // Build the text to match what will actually be rendered
-    let text = trimmed
-        .lines()
-        .map(|line| line.trim_end())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let effective_width = (width as usize).saturating_sub(1).max(1);
 
-    let lines = count_wrapped_lines(&text, width as usize);
-    lines.min(u16::MAX as usize) as u16
+    // Pre-wrap lines with hanging indent for list items (matching render logic)
+    let mut total_lines = 0usize;
+    for line in trimmed.lines() {
+        let line = line.trim_end();
+        let wrapped = wrap_line_with_hanging_indent(line, effective_width);
+        total_lines += wrapped.len();
+    }
+
+    total_lines.max(1).min(u16::MAX as usize) as u16
 }
 
 pub(crate) fn tool_calls_message_display_height(msg: &ToolCallsMessage, width: u16) -> u16 {
