@@ -4,6 +4,8 @@
 
 ### Added
 
+- TUI: Markdown formatting in thinking messages - bold (`**text**`) and inline
+  code (`` `code` ``) are now rendered with appropriate styling
 - TUI: Mouse text selection now copies to PRIMARY selection (for middle-click
   paste) in addition to the clipboard (for Ctrl+V paste), matching standard
   terminal behavior

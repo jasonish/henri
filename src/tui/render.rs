@@ -1141,7 +1141,7 @@ pub(crate) fn render_todo_list_with_selection(
     }
 }
 
-/// Render a thinking message using Paragraph with selection support
+/// Render a thinking message with direct buffer writes and selection support
 pub(crate) fn render_thinking_message(
     ctx: &mut RenderContext<'_, '_>,
     msg: &ThinkingMessage,
@@ -1166,34 +1166,21 @@ pub(crate) fn render_thinking_message(
         wrapped_lines.extend(line_wrapped);
     }
 
-    // Build the wrapped text for position mapping and selection
+    // Build the wrapped text for position mapping and rendering
     let text = wrapped_lines.join("\n");
 
-    // Populate PositionMap to enable mouse selection
-    let mut screen_row = 0;
-    let mut screen_col = 0;
+    // Find markdown spans for bold formatting
+    let markdown_spans = find_markdown_spans(&text);
 
-    for (byte_idx, ch) in text.char_indices() {
-        if ch == '\n' {
-            screen_row += 1;
-            screen_col = 0;
-            continue;
+    // Fill background if specified
+    if let Some(bg) = bg_color {
+        for y in ctx.area.y..ctx.area.y + ctx.area.height {
+            for x in ctx.area.x..ctx.area.x + ctx.area.width {
+                if let Some(cell) = ctx.frame.buffer_mut().cell_mut((x, y)) {
+                    cell.set_bg(bg);
+                }
+            }
         }
-
-        let ch_width = char_display_width(ch);
-        if ch_width == 0 {
-            continue;
-        }
-
-        // Register position if visible
-        if screen_row < ctx.area.height as usize {
-            let x = ctx.area.x + screen_col as u16;
-            let y = ctx.area.y + screen_row as u16;
-            ctx.position_map
-                .set(x, y, ContentPosition::new(ctx.message_idx, byte_idx));
-        }
-
-        screen_col += ch_width;
     }
 
     // Determine styles
@@ -1205,104 +1192,76 @@ pub(crate) fn render_thinking_message(
         .fg(Color::White)
         .bg(Color::Rgb(60, 60, 120));
 
-    // Calculate selection range within this message
-    let (sel_start, sel_end) = if let Some((s, e)) = ctx.selection.ordered() {
-        if s.message_idx <= ctx.message_idx && e.message_idx >= ctx.message_idx {
-            let start = if s.message_idx == ctx.message_idx {
-                s.byte_offset
-            } else {
-                0
-            };
-            let end = if e.message_idx == ctx.message_idx {
-                e.byte_offset
-            } else {
-                text.len()
-            };
-            (start, end)
-        } else {
-            (0, 0)
-        }
-    } else {
-        (0, 0)
+    // Selection helper
+    let (sel_start, sel_end) = ctx
+        .selection
+        .ordered()
+        .filter(|(s, e)| s != e)
+        .map_or((None, None), |(s, e)| (Some(s), Some(e)));
+
+    let in_selection_range = |msg_idx: usize, byte_offset: usize| -> bool {
+        let Some(start) = sel_start else {
+            return false;
+        };
+        let Some(end) = sel_end else { return false };
+        let pos = ContentPosition::new(msg_idx, byte_offset);
+        pos >= start && pos <= end
     };
 
-    // Build styled lines for Paragraph (no wrapping needed - we pre-wrapped)
-    let mut lines_vec = Vec::new();
-    let mut line_start = 0;
+    let mut screen_row: i32 = -(ctx.skip_top as i32);
+    let mut screen_col: usize = 0;
 
-    for line_str_raw in text.split_inclusive('\n') {
-        let line_len_full = line_str_raw.len();
-        let line_end_full = line_start + line_len_full;
+    for (byte_idx, ch) in text.char_indices() {
+        // Check for markdown formatting
+        let (md_style, is_marker) = get_markdown_style(byte_idx, &markdown_spans);
+        if is_marker {
+            // Skip marker characters (**, `)
+            continue;
+        }
 
-        // Strip trailing \n for display
-        let line_str_display = line_str_raw.trim_end_matches(['\n', '\r']);
-        let line_end_display = line_start + line_str_display.len();
+        if ch == '\n' {
+            screen_row += 1;
+            screen_col = 0;
+            continue;
+        }
 
-        let mut spans = Vec::new();
+        let ch_width = char_display_width(ch);
+        if ch_width == 0 {
+            continue;
+        }
 
-        // Intersect [line_start, line_end_display) with [sel_start, sel_end)
-        let s = sel_start.max(line_start).min(line_end_display);
-        let e = sel_end.max(line_start).min(line_end_display);
+        if screen_row >= 0 && screen_row < ctx.area.height as i32 {
+            let x = ctx.area.x + screen_col as u16;
+            let y = ctx.area.y + screen_row as u16;
 
-        // Helper to add a span
-        let mut add_span = |from: usize, to: usize, style: Style| {
-            if from < to {
-                let rel_from = from - line_start;
-                let rel_to = to - line_start;
-                if let Some(text) = line_str_display.get(rel_from..rel_to) {
-                    spans.push(Span::styled(text, style));
+            // Register position for mouse selection
+            ctx.position_map
+                .set(x, y, ContentPosition::new(ctx.message_idx, byte_idx));
+
+            // Determine style based on selection and markdown
+            let is_selected = in_selection_range(ctx.message_idx, byte_idx);
+            let style = if is_selected {
+                selected_style
+            } else {
+                // Apply markdown styling
+                match md_style {
+                    MarkdownStyle::Bold => base_style.add_modifier(Modifier::BOLD),
+                    MarkdownStyle::InlineCode => base_style.fg(Color::Cyan),
+                    MarkdownStyle::Normal => base_style,
                 }
-            }
-        };
+            };
 
-        // 1. Before selection
-        add_span(line_start, s, base_style);
-        // 2. Selected
-        add_span(s, e, selected_style);
-        // 3. After selection
-        add_span(e, line_end_display, base_style);
+            // Render character to buffer
+            let max_x = ctx.area.x + ctx.area.width;
+            render_char_to_cell(ctx.frame.buffer_mut(), x, y, ch, style, max_x);
+        }
 
-        lines_vec.push(Line::from(spans));
+        screen_col += ch_width;
 
-        line_start = line_end_full;
+        if screen_row >= ctx.area.height as i32 {
+            break;
+        }
     }
-
-    // Handle case where text doesn't end with newline
-    if !text.ends_with('\n') && line_start < text.len() {
-        let line_str_display = &text[line_start..];
-        let line_end_display = text.len();
-
-        let mut spans = Vec::new();
-        let s = sel_start.max(line_start).min(line_end_display);
-        let e = sel_end.max(line_start).min(line_end_display);
-
-        let mut add_span = |from: usize, to: usize, style: Style| {
-            if from < to {
-                let rel_from = from - line_start;
-                let rel_to = to - line_start;
-                if let Some(text) = line_str_display.get(rel_from..rel_to) {
-                    spans.push(Span::styled(text, style));
-                }
-            }
-        };
-
-        add_span(line_start, s, base_style);
-        add_span(s, e, selected_style);
-        add_span(e, line_end_display, base_style);
-
-        lines_vec.push(Line::from(spans));
-    }
-
-    // No wrapping needed - lines are pre-wrapped
-    let paragraph = Paragraph::new(lines_vec);
-
-    // Render with adjusted width to match layout calculation
-    let mut area = ctx.area;
-    if area.width > 0 {
-        area.width = area.width.saturating_sub(1);
-    }
-
-    ctx.frame.render_widget(paragraph, area);
 }
 
 /// Render a tool calls message with indentation
