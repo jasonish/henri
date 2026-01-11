@@ -25,8 +25,7 @@ pub(crate) const API_URL: &str = "https://api.anthropic.com/v1/messages?beta=tru
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 pub(crate) const ANTHROPIC_VERSION: &str = "2023-06-01";
-pub(crate) const ANTHROPIC_BETA: &str =
-    "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14";
+pub(crate) const ANTHROPIC_BETA: &str = "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14";
 
 const CLAUDE_CODE_VERSION: &str = "2.1.2";
 
@@ -266,18 +265,10 @@ struct ThinkingConfig {
 }
 
 #[derive(Serialize)]
-struct CacheControl {
-    #[serde(rename = "type")]
-    kind: String,
-}
-
-#[derive(Serialize)]
 struct AnthropicTool {
     name: String,
     description: String,
     input_schema: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -396,116 +387,197 @@ impl AnthropicProvider {
     }
 
     fn build_messages(&self, messages: &[Message]) -> Vec<serde_json::Value> {
-        messages
-            .iter()
-            .map(|m| {
-                let role = match m.role {
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                    Role::System => "user",
-                };
+        let mut params: Vec<serde_json::Value> = Vec::new();
+        let mut i = 0;
 
-                let content = match &m.content {
-                    MessageContent::Text(text) => {
-                        serde_json::json!([{"type": "text", "text": text}])
+        while i < messages.len() {
+            let msg = &messages[i];
+
+            // Check if this is a user message with tool results, and subsequent messages are also tool results
+            if msg.is_tool_result_only() {
+                let mut tool_results: Vec<serde_json::Value> = Vec::new();
+
+                // Process current message's tool results
+                if let MessageContent::Blocks(blocks) = &msg.content {
+                    for block in blocks {
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } = block
+                        {
+                            let api_content = if *is_error && content.is_empty() {
+                                "(Tool execution failed with no output)"
+                            } else {
+                                content.as_str()
+                            };
+
+                            let mut obj = serde_json::json!({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "content": api_content
+                            });
+                            if *is_error {
+                                obj["is_error"] = serde_json::json!(true);
+                            }
+                            tool_results.push(obj);
+                        }
                     }
-                    MessageContent::Blocks(blocks) => {
-                        let content_blocks: Vec<serde_json::Value> = blocks
-                            .iter()
-                            .map(|b| match b {
-                                ContentBlock::Text { text } => {
-                                    serde_json::json!({"type": "text", "text": text})
+                }
+
+                // Look ahead for consecutive tool result messages
+                let mut j = i + 1;
+                while j < messages.len() && messages[j].is_tool_result_only() {
+                    if let MessageContent::Blocks(blocks) = &messages[j].content {
+                        for block in blocks {
+                            if let ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } = block
+                            {
+                                let api_content = if *is_error && content.is_empty() {
+                                    "(Tool execution failed with no output)"
+                                } else {
+                                    content.as_str()
+                                };
+
+                                let mut obj = serde_json::json!({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use_id,
+                                    "content": api_content
+                                });
+                                if *is_error {
+                                    obj["is_error"] = serde_json::json!(true);
                                 }
-                                ContentBlock::Image { mime_type, data } => {
-                                    let base64_data = base64::engine::general_purpose::STANDARD.encode(data);
-                                    serde_json::json!({
-                                        "type": "image",
-                                        "source": {
-                                            "type": "base64",
-                                            "media_type": mime_type,
-                                            "data": base64_data
-                                        }
-                                    })
-                                }
-                                ContentBlock::Thinking { thinking, provider_data } => {
-                                    let signature = provider_data
-                                        .as_ref()
-                                        .and_then(|d| d.get("signature"))
-                                        .and_then(|s| s.as_str())
-                                        .unwrap_or("");
+                                tool_results.push(obj);
+                            }
+                        }
+                    }
+                    j += 1;
+                }
+
+                // Skip the messages we've already processed
+                i = j;
+
+                // Add a single user message with all tool results
+                params.push(serde_json::json!({
+                    "role": "user",
+                    "content": tool_results
+                }));
+                continue;
+            }
+
+            // Normal message processing
+            let role = match msg.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "user",
+            };
+
+            let content = match &msg.content {
+                MessageContent::Text(text) => {
+                    serde_json::json!([{"type": "text", "text": text}])
+                }
+                MessageContent::Blocks(blocks) => {
+                    let content_blocks: Vec<serde_json::Value> = blocks
+                        .iter()
+                        .map(|b| match b {
+                            ContentBlock::Text { text } => {
+                                serde_json::json!({"type": "text", "text": text})
+                            }
+                            ContentBlock::Image { mime_type, data } => {
+                                let base64_data = base64::engine::general_purpose::STANDARD.encode(data);
+                                serde_json::json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime_type,
+                                        "data": base64_data
+                                    }
+                                })
+                            }
+                            ContentBlock::Thinking { thinking, provider_data } => {
+                                let signature = provider_data
+                                    .as_ref()
+                                    .and_then(|d| d.get("signature"))
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("");
+
+                                if signature.is_empty() {
+                                    // If signature is empty (e.g. from aborted stream), convert to text
+                                    // to avoid API rejection
+                                    serde_json::json!({"type": "text", "text": thinking})
+                                } else {
                                     serde_json::json!({"type": "thinking", "thinking": thinking, "signature": signature})
                                 }
-                                ContentBlock::ToolUse { id, name, input, .. } => {
-                                    serde_json::json!({
-                                        "type": "tool_use",
-                                        "id": id,
-                                        "name": name,
-                                        "input": input
-                                    })
-                                }
-                                ContentBlock::ToolResult {
-                                    tool_use_id,
-                                    content,
-                                    is_error,
-                                } => {
-                                    // Anthropic API requires non-empty content when is_error is true
-                                    let api_content = if *is_error && content.is_empty() {
-                                        "(Tool execution failed with no output)"
-                                    } else {
-                                        content.as_str()
-                                    };
+                            }
+                            ContentBlock::ToolUse { id, name, input, .. } => {
+                                serde_json::json!({
+                                    "type": "tool_use",
+                                    "id": id,
+                                    "name": name,
+                                    "input": input
+                                })
+                            }
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            } => {
+                                // Anthropic API requires non-empty content when is_error is true
+                                let api_content = if *is_error && content.is_empty() {
+                                    "(Tool execution failed with no output)"
+                                } else {
+                                    content.as_str()
+                                };
 
-                                    let mut obj = serde_json::json!({
-                                        "type": "tool_result",
-                                        "tool_use_id": tool_use_id,
-                                        "content": api_content
-                                    });
-                                    if *is_error {
-                                        obj["is_error"] = serde_json::json!(true);
-                                    }
-                                    obj
+                                let mut obj = serde_json::json!({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use_id,
+                                    "content": api_content
+                                });
+                                if *is_error {
+                                    obj["is_error"] = serde_json::json!(true);
                                 }
-                                ContentBlock::Summary { summary, messages_compacted } => {
-                                    // Convert summary to text block for API compatibility
-                                    serde_json::json!({
-                                        "type": "text",
-                                        "text": format!("[Summary of {} previous messages]\n\n{}", messages_compacted, summary)
-                                    })
-                                }
-                            })
-                            .collect();
+                                obj
+                            }
+                            ContentBlock::Summary { summary, messages_compacted } => {
+                                // Convert summary to text block for API compatibility
+                                serde_json::json!({
+                                    "type": "text",
+                                    "text": format!("[Summary of {} previous messages]\n\n{}", messages_compacted, summary)
+                                })
+                            }
+                        })
+                        .collect();
 
-                        serde_json::Value::Array(content_blocks)
-                    }
-                };
+                    serde_json::Value::Array(content_blocks)
+                }
+            };
 
-                serde_json::json!({
-                    "role": role,
-                    "content": content
-                })
-            })
-            .collect()
+            params.push(serde_json::json!({
+                "role": role,
+                "content": content
+            }));
+
+            i += 1;
+        }
+
+        params
     }
 
     /// Build the request struct for the Anthropic API
     async fn build_request(&self, messages: &[Message]) -> AnthropicRequest {
-        let mut tools: Vec<AnthropicTool> = tools::all_definitions(&self.services)
+        let tools: Vec<AnthropicTool> = tools::all_definitions(&self.services)
             .await
             .into_iter()
             .map(|t| AnthropicTool {
                 name: to_claude_code_name(&t.name),
                 description: t.description,
                 input_schema: t.input_schema,
-                cache_control: None,
             })
             .collect();
-
-        // Add cache control to the last tool to enable prompt caching
-        if let Some(last) = tools.last_mut() {
-            last.cache_control = Some(CacheControl {
-                kind: "ephemeral".to_string(),
-            });
-        }
 
         let thinking = match self.thinking_mode.as_deref() {
             Some("low") => Some(ThinkingConfig {
@@ -523,12 +595,14 @@ impl AnthropicProvider {
             _ => None,
         };
 
-        // Claude-specific identity
-        let mut system = vec![
-            serde_json::json!({"type": "text", "text": include_str!("../prompts/claude-code-system-prompt.md")}),
-            serde_json::json!({"type": "text", "text": "Your name is Henri"}),
-        ];
+        // OAuth mode: MUST start with Claude Code identity
+        let mut system = vec![serde_json::json!({
+            "type": "text",
+            "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+            "cache_control": {"type": "ephemeral"}
+        })];
 
+        // Add Henri-specific system prompts
         for part in system_prompt() {
             system.push(serde_json::json!({"type": "text", "text": part}));
         }
@@ -541,7 +615,17 @@ impl AnthropicProvider {
             system[len - 2]["cache_control"] = serde_json::json!({"type": "ephemeral"});
         }
 
-        let built_messages = self.build_messages(messages);
+        let mut built_messages = self.build_messages(messages);
+
+        // Add cache control to the last user message to enable conversation history caching.
+        if let Some(last_msg) = built_messages.last_mut()
+            && last_msg["role"] == "user"
+            && let Some(content) = last_msg.get_mut("content")
+            && let Some(blocks) = content.as_array_mut()
+            && let Some(last_block) = blocks.last_mut()
+        {
+            last_block["cache_control"] = serde_json::json!({"type": "ephemeral"});
+        }
 
         AnthropicRequest {
             model: self.model.clone(),
@@ -567,30 +651,47 @@ impl AnthropicProvider {
         let body_bytes = serde_json::to_vec(&request)?;
         usage::network_stats().record_tx(body_bytes.len() as u64);
 
+        // Build headers for transaction logging
         let mut req_headers = std::collections::HashMap::new();
         req_headers.insert("content-type".to_string(), "application/json".to_string());
+        req_headers.insert("accept".to_string(), "application/json".to_string());
         req_headers.insert(
             "anthropic-version".to_string(),
             ANTHROPIC_VERSION.to_string(),
         );
         req_headers.insert("anthropic-beta".to_string(), ANTHROPIC_BETA.to_string());
+
+        // OAuth mode: Add headers to mimic Claude Code exactly
+        req_headers.insert(
+            "user-agent".to_string(),
+            format!("claude-cli/{} (external, cli)", CLAUDE_CODE_VERSION),
+        );
+        req_headers.insert("x-app".to_string(), "cli".to_string());
+        req_headers.insert(
+            "anthropic-dangerous-direct-browser-access".to_string(),
+            "true".to_string(),
+        );
+
         req_headers.insert(
             "authorization".to_string(),
             format!("Bearer {}", access_token),
         );
 
+        // Build HTTP request with the same headers
         let response = self
             .client
             .http_client()
             .post(API_URL)
             .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", ANTHROPIC_BETA)
             .header(
                 "user-agent",
                 format!("claude-cli/{} (external, cli)", CLAUDE_CODE_VERSION),
             )
             .header("x-app", "cli")
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", ANTHROPIC_BETA)
+            .header("anthropic-dangerous-direct-browser-access", "true")
             .header("authorization", format!("Bearer {}", access_token))
             .body(body_bytes)
             .send()
@@ -945,13 +1046,15 @@ impl AnthropicProvider {
             .http_client()
             .post(url)
             .header("content-type", "application/json")
+            .header("accept", "application/json")
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", ANTHROPIC_BETA)
             .header(
                 "user-agent",
                 format!("claude-cli/{} (external, cli)", CLAUDE_CODE_VERSION),
             )
             .header("x-app", "cli")
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("anthropic-beta", ANTHROPIC_BETA)
+            .header("anthropic-dangerous-direct-browser-access", "true")
             .header("authorization", format!("Bearer {}", access_token))
             .json(&count_request)
             .send()

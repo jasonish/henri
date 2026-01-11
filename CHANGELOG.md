@@ -39,8 +39,19 @@
 
 ### Fixed
 
+- Anthropic OAuth: Updated API request headers and scopes to match Claude Code
+  CLI, including `org:create_api_key` scope, `fine-grained-tool-streaming`
+  beta feature, and `anthropic-dangerous-direct-browser-access` header
 - Anthropic provider: HTTP headers now use lowercase naming and include user-agent
   matching Claude CLI format, ensuring better compatibility with rate limit endpoints
+- Anthropic provider: Now uses Claude Code headers unconditionally, removing
+  OAuth vs API key distinction that was causing unnecessary complexity
+- Anthropic provider: Merge consecutive tool_result messages into a single user
+  message to avoid API issues with adjacent user messages
+- Anthropic provider: Convert thinking blocks with empty signatures (from aborted
+  streams) to text blocks to avoid API rejection
+- Anthropic provider: Moved prompt cache control to conversation history (last
+  user message) for more effective caching
 - TUI: Improved text selection within thinking blocks by properly handling indentation and line wrapping
 - TUI: Fixed wrapped lines starting with a space when whitespace caused the wrap;
   whitespace at column 0 after wrapping is now skipped for cleaner text display

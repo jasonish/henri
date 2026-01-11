@@ -1005,7 +1005,7 @@ async fn login_claude_oauth(auth_url: &str, target_provider_id: Option<String>) 
 
     let client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
     let redirect_uri = "https://console.anthropic.com/oauth/code/callback";
-    let scopes = "user:profile user:inference";
+    let scopes = "org:create_api_key user:profile user:inference";
 
     let full_auth_url = format!(
         "{}?code=true&client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
