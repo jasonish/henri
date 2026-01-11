@@ -34,6 +34,8 @@
 - Line length truncation in file_read tool: lines exceeding 2048 characters
   are now truncated with total length reported, preventing memory issues
   when reading files with extremely long lines
+- Antigravity provider: Added "xhigh" thinking mode for Claude models with
+  48,000 token budget, complementing existing off/low/medium/high modes
 
 ### Fixed
 

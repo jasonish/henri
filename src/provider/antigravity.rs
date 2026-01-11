@@ -166,7 +166,7 @@ impl AntigravityProvider {
     /// Returns the available thinking modes for the given model.
     pub(crate) fn thinking_modes(model: &str) -> &'static [&'static str] {
         if model.starts_with("claude-") {
-            &["off", "low", "medium", "high"]
+            &["off", "low", "medium", "high", "xhigh"]
         } else if model == "gemini-3-flash" {
             &["minimal", "low", "medium", "high"]
         } else if model.starts_with("gemini-") {
@@ -462,6 +462,7 @@ impl AntigravityProvider {
                 Some("low") => 4000,
                 Some("medium") => 16000,
                 Some("high") => 32000,
+                Some("xhigh") => 48000,
                 _ => 0,
             };
             if budget > 0 {
