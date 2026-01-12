@@ -36,6 +36,8 @@
   when reading files with extremely long lines
 - Antigravity provider: Added "xhigh" thinking mode for Claude models with
   48,000 token budget, complementing existing off/low/medium/high modes
+- file_read tool: Added defensive limits (2000 lines or 50KB) with pagination
+  hints, preventing unbounded responses when reading large files
 
 ### Fixed
 

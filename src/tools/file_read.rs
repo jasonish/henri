@@ -11,6 +11,12 @@ use super::{Tool, ToolDefinition, ToolResult};
 /// Maximum number of characters to return per line before truncation.
 const MAX_LINE_LENGTH: usize = 2048;
 
+/// Maximum number of lines to return before requiring pagination.
+const MAX_LINES: usize = 2000;
+
+/// Maximum output size in bytes before requiring pagination.
+const MAX_OUTPUT_SIZE: usize = 50 * 1024; // 50KB
+
 /// Tool for reading file contents
 pub(crate) struct FileRead;
 
@@ -79,35 +85,48 @@ impl Tool for FileRead {
 
         let reader = BufReader::new(file);
         let offset = input.offset.unwrap_or(0);
+        let user_limit = input.limit;
         let mut output = String::new();
         let mut line_count = 0;
+        // Tracks where we stopped if a defensive limit was hit: (line_num, reason)
+        let mut truncated_at: Option<(usize, &str)> = None;
 
         for (line_num, line_result) in BoundedLineReader::new(reader, MAX_LINE_LENGTH).enumerate() {
-            // Skip lines before offset
             if line_num < offset {
                 continue;
             }
 
-            // Check if we've hit the limit
-            if let Some(limit) = input.limit
+            // User-specified limit takes priority (no pagination hint needed)
+            if let Some(limit) = user_limit
                 && line_count >= limit
             {
                 break;
             }
 
+            if line_count >= MAX_LINES {
+                truncated_at = Some((line_num, "line limit"));
+                break;
+            }
+
             match line_result {
                 Ok((line, truncated_total)) => {
-                    // Format with 1-based line numbers for display
-                    if let Some(total_len) = truncated_total {
-                        output.push_str(&format!(
+                    let formatted_line = if let Some(total_len) = truncated_total {
+                        format!(
                             "{:6}\t{}... <truncated, total length: {}>\n",
                             line_num + 1,
                             line,
                             total_len
-                        ));
+                        )
                     } else {
-                        output.push_str(&format!("{:6}\t{}\n", line_num + 1, line));
+                        format!("{:6}\t{}\n", line_num + 1, line)
+                    };
+
+                    if output.len() + formatted_line.len() > MAX_OUTPUT_SIZE {
+                        truncated_at = Some((line_num, "size limit"));
+                        break;
                     }
+
+                    output.push_str(&formatted_line);
                     line_count += 1;
                 }
                 Err(e) => {
@@ -127,6 +146,14 @@ impl Tool for FileRead {
                 );
             }
             output = "(empty file)\n".to_string();
+        }
+
+        if let Some((line_num, reason)) = truncated_at {
+            let size_kb = output.len() / 1024;
+            output.push_str(&format!(
+                "\n--- Output truncated ({reason}, {line_count} lines, ~{size_kb}KB) ---\n\
+                 Use offset={line_num} to continue reading\n"
+            ));
         }
 
         ToolResult::success(tool_use_id, output)
