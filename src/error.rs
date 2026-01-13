@@ -3,6 +3,45 @@
 
 use thiserror::Error;
 
+/// Extract a concise error message from common API error JSON formats.
+/// Handles Google, Anthropic, OpenAI, and similar API error structures.
+fn extract_error_message(json: &serde_json::Value) -> Option<String> {
+    // Common patterns:
+    // Google: {"error": {"message": "...", "status": "...", "reason": "..."}}
+    // Anthropic: {"error": {"type": "...", "message": "..."}}
+    // OpenAI: {"error": {"message": "...", "type": "..."}}
+    // Simple: {"message": "..."} or {"error": "..."}
+
+    // Try nested error object first
+    if let Some(error_obj) = json.get("error") {
+        // If error is a string directly
+        if let Some(msg) = error_obj.as_str() {
+            return Some(msg.to_string());
+        }
+
+        // If error is an object, extract the message field
+        if let Some(msg) = error_obj.get("message").and_then(|v| v.as_str()) {
+            // Optionally include status/type for context
+            let status = error_obj
+                .get("status")
+                .and_then(|v| v.as_str())
+                .or_else(|| error_obj.get("type").and_then(|v| v.as_str()));
+
+            if let Some(status) = status {
+                return Some(format!("{}: {}", status, msg));
+            }
+            return Some(msg.to_string());
+        }
+    }
+
+    // Try top-level message
+    if let Some(msg) = json.get("message").and_then(|v| v.as_str()) {
+        return Some(msg.to_string());
+    }
+
+    None
+}
+
 #[derive(Error, Debug)]
 pub(crate) enum Error {
     #[error("Authentication error: {0}")]
@@ -43,9 +82,6 @@ pub(crate) enum Error {
     #[error("Interrupted by user")]
     Interrupted,
 
-    #[error("MCP error: {0}")]
-    Mcp(String),
-
     #[error("LSP error: {0}")]
     Lsp(String),
 
@@ -54,15 +90,14 @@ pub(crate) enum Error {
 }
 
 impl Error {
-    /// Returns a concise message suitable for display in the TUI.
-    /// For API errors, returns just the response body without the status prefix.
-    /// If the message is JSON, it will be pretty-printed.
-    pub(crate) fn tui_message(&self) -> String {
+    /// Returns a concise message suitable for display.
+    /// For API errors, extracts a human-readable message from JSON error responses.
+    pub(crate) fn display_message(&self) -> String {
         match self {
             Error::Api { message, .. } | Error::Retryable { message, .. } => {
-                // Try to pretty-print if it's JSON
+                // Try to extract a concise message from JSON error responses
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(message) {
-                    serde_json::to_string_pretty(&json).unwrap_or_else(|_| message.clone())
+                    extract_error_message(&json).unwrap_or_else(|| message.clone())
                 } else {
                     message.clone()
                 }
@@ -78,3 +113,85 @@ impl Error {
 }
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_display_message_google_api_error() {
+        // Google API error format with status and message
+        let json = r#"{
+            "error": {
+                "code": 429,
+                "message": "No capacity available for model claude-opus-4-5-thinking on the server",
+                "status": "RESOURCE_EXHAUSTED"
+            }
+        }"#;
+        let err = Error::Retryable {
+            status: 429,
+            message: json.to_string(),
+        };
+        assert_eq!(
+            err.display_message(),
+            "RESOURCE_EXHAUSTED: No capacity available for model claude-opus-4-5-thinking on the server"
+        );
+    }
+
+    #[test]
+    fn test_display_message_openai_error() {
+        // OpenAI error format with type and message
+        let json = r#"{"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}}"#;
+        let err = Error::Api {
+            status: 429,
+            message: json.to_string(),
+        };
+        assert_eq!(
+            err.display_message(),
+            "rate_limit_error: Rate limit exceeded"
+        );
+    }
+
+    #[test]
+    fn test_display_message_simple_error_string() {
+        // Simple error string (not JSON)
+        let err = Error::Retryable {
+            status: 500,
+            message: "Internal server error".to_string(),
+        };
+        assert_eq!(err.display_message(), "Internal server error");
+    }
+
+    #[test]
+    fn test_display_message_message_only() {
+        // JSON with just error.message, no status/type
+        let json = r#"{"error": {"message": "Something went wrong"}}"#;
+        let err = Error::Api {
+            status: 500,
+            message: json.to_string(),
+        };
+        assert_eq!(err.display_message(), "Something went wrong");
+    }
+
+    #[test]
+    fn test_display_message_error_as_string() {
+        // JSON where error is a direct string
+        let json = r#"{"error": "Rate limit exceeded"}"#;
+        let err = Error::Retryable {
+            status: 429,
+            message: json.to_string(),
+        };
+        assert_eq!(err.display_message(), "Rate limit exceeded");
+    }
+
+    #[test]
+    fn test_display_message_top_level_message() {
+        // JSON with top-level message
+        let json = r#"{"message": "Something failed"}"#;
+        let err = Error::Api {
+            status: 400,
+            message: json.to_string(),
+        };
+        assert_eq!(err.display_message(), "Something failed");
+    }
+}

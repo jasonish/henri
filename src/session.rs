@@ -13,7 +13,6 @@
 //!     {session_id}.jsonl           # One file per session
 //! ```
 
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -26,50 +25,12 @@ use sha2::{Digest, Sha256};
 
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
 use crate::providers::ModelProvider;
-use crate::tools::todo::{get_todos, set_todos};
-use crate::tools::{TodoItem, format_tool_call_description};
+use crate::tools::TodoItem;
+
+use crate::tools::format_tool_call_description;
+use crate::tools::todo::{clear_todos, get_todos, set_todos};
 
 const SESSION_VERSION: u32 = 2;
-
-/// Rich intermediate representation for session replay
-#[derive(Debug, Clone)]
-pub(crate) struct SessionReplayMessage {
-    pub role: Role,
-    pub segments: Vec<ReplaySegment>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum ReplaySegment {
-    UserText {
-        text: String,
-        has_images: bool,
-    },
-    Thinking {
-        text: String,
-    },
-    ToolCall {
-        description: String,
-        status: ToolStatus,
-    },
-    ToolResult {
-        is_error: bool,
-        error_preview: Option<String>,
-    },
-    Text {
-        text: String,
-    },
-    Summary {
-        summary: String,
-        messages_compacted: usize,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum ToolStatus {
-    Pending,
-    Success,
-    Error,
-}
 
 /// Session metadata stored as the first line of the JSONL file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,18 +74,10 @@ pub(crate) struct SessionMeta {
 pub(crate) struct SessionInfo {
     pub id: String,
     pub saved_at: DateTime<Utc>,
-    pub model_id: String,
+    pub _model_id: String,
     pub _message_count: usize,
     /// First user message (truncated) for preview
     pub preview: Option<String>,
-}
-
-impl SessionInfo {
-    /// Format this session info as a display string for menus.
-    pub(crate) fn display_string(&self) -> String {
-        let preview = self.preview.as_deref().unwrap_or("No preview");
-        format!("{} ({})", preview, format_age(&self.saved_at))
-    }
 }
 
 /// Session state loaded from disk (metadata + messages).
@@ -134,7 +87,7 @@ pub(crate) struct SessionState {
     pub messages: Vec<SerializableMessage>,
 }
 
-/// Restored session ready to be used by CLI or TUI.
+/// Restored session ready to be used by CLI.
 /// Contains the converted messages and settings.
 #[derive(Debug, Clone)]
 pub(crate) struct RestoredSession {
@@ -144,7 +97,7 @@ pub(crate) struct RestoredSession {
     pub model_id: String,
     pub thinking_enabled: bool,
     pub read_only: bool,
-    pub state: SessionState, // Keep original state for replay
+    pub _state: SessionState, // Keep original state for replay
 }
 
 impl RestoredSession {
@@ -162,7 +115,7 @@ impl RestoredSession {
             model_id: state.meta.model_id.clone(),
             thinking_enabled: state.meta.thinking_enabled,
             read_only: state.meta.read_only,
-            state: state.clone(),
+            _state: state.clone(),
         }
     }
 }
@@ -579,7 +532,7 @@ fn load_session_info(path: &Path) -> Option<SessionInfo> {
     Some(SessionInfo {
         id: session_id,
         saved_at: meta.saved_at,
-        model_id: meta.model_id,
+        _model_id: meta.model_id,
         _message_count: message_count,
         preview,
     })
@@ -620,6 +573,7 @@ pub(crate) fn truncate_str(s: &str, max_chars: usize) -> String {
 }
 
 /// Delete a specific session by ID.
+#[cfg(test)]
 pub(crate) fn delete_session(dir: &Path, session_id: &str) -> std::io::Result<()> {
     let session_path = get_session_path(dir, session_id);
     if session_path.exists() {
@@ -630,157 +584,6 @@ pub(crate) fn delete_session(dir: &Path, session_id: &str) -> std::io::Result<()
 
 fn restore_messages(state: &SessionState) -> Vec<Message> {
     state.messages.iter().map(|m| m.into()).collect()
-}
-
-/// Extract rich replay messages from session state
-pub(crate) fn extract_replay_messages(state: &SessionState) -> Vec<SessionReplayMessage> {
-    let mut result = Vec::new();
-    let mut tool_results: HashMap<String, (usize, bool, Option<String>)> = HashMap::new();
-
-    // First pass: collect all tool results
-    for msg in &state.messages {
-        if let SerializableContent::Blocks(blocks) = &msg.content {
-            for block in blocks {
-                if let SerializableContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } = block
-                {
-                    let bytes = content.len();
-                    let error_preview = if *is_error {
-                        // Get first line of error as preview
-                        content.lines().next().map(|s| s.to_string())
-                    } else {
-                        None
-                    };
-                    tool_results.insert(tool_use_id.clone(), (bytes, *is_error, error_preview));
-                }
-            }
-        }
-    }
-
-    // Second pass: build replay messages
-    for msg in &state.messages {
-        let segments = match msg.role {
-            Role::User => extract_user_segments(&msg.content),
-            Role::Assistant => extract_assistant_segments(&msg.content, &tool_results),
-            Role::System => continue, // Skip system messages
-        };
-
-        if !segments.is_empty() {
-            result.push(SessionReplayMessage {
-                role: msg.role,
-                segments,
-            });
-        }
-    }
-
-    result
-}
-
-fn extract_user_segments(content: &SerializableContent) -> Vec<ReplaySegment> {
-    let mut segments = Vec::new();
-
-    match content {
-        SerializableContent::Text(text) => {
-            segments.push(ReplaySegment::UserText {
-                text: text.clone(),
-                has_images: false,
-            });
-        }
-        SerializableContent::Blocks(blocks) => {
-            let mut text_parts = Vec::new();
-            let mut has_images = false;
-
-            for block in blocks {
-                match block {
-                    SerializableContentBlock::Text { text } => {
-                        text_parts.push(text.clone());
-                    }
-                    SerializableContentBlock::Image { .. } => {
-                        has_images = true;
-                    }
-                    SerializableContentBlock::Summary {
-                        summary,
-                        messages_compacted,
-                    } => {
-                        segments.push(ReplaySegment::Summary {
-                            summary: summary.clone(),
-                            messages_compacted: *messages_compacted,
-                        });
-                    }
-                    _ => {}
-                }
-            }
-
-            if !text_parts.is_empty() {
-                segments.push(ReplaySegment::UserText {
-                    text: text_parts.join("\n"),
-                    has_images,
-                });
-            }
-        }
-    }
-
-    segments
-}
-
-fn extract_assistant_segments(
-    content: &SerializableContent,
-    tool_results: &HashMap<String, (usize, bool, Option<String>)>,
-) -> Vec<ReplaySegment> {
-    let mut segments = Vec::new();
-
-    match content {
-        SerializableContent::Text(text) => {
-            segments.push(ReplaySegment::Text { text: text.clone() });
-        }
-        SerializableContent::Blocks(blocks) => {
-            for block in blocks {
-                match block {
-                    SerializableContentBlock::Thinking { thinking, .. } => {
-                        segments.push(ReplaySegment::Thinking {
-                            text: thinking.clone(),
-                        });
-                    }
-                    SerializableContentBlock::ToolUse {
-                        id, name, input, ..
-                    } => {
-                        let description = format_tool_call_description(name, input);
-                        let status = if let Some((_, is_error, _)) = tool_results.get(id) {
-                            if *is_error {
-                                ToolStatus::Error
-                            } else {
-                                ToolStatus::Success
-                            }
-                        } else {
-                            ToolStatus::Pending
-                        };
-
-                        segments.push(ReplaySegment::ToolCall {
-                            description,
-                            status,
-                        });
-
-                        // Add tool result if available
-                        if let Some((_bytes, is_error, error_preview)) = tool_results.get(id) {
-                            segments.push(ReplaySegment::ToolResult {
-                                is_error: *is_error,
-                                error_preview: error_preview.clone(),
-                            });
-                        }
-                    }
-                    SerializableContentBlock::Text { text } => {
-                        segments.push(ReplaySegment::Text { text: text.clone() });
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    segments
 }
 
 /// Format the session age in a human-readable way.
@@ -814,12 +617,25 @@ pub(crate) fn format_age(saved_at: &DateTime<Utc>) -> String {
     }
 }
 
-/// Replay session messages for display purposes.
-/// Shows a rich view matching the live session appearance.
-pub(crate) fn replay_session(state: &SessionState) {
-    // Show session metadata
-    println!(
-        "{}",
+/// Replay session messages into the CLI output history so the UI matches as closely
+/// as possible what the user would have seen if the session had continued live.
+///
+/// This is intended to be called from the interactive CLI (TUI) after the prompt is
+/// visible, so output is rendered above the prompt and is resizable.
+pub(crate) fn replay_session_into_output(state: &SessionState) {
+    use crate::cli::history::{self, HistoryEvent};
+    // Use the same marker format as the interactive CLI ("Image#1", "Image#2", ...).
+    const IMAGE_MARKER_PREFIX: &str = "Image#";
+
+    // Clear existing history and todos so the replay is the authoritative view.
+    history::clear();
+    clear_todos();
+    if let Some(todos) = &state.meta.todos {
+        set_todos(todos.clone());
+    }
+
+    // Header similar to the old stdout replay, but rendered as Info events.
+    history::push(HistoryEvent::Info(
         format!(
             "Model: {} (thinking {})",
             state.meta.model_id,
@@ -830,100 +646,232 @@ pub(crate) fn replay_session(state: &SessionState) {
             }
         )
         .dimmed()
-    );
-    println!(
-        "{}\n",
+        .to_string(),
+    ));
+    history::push(HistoryEvent::Info(
         format!(
             "Saved: {} · Messages: {}",
             format_age(&state.meta.saved_at),
             state.messages.len()
         )
         .dimmed()
-    );
+        .to_string(),
+    ));
+    history::push(HistoryEvent::Info("".to_string()));
 
-    let replay_messages = extract_replay_messages(state);
+    let mut in_tool_block = false;
 
-    for msg in replay_messages {
+    for msg in &state.messages {
         match msg.role {
+            Role::System => continue,
             Role::User => {
-                print!("{} ", "❯".bold().green());
-                for segment in msg.segments {
-                    match segment {
-                        ReplaySegment::UserText { text, has_images } => {
-                            println!("{}", text);
-                            if has_images {
-                                println!("{}", "  [images attached]".dimmed());
-                            }
-                        }
-                        ReplaySegment::Summary {
-                            summary,
-                            messages_compacted,
-                        } => {
-                            println!(
-                                "{}",
-                                format!("── Compacted {} messages ──", messages_compacted).dimmed()
-                            );
-                            for line in summary.lines() {
-                                println!("{}", format!("  {}", line).dimmed().italic());
-                            }
-                        }
-                        _ => {}
-                    }
+                // Skip intermediate tool-result-only messages (they are rendered as part of the tool loop).
+                if is_tool_result_only_serializable(msg) {
+                    continue;
                 }
-                println!();
+
+                // Close any dangling tool block boundary.
+                if in_tool_block {
+                    history::push(HistoryEvent::ToolEnd);
+                    in_tool_block = false;
+                }
+
+                let (text, images) = user_text_and_images(msg, IMAGE_MARKER_PREFIX);
+                history::push_user_prompt(&text, images);
             }
             Role::Assistant => {
-                for segment in msg.segments {
-                    match segment {
-                        ReplaySegment::Thinking { text } => {
-                            // Same format as CliListener - indented with grey color
-                            for line in text.lines() {
-                                print!("  ");
-                                println!("{}", line.bright_black());
+                // Render blocks in the same order as live output.
+                match &msg.content {
+                    SerializableContent::Text(text) => {
+                        if in_tool_block {
+                            history::push(HistoryEvent::ToolEnd);
+                            in_tool_block = false;
+                        }
+                        history::push(HistoryEvent::AssistantText {
+                            text: text.clone(),
+                            is_streaming: false,
+                        });
+                        history::push(HistoryEvent::ResponseEnd);
+                    }
+                    SerializableContent::Blocks(blocks) => {
+                        for block in blocks {
+                            match block {
+                                SerializableContentBlock::Thinking { thinking, .. } => {
+                                    if in_tool_block {
+                                        history::push(HistoryEvent::ToolEnd);
+                                        in_tool_block = false;
+                                    }
+                                    history::push(HistoryEvent::Thinking {
+                                        text: thinking.clone(),
+                                        is_streaming: false,
+                                    });
+                                    history::push(HistoryEvent::ThinkingEnd);
+                                }
+                                SerializableContentBlock::Text { text } => {
+                                    if in_tool_block {
+                                        history::push(HistoryEvent::ToolEnd);
+                                        in_tool_block = false;
+                                    }
+                                    history::push(HistoryEvent::AssistantText {
+                                        text: text.clone(),
+                                        is_streaming: false,
+                                    });
+                                }
+                                SerializableContentBlock::ToolUse { name, input, .. } => {
+                                    if !in_tool_block {
+                                        history::push(HistoryEvent::ToolStart);
+                                        in_tool_block = true;
+                                    }
+                                    let description = format_tool_call_description(name, input);
+                                    history::push(HistoryEvent::ToolUse { description });
+                                }
+                                SerializableContentBlock::ToolResult {
+                                    is_error, content, ..
+                                } => {
+                                    // Tool results in saved sessions include full content; live UI only shows
+                                    // the ✓/✗ indicator. Store just the first line for error previews.
+                                    let output = if *is_error {
+                                        content.lines().next().unwrap_or("").to_string()
+                                    } else {
+                                        String::new()
+                                    };
+                                    history::push(HistoryEvent::ToolResult {
+                                        output,
+                                        is_error: *is_error,
+                                    });
+                                }
+                                SerializableContentBlock::Summary {
+                                    summary,
+                                    messages_compacted,
+                                } => {
+                                    if in_tool_block {
+                                        history::push(HistoryEvent::ToolEnd);
+                                        in_tool_block = false;
+                                    }
+                                    // Mirror the old replay display as an Info block.
+                                    history::push(HistoryEvent::Info(
+                                        format!(
+                                            "── Compacted {} messages ──\n{}",
+                                            messages_compacted, summary
+                                        )
+                                        .dimmed()
+                                        .to_string(),
+                                    ));
+                                }
+                                SerializableContentBlock::Image { .. } => {
+                                    // Assistant images are not currently displayed in the CLI history.
+                                }
                             }
                         }
-                        ReplaySegment::ToolCall {
-                            description,
-                            status,
-                            ..
-                        } => {
-                            let indicator = match status {
-                                ToolStatus::Pending => "▶",
-                                ToolStatus::Success => "✓",
-                                ToolStatus::Error => "✗",
-                            };
-                            let colored_indicator = match status {
-                                ToolStatus::Success => indicator.green().dimmed(),
-                                ToolStatus::Error => indicator.red().dimmed(),
-                                ToolStatus::Pending => indicator.dimmed(),
-                            };
-                            println!("{} {}", colored_indicator, description.dimmed());
+
+                        // If we ended a tool loop in this assistant message, close the block.
+                        if in_tool_block {
+                            history::push(HistoryEvent::ToolEnd);
+                            in_tool_block = false;
                         }
-                        ReplaySegment::ToolResult {
-                            is_error,
-                            error_preview,
-                        } => {
-                            if is_error && let Some(preview) = error_preview {
-                                println!(
-                                    "{} {}",
-                                    "✗".red().dimmed(),
-                                    format!("Error: {}", preview).dimmed()
-                                );
-                            }
-                        }
-                        ReplaySegment::Text { text } => {
-                            println!("{}", text);
-                        }
-                        _ => {}
+
+                        // End of assistant message block.
+                        history::push(HistoryEvent::ResponseEnd);
                     }
                 }
-                println!();
             }
-            Role::System => {}
         }
     }
 
-    println!();
+    // Keep history in a consistent state.
+    if in_tool_block {
+        history::push(HistoryEvent::ToolEnd);
+    }
+
+    // If we restored todos, emit them into history so redraw-from-history includes them.
+    let current_todos = get_todos();
+    if !current_todos.is_empty() {
+        use crate::cli::history::{TodoItem as HistoryTodoItem, TodoStatus as HistoryTodoStatus};
+        let items = current_todos
+            .iter()
+            .map(|t| HistoryTodoItem {
+                content: if matches!(t.status, crate::tools::TodoStatus::InProgress) {
+                    t.active_form.clone()
+                } else {
+                    t.content.clone()
+                },
+                status: match t.status {
+                    crate::tools::TodoStatus::Pending => HistoryTodoStatus::Pending,
+                    crate::tools::TodoStatus::InProgress => HistoryTodoStatus::InProgress,
+                    crate::tools::TodoStatus::Completed => HistoryTodoStatus::Completed,
+                },
+            })
+            .collect();
+        history::push(HistoryEvent::TodoList { items });
+    }
+}
+
+fn is_tool_result_only_serializable(msg: &SerializableMessage) -> bool {
+    if msg.role != Role::User {
+        return false;
+    }
+    match &msg.content {
+        SerializableContent::Text(_) => false,
+        SerializableContent::Blocks(blocks) => {
+            !blocks.is_empty()
+                && blocks
+                    .iter()
+                    .all(|b| matches!(b, SerializableContentBlock::ToolResult { .. }))
+        }
+    }
+}
+
+fn user_text_and_images(
+    msg: &SerializableMessage,
+    image_marker_prefix: &str,
+) -> (String, Vec<crate::cli::history::ImageMeta>) {
+    match &msg.content {
+        SerializableContent::Text(text) => (text.clone(), vec![]),
+        SerializableContent::Blocks(blocks) => {
+            let mut text_parts = Vec::new();
+            let mut images: Vec<crate::cli::history::ImageMeta> = Vec::new();
+
+            for block in blocks {
+                match block {
+                    SerializableContentBlock::Text { text } => text_parts.push(text.clone()),
+                    SerializableContentBlock::Image { mime_type, data } => {
+                        images.push(crate::cli::history::ImageMeta {
+                            _marker: format!("{}{}", image_marker_prefix, images.len() + 1),
+                            _mime_type: mime_type.clone(),
+                            _size_bytes: data.len(),
+                        });
+                    }
+                    // User-side Summary blocks are preserved in sessions; render them as part of the prompt.
+                    SerializableContentBlock::Summary { summary, .. } => {
+                        text_parts.push(summary.clone())
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut text = text_parts.join("\n");
+            if !images.is_empty() {
+                let missing_markers: Vec<&str> = images
+                    .iter()
+                    .map(|image| image._marker.as_str())
+                    .filter(|marker| !text.contains(marker))
+                    .collect();
+                if !missing_markers.is_empty() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    for (idx, marker) in missing_markers.iter().enumerate() {
+                        if idx > 0 {
+                            text.push('\n');
+                        }
+                        text.push_str(marker);
+                    }
+                }
+            }
+
+            (text, images)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -964,7 +912,89 @@ mod tests {
     }
 
     #[test]
+    fn test_replay_into_output_builds_history_events() {
+        // Ensure replay populates the CLI history with user/assistant/tool events.
+        // This is a unit test for the semantic event generation, not terminal rendering.
+        crate::cli::history::clear();
+        crate::tools::todo::clear_todos();
+
+        let state = SessionState {
+            meta: SessionMeta {
+                version: SESSION_VERSION,
+                session_id: "test".to_string(),
+                working_directory: PathBuf::from("/tmp"),
+                saved_at: Utc::now(),
+                provider: "claude".to_string(),
+                model_id: "claude-sonnet-4".to_string(),
+                thinking_enabled: true,
+                read_only: false,
+                todos: Some(vec![TodoItem {
+                    content: "Do the thing".to_string(),
+                    status: crate::tools::TodoStatus::Pending,
+                    active_form: "Doing the thing".to_string(),
+                }]),
+            },
+            messages: vec![
+                SerializableMessage {
+                    role: Role::User,
+                    content: SerializableContent::Text("Hello".to_string()),
+                },
+                SerializableMessage {
+                    role: Role::Assistant,
+                    content: SerializableContent::Blocks(vec![
+                        SerializableContentBlock::Thinking {
+                            thinking: "Thinking...".to_string(),
+                            signature: None,
+                            provider_data: None,
+                        },
+                        SerializableContentBlock::ToolUse {
+                            id: "tool1".to_string(),
+                            name: "bash".to_string(),
+                            input: serde_json::json!({"command": "echo hi"}),
+                            thought_signature: None,
+                        },
+                        SerializableContentBlock::ToolResult {
+                            tool_use_id: "tool1".to_string(),
+                            content: "hi\n".to_string(),
+                            is_error: false,
+                        },
+                        SerializableContentBlock::Text {
+                            text: "Done".to_string(),
+                        },
+                    ]),
+                },
+            ],
+        };
+
+        replay_session_into_output(&state);
+
+        let events = crate::cli::history::snapshot();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, crate::cli::history::HistoryEvent::UserPrompt { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, crate::cli::history::HistoryEvent::AssistantText { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, crate::cli::history::HistoryEvent::ToolUse { .. }))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, crate::cli::history::HistoryEvent::TodoList { .. }))
+        );
+    }
+
+    #[test]
     fn test_session_path_consistency() {
+        let _lock = SESSION_TEST_LOCK.lock().unwrap();
+        let _sessions_dir = TestSessionsDir::new();
         let dir = Path::new("/tmp/test-project");
         let path1 = get_session_path(dir, "20251231T120000");
         let path2 = get_session_path(dir, "20251231T120000");

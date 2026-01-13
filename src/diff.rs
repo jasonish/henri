@@ -5,8 +5,8 @@ use std::path::Path;
 
 pub(crate) struct DiffResult {
     pub unified_diff: String,
-    pub lines_added: usize,
-    pub lines_removed: usize,
+    pub _lines_added: usize,
+    pub _lines_removed: usize,
     pub has_changes: bool,
 }
 
@@ -33,8 +33,8 @@ pub(crate) fn unified_diff(_path: &Path, old: &str, new: &str, context_lines: us
 
     DiffResult {
         unified_diff,
-        lines_added,
-        lines_removed,
+        _lines_added: lines_added,
+        _lines_removed: lines_removed,
         has_changes,
     }
 }
@@ -52,8 +52,8 @@ mod tests {
         let result = unified_diff(path, old, new, 3);
 
         assert!(result.has_changes);
-        assert_eq!(result.lines_added, 1);
-        assert_eq!(result.lines_removed, 0);
+        assert_eq!(result._lines_added, 1);
+        assert_eq!(result._lines_removed, 0);
     }
 
     #[test]
@@ -65,8 +65,8 @@ mod tests {
         let result = unified_diff(path, old, new, 3);
 
         assert!(result.has_changes);
-        assert_eq!(result.lines_added, 0);
-        assert_eq!(result.lines_removed, 1);
+        assert_eq!(result._lines_added, 0);
+        assert_eq!(result._lines_removed, 1);
     }
 
     #[test]
@@ -78,8 +78,8 @@ mod tests {
         let result = unified_diff(path, old, new, 3);
 
         assert!(!result.has_changes);
-        assert_eq!(result.lines_added, 0);
-        assert_eq!(result.lines_removed, 0);
+        assert_eq!(result._lines_added, 0);
+        assert_eq!(result._lines_removed, 0);
     }
 
     #[test]
@@ -91,8 +91,8 @@ mod tests {
         let result = unified_diff(path, old, new, 3);
 
         assert!(result.has_changes);
-        assert_eq!(result.lines_added, 1);
-        assert_eq!(result.lines_removed, 1);
+        assert_eq!(result._lines_added, 1);
+        assert_eq!(result._lines_removed, 1);
     }
 
     #[test]
@@ -105,7 +105,7 @@ mod tests {
         let result = unified_diff(path, old, new, 3);
 
         assert!(result.has_changes);
-        assert_eq!(result.lines_added, 1);
-        assert_eq!(result.lines_removed, 0);
+        assert_eq!(result._lines_added, 1);
+        assert_eq!(result._lines_removed, 0);
     }
 }

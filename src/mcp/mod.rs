@@ -20,9 +20,9 @@ use crate::tools::{ToolDefinition, ToolResult};
 #[derive(Debug, Clone)]
 pub(crate) struct McpServerConfig {
     pub name: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub env: std::collections::HashMap<String, String>,
+    pub _command: String,
+    pub _args: Vec<String>,
+    pub _env: std::collections::HashMap<String, String>,
 }
 
 /// A running MCP server client
@@ -80,73 +80,42 @@ impl McpManager {
             .collect()
     }
 
-    /// Get the count of running MCP servers
-    pub(crate) async fn running_server_count(&self) -> usize {
-        self.clients.read().await.len()
-    }
-
-    /// Start an MCP server by name (must be registered first)
-    pub(crate) async fn start_server_by_name(&self, name: &str) -> Result<()> {
-        let configured = self.configured_servers.read().await;
-        let config = configured
-            .iter()
-            .find(|c| c.name == name)
-            .ok_or_else(|| crate::error::Error::Mcp(format!("Server '{}' not found", name)))?
-            .clone();
-        drop(configured);
-
-        self.start_server(&config).await
-    }
-
-    /// Stop an MCP server by name
-    pub(crate) async fn stop_server(&self, name: &str) -> Result<()> {
-        let mut clients = self.clients.write().await;
-        if let Some(pos) = clients.iter().position(|c| c.name == name) {
-            let client = clients.remove(pos);
-            // The service will be dropped and connections closed
-            drop(client);
-            Ok(())
-        } else {
-            Err(crate::error::Error::Mcp(format!(
-                "Server '{}' not running",
-                name
-            )))
-        }
-    }
-
     /// Start an MCP server and connect to it
-    pub(crate) async fn start_server(&self, config: &McpServerConfig) -> Result<()> {
+    async fn start_server(&self, config: &McpServerConfig) -> Result<usize> {
         let mut clients = self.clients.write().await;
-        if clients.iter().any(|c| c.name == config.name) {
-            return Ok(());
+        if let Some(existing) = clients.iter().find(|c| c.name == config.name) {
+            return Ok(existing.tools.len());
         }
 
-        let mut cmd = Command::new(&config.command);
-        for arg in &config.args {
+        let mut cmd = Command::new(&config._command);
+        for arg in &config._args {
             cmd.arg(arg);
         }
         // Set environment variables for the MCP server
-        for (key, value) in &config.env {
+        for (key, value) in &config._env {
             cmd.env(key, value);
         }
 
-        // Use builder to redirect stderr to null to avoid corrupting the TUI
+        // Use builder to redirect stderr to null to avoid corrupting output
         let (transport, _stderr) = TokioChildProcess::builder(cmd)
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| crate::error::Error::Mcp(format!("Failed to spawn MCP server: {}", e)))?;
+            .map_err(|e| {
+                crate::error::Error::Other(format!("Failed to spawn MCP server: {}", e))
+            })?;
 
         let service = ().serve(transport).await.map_err(|e| {
-            crate::error::Error::Mcp(format!("Failed to initialize MCP client: {}", e))
+            crate::error::Error::Other(format!("Failed to initialize MCP client: {}", e))
         })?;
 
         // List available tools from this server
         let tools_result = service
             .list_tools(Default::default())
             .await
-            .map_err(|e| crate::error::Error::Mcp(format!("Failed to list tools: {}", e)))?;
+            .map_err(|e| crate::error::Error::Other(format!("Failed to list tools: {}", e)))?;
 
         let tools = tools_result.tools;
+        let tool_count = tools.len();
 
         let client = McpClient {
             name: config.name.clone(),
@@ -156,7 +125,50 @@ impl McpManager {
 
         clients.push(client);
 
-        Ok(())
+        Ok(tool_count)
+    }
+
+    /// Stop an MCP server
+    async fn stop_server(&self, name: &str) {
+        let mut clients = self.clients.write().await;
+        if let Some(pos) = clients.iter().position(|c| c.name == name) {
+            let client = clients.remove(pos);
+            // The service will be dropped here, which should close the connection
+            drop(client);
+        }
+    }
+
+    /// Toggle an MCP server on or off.
+    /// Returns (is_running, tool_count) after the toggle.
+    pub(crate) async fn toggle_server(&self, name: &str) -> Result<(bool, usize)> {
+        // Check if server is currently running
+        let is_running = {
+            let clients = self.clients.read().await;
+            clients.iter().any(|c| c.name == name)
+        };
+
+        if is_running {
+            // Stop the server
+            self.stop_server(name).await;
+            Ok((false, 0))
+        } else {
+            // Find the config and start the server
+            let config = {
+                let configured = self.configured_servers.read().await;
+                configured.iter().find(|c| c.name == name).cloned()
+            };
+
+            match config {
+                Some(cfg) => {
+                    let tool_count = self.start_server(&cfg).await?;
+                    Ok((true, tool_count))
+                }
+                None => Err(crate::error::Error::Other(format!(
+                    "MCP server '{}' not found in configuration",
+                    name
+                ))),
+            }
+        }
     }
 
     /// Get all tool definitions from all connected MCP servers
@@ -282,19 +294,4 @@ pub(crate) fn manager() -> Arc<McpManager> {
 pub(crate) async fn register_servers(servers: Vec<McpServerConfig>) {
     let mgr = manager();
     mgr.register_servers(servers).await;
-}
-
-/// Start a specific MCP server by name
-pub(crate) async fn start_server(name: &str) -> Result<()> {
-    manager().start_server_by_name(name).await
-}
-
-/// Stop a specific MCP server by name
-pub(crate) async fn stop_server(name: &str) -> Result<()> {
-    manager().stop_server(name).await
-}
-
-/// Get the count of running MCP servers
-pub(crate) async fn running_server_count() -> usize {
-    manager().running_server_count().await
 }

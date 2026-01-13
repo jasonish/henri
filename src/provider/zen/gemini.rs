@@ -512,7 +512,10 @@ pub(super) async fn chat(
         }
     }
 
-    output::print_text_end(output);
+    // Only end the text block if we actually streamed any text.
+    if !full_text.is_empty() {
+        output::print_text_end(output);
+    }
 
     if !full_text.is_empty() {
         content_blocks.insert(

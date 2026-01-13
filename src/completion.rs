@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
-//! File path completion for TUI and CLI prompts.
+//! File path completion for CLI prompts.
 
 use std::path::PathBuf;
-
-/// Maximum number of visible completion items in menus
-pub(crate) const COMPLETION_MENU_MAX_VISIBLE: usize = 10;
 
 /// File path completer with match state
 pub(crate) struct FileCompleter {

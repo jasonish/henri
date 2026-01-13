@@ -72,7 +72,7 @@ async fn send_with_retry<P: Provider>(
                     output,
                     &format!(
                         "{} (retrying in {}s, attempt {}/{})",
-                        e.tui_message(),
+                        e.display_message(),
                         delay.as_secs(),
                         attempts,
                         MAX_RETRIES
@@ -97,7 +97,7 @@ async fn send_with_retry<P: Provider>(
                 delay *= 2;
             }
             Err(e) => {
-                output::emit_error(output, &e.tui_message());
+                output::emit_error(output, &e.display_message());
                 return Err(e);
             }
         }

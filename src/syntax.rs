@@ -5,7 +5,7 @@
 //!
 //! This module provides syntax highlighting for code using syntect. It uses a generic
 //! RGB color representation that can be converted to platform-specific color types
-//! (ratatui::Color, colored's truecolor, etc.).
+//! (colored's truecolor, etc.).
 
 use std::path::Path;
 use std::sync::OnceLock;

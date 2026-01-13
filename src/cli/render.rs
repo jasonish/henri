@@ -1,0 +1,912 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2025 Jason Ish
+
+//! Rendering functions for CLI history events.
+//!
+//! Converts semantic HistoryEvents into styled, wrapped text lines
+//! suitable for terminal display.
+
+use colored::{Color, ColoredString, Colorize};
+use unicode_width::UnicodeWidthChar;
+
+use super::history::{HistoryEvent, ImageMeta, TodoStatus};
+use super::markdown::{align_markdown_tables, render_markdown_line};
+use crate::syntax;
+
+// Shared color constants for consistent styling
+pub(super) const BG_GREY: Color = Color::TrueColor {
+    r: 48,
+    g: 48,
+    b: 48,
+};
+pub(super) const BG_DARK_GREEN: Color = Color::TrueColor { r: 0, g: 20, b: 0 };
+pub(super) const BG_DARK_RED: Color = Color::TrueColor { r: 20, g: 0, b: 0 };
+
+/// Render a single history event to styled text.
+///
+/// Uses spaced layout: no tags, one empty line between blocks.
+pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
+    match event {
+        HistoryEvent::UserPrompt { text, images } => render_user_prompt(text, images, width),
+        HistoryEvent::AssistantText { text, is_streaming } => {
+            render_assistant_text(text, *is_streaming, width)
+        }
+        HistoryEvent::Thinking { text, is_streaming } => {
+            render_thinking(text, *is_streaming, width)
+        }
+        // Spaced mode: no output for block boundaries
+        HistoryEvent::ThinkingEnd | HistoryEvent::ResponseEnd => String::new(),
+        // Spaced mode: blank line around tool blocks
+        HistoryEvent::ToolStart | HistoryEvent::ToolEnd => "\n".to_string(),
+        HistoryEvent::ToolUse { description } => render_tool_use(description),
+        HistoryEvent::ToolResult { is_error, output } => render_tool_result(*is_error, output),
+        HistoryEvent::Error(msg) => render_error(msg),
+        HistoryEvent::Warning(msg) => render_warning(msg),
+        HistoryEvent::Info(msg) => render_info(msg),
+        HistoryEvent::FileDiff { diff, language } => render_file_diff(diff, language.as_deref()),
+        HistoryEvent::TodoList { items } => render_todo_list(items),
+        HistoryEvent::AutoCompact { message } => render_auto_compact(message),
+    }
+}
+
+/// Render all history events.
+pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
+    let mut output = String::new();
+
+    for (idx, event) in events.iter().enumerate() {
+        let prev = if idx > 0 {
+            Some(&events[idx - 1])
+        } else {
+            None
+        };
+        let next = events.get(idx + 1);
+
+        let rendered = match event {
+            HistoryEvent::ThinkingEnd => {
+                if matches!(next, Some(HistoryEvent::AssistantText { .. })) {
+                    "\n".to_string()
+                } else {
+                    String::new()
+                }
+            }
+            HistoryEvent::ToolStart => {
+                if matches!(prev, Some(HistoryEvent::ToolEnd)) {
+                    String::new()
+                } else {
+                    "\n".to_string()
+                }
+            }
+            HistoryEvent::ToolEnd => {
+                if matches!(next, Some(HistoryEvent::ToolStart)) {
+                    String::new()
+                } else {
+                    "\n".to_string()
+                }
+            }
+            HistoryEvent::ToolResult { is_error, output } => {
+                // If the previous event was a FileDiff, it already displayed a checkmark,
+                // so we don't need another one for success.
+                if !*is_error && matches!(prev, Some(HistoryEvent::FileDiff { .. })) {
+                    String::new()
+                } else {
+                    render_tool_result(*is_error, output)
+                }
+            }
+            _ => render_event(event, width),
+        };
+
+        output.push_str(&rendered);
+    }
+
+    output
+}
+
+/// Render user prompt - with arrow prefix and grey background spanning full width
+///
+/// The text may contain inline image markers like `Image#1` which are colorized.
+fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String {
+    let arrow = if text.starts_with('!') { "! " } else { "> " };
+    let text = text.strip_prefix('!').unwrap_or(text);
+    let continuation = "  ";
+    let content_width = width.saturating_sub(2); // arrow/continuation is 2 chars
+
+    let mut output = String::new();
+
+    for (i, line) in text.lines().enumerate() {
+        let prefix = if i == 0 { arrow } else { continuation };
+        let wrapped = wrap_text(line, content_width);
+        for (j, wrapped_line) in wrapped.iter().enumerate() {
+            let p = if j == 0 { prefix } else { continuation };
+            // Calculate display width of the line content
+            let line_display_width = display_width(p) + display_width(wrapped_line);
+            let padding_needed = width.saturating_sub(line_display_width);
+
+            // Colorize image markers in the line
+            let styled_line = colorize_image_markers(wrapped_line);
+
+            // Build the full line with padding, then apply background color
+            let mut line_content = String::new();
+            line_content.push_str(p);
+            line_content.push_str(&styled_line);
+            for _ in 0..padding_needed {
+                line_content.push(' ');
+            }
+            output.push_str(&format!("{}\n", line_content.on_color(BG_GREY)));
+        }
+    }
+
+    output
+}
+
+// Background color for image markers - dark cyan/teal
+const BG_IMAGE_MARKER: Color = Color::TrueColor { r: 0, g: 40, b: 50 };
+
+use super::input::IMAGE_MARKER_PREFIX;
+
+/// Colorize image markers like `Image#1` with cyan text on dark background.
+/// Matches "Image#" followed by one or more digits.
+pub(super) fn colorize_image_markers(text: &str) -> String {
+    use colored::Colorize;
+
+    let mut result = String::new();
+    let chars: Vec<char> = text.chars().collect();
+    let prefix_chars: Vec<char> = IMAGE_MARKER_PREFIX.chars().collect();
+    let prefix_len = prefix_chars.len();
+    let mut i = 0;
+
+    while i < chars.len() {
+        // Check for "Image#" followed by at least one digit
+        // Need room for prefix + at least one digit
+        let matches_prefix = if i + prefix_len < chars.len() {
+            prefix_chars
+                .iter()
+                .enumerate()
+                .all(|(j, &pc)| chars[i + j] == pc)
+        } else {
+            false
+        };
+
+        if matches_prefix && chars[i + prefix_len].is_ascii_digit() {
+            // Found "Image#" + digit, collect the full marker
+            let start = i;
+            i += prefix_len; // Skip "Image#"
+
+            // Collect all following digits
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+
+            let marker: String = chars[start..i].iter().collect();
+            result.push_str(&marker.cyan().on_color(BG_IMAGE_MARKER).to_string());
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    result
+}
+
+/// Render assistant text with syntax highlighting for code blocks
+fn render_assistant_text(text: &str, _is_streaming: bool, width: usize) -> String {
+    // Align markdown tables if they fit within the width
+    let aligned_text = align_markdown_tables(text, Some(width));
+
+    let mut output = String::new();
+    let mut pos = 0;
+
+    // Find and process code blocks
+    while let Some((block_start, block_end, highlighted)) = find_next_code_block(&aligned_text, pos)
+    {
+        // Render text before the code block
+        let before = &aligned_text[pos..block_start];
+        if !before.is_empty() {
+            for line in wrap_text(before, width) {
+                output.push_str(&render_markdown_line(&line));
+                output.push('\n');
+            }
+        }
+
+        // Render the highlighted code block (already includes newlines)
+        output.push_str(&highlighted);
+
+        pos = block_end;
+    }
+
+    // Render remaining text after last code block
+    let remaining = &aligned_text[pos..];
+    if !remaining.is_empty() {
+        for line in wrap_text(remaining, width) {
+            output.push_str(&render_markdown_line(&line));
+            output.push('\n');
+        }
+    }
+
+    output
+}
+
+/// Find the next code block and return its highlighted version.
+/// Returns (block_start, block_end, highlighted_text) or None if no more blocks.
+fn find_next_code_block(text: &str, start: usize) -> Option<(usize, usize, String)> {
+    let remaining = &text[start..];
+
+    // Find opening fence
+    let fence_pos = remaining.find("```")?;
+    let absolute_fence_start = start + fence_pos;
+
+    // Find the end of the opening fence line
+    let after_fence = &remaining[fence_pos + 3..];
+    let line_end = after_fence.find('\n').unwrap_or(after_fence.len());
+    let language = after_fence[..line_end].trim();
+    let language = if language.is_empty() {
+        None
+    } else {
+        Some(language)
+    };
+
+    let content_start = fence_pos + 3 + line_end + 1; // +1 for newline
+    if start + content_start > text.len() {
+        return None;
+    }
+
+    // Find closing fence
+    let content_remaining = &remaining[content_start..];
+    let closing_pos = find_closing_fence(content_remaining)?;
+    let content_end = content_start + closing_pos;
+
+    // Calculate block end (after the closing ``` line)
+    let after_closing_fence = content_end + 3; // skip past ```
+    let block_end = start
+        + if after_closing_fence < remaining.len()
+            && remaining.as_bytes()[after_closing_fence] == b'\n'
+        {
+            after_closing_fence + 1
+        } else {
+            after_closing_fence
+        };
+
+    // Extract code content and highlight it
+    let code_content = &remaining[content_start..content_end];
+    let highlighted = highlight_code_block(code_content, language);
+
+    // Build the output with fence markers
+    let mut result = format!("```{}\n", language.unwrap_or(""));
+    result.push_str(&highlighted);
+    // Ensure there's a newline before closing fence
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result.push_str("```\n");
+
+    Some((absolute_fence_start, block_end, result))
+}
+
+/// Find the closing ``` fence
+fn find_closing_fence(text: &str) -> Option<usize> {
+    let mut pos = 0;
+    for line in text.lines() {
+        if line.trim().starts_with("```") {
+            return Some(pos);
+        }
+        pos += line.len() + 1; // +1 for newline
+    }
+    None
+}
+
+/// Highlight a code block and return the highlighted string with ANSI colors.
+fn highlight_code_block(code: &str, language: Option<&str>) -> String {
+    let spans = syntax::highlight_code(code, language);
+
+    if spans.is_empty() {
+        return code.to_string();
+    }
+
+    let mut result = String::new();
+    let mut last_end = 0;
+
+    for span in spans {
+        // Add any gap (shouldn't happen normally, but be safe)
+        if span.start > last_end {
+            result.push_str(&code[last_end..span.start]);
+        }
+
+        // Add the colored span using truecolor
+        let text = &code[span.start..span.end];
+        result.push_str(
+            &text
+                .truecolor(span.color.r, span.color.g, span.color.b)
+                .to_string(),
+        );
+
+        last_end = span.end;
+    }
+
+    // Add any remaining text
+    if last_end < code.len() {
+        result.push_str(&code[last_end..]);
+    }
+
+    result
+}
+
+/// Render thinking text - dimmed
+fn render_thinking(text: &str, _is_streaming: bool, width: usize) -> String {
+    let wrapped = wrap_text(text, width);
+    let mut output = String::new();
+
+    for line in &wrapped {
+        output.push_str(&format!("{}\n", line.bright_black()));
+    }
+
+    output
+}
+
+/// Render tool use - "▶ {description}"
+fn render_tool_use(description: &str) -> String {
+    format!("▶ {}", description)
+}
+
+/// Render tool result - checkmark or X
+fn render_tool_result(is_error: bool, _output: &str) -> String {
+    if is_error {
+        format!(" {}\n", "✗".red())
+    } else {
+        format!(" {}\n", "✓".green())
+    }
+}
+
+/// Render error message - red styled
+fn render_error(msg: &str) -> String {
+    format!("{}\n", msg.red())
+}
+
+/// Render warning message - yellow styled
+fn render_warning(msg: &str) -> String {
+    format!("{}\n", msg.yellow())
+}
+
+/// Render info message
+fn render_info(msg: &str) -> String {
+    format!("{}\n", msg)
+}
+
+/// Render file diff with colored +/- lines and syntax highlighting
+fn render_file_diff(diff: &str, language: Option<&str>) -> String {
+    let mut output = format!(" {}\n", "✓".green());
+
+    // Track line numbers by parsing hunk headers
+    let mut old_line_num = 0usize;
+    let mut new_line_num = 0usize;
+
+    for line in diff.lines() {
+        // Skip --- and +++ header lines
+        if line.starts_with("+++") || line.starts_with("---") {
+            continue;
+        }
+
+        // Parse hunk headers to update line numbers, but don't render them
+        if line.starts_with("@@") {
+            if let Some((old_start, new_start)) = parse_hunk_header(line) {
+                old_line_num = old_start;
+                new_line_num = new_start;
+            }
+            continue;
+        }
+
+        let styled =
+            render_diff_line_with_gutter(line, language, &mut old_line_num, &mut new_line_num);
+        output.push_str(&styled);
+        output.push('\n');
+    }
+
+    output
+}
+
+/// Parse hunk header like "@@ -1,3 +1,5 @@" to extract starting line numbers
+fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
+    let line = line.trim();
+    if !line.starts_with("@@") {
+        return None;
+    }
+    let line = line.strip_prefix("@@")?.trim_start();
+    let line = line.split(" @@").next()?;
+
+    let mut parts = line.split_whitespace();
+
+    let old_part = parts.next()?.strip_prefix('-')?;
+    let old_start: usize = old_part.split(',').next()?.parse().ok()?;
+
+    let new_part = parts.next()?.strip_prefix('+')?;
+    let new_start: usize = new_part.split(',').next()?.parse().ok()?;
+
+    Some((old_start, new_start))
+}
+
+/// Render a single diff line with gutter (line number + prefix) and syntax highlighting.
+fn render_diff_line_with_gutter(
+    line: &str,
+    language: Option<&str>,
+    old_line_num: &mut usize,
+    new_line_num: &mut usize,
+) -> String {
+    // Determine line type and update line numbers
+    let (line_num, prefix, prefix_color, bg_color, code_content): (
+        Option<usize>,
+        &str,
+        Option<Color>,
+        Option<Color>,
+        &str,
+    ) = if let Some(stripped) = line.strip_prefix('+') {
+        let num = *new_line_num;
+        *new_line_num += 1;
+        (
+            Some(num),
+            "+",
+            Some(Color::Green),
+            Some(BG_DARK_GREEN),
+            stripped,
+        )
+    } else if let Some(stripped) = line.strip_prefix('-') {
+        let num = *old_line_num;
+        *old_line_num += 1;
+        (
+            Some(num),
+            "-",
+            Some(Color::Red),
+            Some(BG_DARK_RED),
+            stripped,
+        )
+    } else if let Some(stripped) = line.strip_prefix(' ') {
+        let num = *new_line_num;
+        *old_line_num += 1;
+        *new_line_num += 1;
+        (Some(num), " ", None, None, stripped)
+    } else {
+        // Unknown line format
+        return line.to_string();
+    };
+
+    // Build the gutter: "  3 + " (3-digit right-aligned number + space + prefix + space)
+    let line_num_str = line_num
+        .map(|n| format!("{:>3}", n))
+        .unwrap_or_else(|| "   ".to_string());
+
+    let mut result = String::new();
+
+    // Helper to apply optional background color to text
+    fn with_bg(text: &str, bg: Option<Color>) -> String {
+        match bg {
+            Some(color) => text.on_color(color).to_string(),
+            None => text.to_string(),
+        }
+    }
+
+    // Line number in dim gray with optional background
+    let line_num_display = format!("{} ", line_num_str);
+    let styled_num = line_num_display.bright_black();
+    result.push_str(&match bg_color {
+        Some(bg) => styled_num.on_color(bg).to_string(),
+        None => styled_num.to_string(),
+    });
+
+    // Prefix with diff color
+    if let Some(color) = prefix_color {
+        let styled_prefix = prefix.color(color);
+        result.push_str(&match bg_color {
+            Some(bg) => styled_prefix.on_color(bg).to_string(),
+            None => styled_prefix.to_string(),
+        });
+    } else {
+        result.push_str(&with_bg(prefix, bg_color));
+    }
+
+    // Space after prefix
+    result.push_str(&with_bg(" ", bg_color));
+
+    // Code content with syntax highlighting
+    if let Some(lang) = language {
+        let spans = syntax::highlight_code(code_content, Some(lang));
+        let mut last_end = 0;
+
+        for span in &spans {
+            // Add any gap between spans
+            if span.start > last_end {
+                let gap_text = &code_content[last_end..span.start];
+                result.push_str(&with_bg(gap_text, bg_color));
+            }
+            // Add the highlighted span with RGB color
+            let syntax::Rgb { r, g, b } = span.color;
+            let span_text = &code_content[span.start..span.end];
+            let colored_span = span_text.truecolor(r, g, b);
+            result.push_str(&match bg_color {
+                Some(bg) => colored_span.on_color(bg).to_string(),
+                None => colored_span.to_string(),
+            });
+            last_end = span.end;
+        }
+
+        // Add any remaining text
+        if last_end < code_content.len() {
+            let remaining = &code_content[last_end..];
+            result.push_str(&with_bg(remaining, bg_color));
+        }
+    } else {
+        // No language - just output the code content with optional background
+        result.push_str(&with_bg(code_content, bg_color));
+    }
+
+    result
+}
+
+/// Render todo list
+fn render_todo_list(items: &[super::history::TodoItem]) -> String {
+    let mut output = format!("{}\n", "Todo:".cyan().bold());
+
+    if items.is_empty() {
+        output.push_str(&format!("{}\n", "  (empty)".bright_black()));
+    } else {
+        for item in items {
+            let (indicator, content_styled): (&str, ColoredString) = match item.status {
+                TodoStatus::Pending => ("[ ]", item.content.white()),
+                TodoStatus::InProgress => ("[-]", item.content.cyan().bold()),
+                TodoStatus::Completed => ("[✓]", item.content.bright_black()),
+            };
+            output.push_str(&format!("  {} {}\n", indicator, content_styled));
+        }
+    }
+
+    output
+}
+
+/// Render auto-compact notification
+fn render_auto_compact(message: &str) -> String {
+    format!("{}\n", message.yellow())
+}
+
+// ============================================================================
+// Text wrapping utilities
+// ============================================================================
+
+/// Get display width of a character (accounting for wide chars)
+fn char_width(c: char) -> usize {
+    UnicodeWidthChar::width(c).unwrap_or(0)
+}
+
+/// Get display width of a string
+pub(crate) fn display_width(s: &str) -> usize {
+    s.chars().map(char_width).sum()
+}
+
+/// Wrap text to fit within a given width, preserving whitespace and newlines.
+pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    let mut current_width = 0;
+
+    let mut word = String::new();
+    let mut word_width = 0;
+
+    let push_long_word = |lines: &mut Vec<String>,
+                          current_line: &mut String,
+                          current_width: &mut usize,
+                          word_text: String| {
+        if word_text.is_empty() {
+            return;
+        }
+
+        let mut chunk = String::new();
+        let mut chunk_width = 0;
+
+        for ch in word_text.chars() {
+            let ch_width = char_width(ch);
+            if chunk_width + ch_width > width && chunk_width > 0 {
+                lines.push(std::mem::take(&mut chunk));
+                chunk_width = 0;
+            }
+            chunk.push(ch);
+            chunk_width += ch_width;
+            if chunk_width == width {
+                lines.push(std::mem::take(&mut chunk));
+                chunk_width = 0;
+            }
+        }
+
+        if !chunk.is_empty() {
+            current_line.push_str(&chunk);
+            *current_width = chunk_width;
+        } else {
+            *current_width = 0;
+        }
+    };
+
+    let flush_word = |lines: &mut Vec<String>,
+                      current_line: &mut String,
+                      current_width: &mut usize,
+                      word: &mut String,
+                      word_width: &mut usize| {
+        if word.is_empty() {
+            return;
+        }
+
+        let word_text = std::mem::take(word);
+        let word_len = *word_width;
+        *word_width = 0;
+
+        if word_len > width {
+            if *current_width > 0 {
+                lines.push(std::mem::take(current_line));
+                *current_width = 0;
+            }
+            push_long_word(lines, current_line, current_width, word_text);
+            return;
+        }
+
+        if *current_width == 0 {
+            current_line.push_str(&word_text);
+            *current_width = word_len;
+        } else if *current_width + word_len <= width {
+            current_line.push_str(&word_text);
+            *current_width += word_len;
+        } else {
+            lines.push(std::mem::take(current_line));
+            current_line.push_str(&word_text);
+            *current_width = word_len;
+        }
+    };
+
+    for ch in text.chars() {
+        match ch {
+            '\n' => {
+                flush_word(
+                    &mut lines,
+                    &mut current_line,
+                    &mut current_width,
+                    &mut word,
+                    &mut word_width,
+                );
+                lines.push(std::mem::take(&mut current_line));
+                current_width = 0;
+            }
+            ' ' | '\t' => {
+                flush_word(
+                    &mut lines,
+                    &mut current_line,
+                    &mut current_width,
+                    &mut word,
+                    &mut word_width,
+                );
+                let ch_width = display_width(&ch.to_string());
+                if current_width + ch_width > width {
+                    lines.push(std::mem::take(&mut current_line));
+                    current_width = 0;
+                }
+                current_line.push(ch);
+                current_width += ch_width;
+            }
+            _ => {
+                word.push(ch);
+                word_width += char_width(ch);
+            }
+        }
+    }
+
+    flush_word(
+        &mut lines,
+        &mut current_line,
+        &mut current_width,
+        &mut word,
+        &mut word_width,
+    );
+
+    if !current_line.is_empty() || lines.is_empty() {
+        lines.push(current_line);
+    }
+
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Force colors to be enabled for tests (colored crate disables colors when not on a TTY)
+    fn enable_colors() {
+        colored::control::set_override(true);
+    }
+
+    #[test]
+    fn test_wrap_text_simple() {
+        let result = wrap_text("hello world", 20);
+        assert_eq!(result, vec!["hello world"]);
+    }
+
+    #[test]
+    fn test_wrap_text_break() {
+        let result = wrap_text("hello world", 8);
+        assert_eq!(result, vec!["hello ", "world"]);
+    }
+
+    #[test]
+    fn test_wrap_text_long_sentence() {
+        let result = wrap_text("The quick brown fox jumps over the lazy dog", 20);
+        assert_eq!(
+            result,
+            vec!["The quick brown fox ", "jumps over the lazy ", "dog"]
+        );
+    }
+
+    #[test]
+    fn test_wrap_text_preserves_spaces() {
+        let result = wrap_text("a  b", 10);
+        assert_eq!(result, vec!["a  b"]);
+    }
+
+    #[test]
+    fn test_wrap_text_long_word() {
+        let result = wrap_text("supercalifragilisticexpialidocious", 10);
+        assert_eq!(
+            result,
+            vec!["supercalif", "ragilistic", "expialidoc", "ious"]
+        );
+    }
+
+    #[test]
+    fn test_wrap_text_long_word_with_prefix() {
+        let result = wrap_text("prefix supercalifragilisticexpialidocious", 10);
+        assert_eq!(
+            result,
+            vec!["prefix ", "supercalif", "ragilistic", "expialidoc", "ious"]
+        );
+    }
+
+    #[test]
+    fn test_wrap_text_long_word_with_space() {
+        let result = wrap_text("supercalifragilisticexpialidocious tail", 10);
+        assert_eq!(
+            result,
+            vec!["supercalif", "ragilistic", "expialidoc", "ious tail"]
+        );
+    }
+
+    #[test]
+    fn test_wrap_text_long_word_preserves_newlines() {
+        let result = wrap_text("supercalifragilisticexpialidocious\nnext", 10);
+        assert_eq!(
+            result,
+            vec!["supercalif", "ragilistic", "expialidoc", "ious", "next"]
+        );
+    }
+
+    #[test]
+    fn test_wrap_text_preserves_newlines() {
+        let result = wrap_text("a\n\n b", 10);
+        assert_eq!(result, vec!["a", "", " b"]);
+    }
+
+    #[test]
+    fn test_display_width() {
+        assert_eq!(display_width("hello"), 5);
+        assert_eq!(display_width("你好"), 4); // Each CJK char is 2 wide
+    }
+
+    #[test]
+    fn test_render_error() {
+        enable_colors();
+        let result = render_error("Something went wrong");
+        assert!(result.contains("Something went wrong"));
+        // Should contain ANSI escape codes
+        assert!(result.contains("\x1b["));
+        assert!(result.ends_with('\n'));
+    }
+
+    #[test]
+    fn test_render_tool_result_success() {
+        enable_colors();
+        let result = render_tool_result(false, "");
+        assert!(result.contains("✓"));
+        // Should contain ANSI escape codes
+        assert!(result.contains("\x1b["));
+    }
+
+    #[test]
+    fn test_render_tool_result_error() {
+        enable_colors();
+        let result = render_tool_result(true, "File not found");
+        assert!(result.contains("✗"));
+        // Should contain ANSI escape codes
+        assert!(result.contains("\x1b["));
+        // Error preview is no longer displayed inline
+        assert!(!result.contains("File not found"));
+    }
+
+    #[test]
+    fn test_code_block_highlighting() {
+        enable_colors();
+        let text = r#"Here is some code:
+```rust
+let x = 42;
+```
+And more text."#;
+
+        let result = render_assistant_text(text, false, 80);
+
+        // Should contain the code block markers
+        assert!(result.contains("```rust"));
+        assert!(result.contains("```\n"));
+
+        // Should contain ANSI color codes from syntax highlighting
+        assert!(result.contains("\x1b["));
+
+        // Check for highlighted code tokens (may be split by ANSI codes)
+        assert!(result.contains("let"));
+        assert!(result.contains("42"));
+
+        // Should contain the surrounding text
+        assert!(result.contains("Here is some code:"));
+        assert!(result.contains("And more text."));
+    }
+
+    #[test]
+    fn test_multiple_code_blocks() {
+        let text = r#"First block:
+```python
+def hello():
+    pass
+```
+Second block:
+```javascript
+const x = 42;
+```"#;
+
+        enable_colors();
+        let result = render_assistant_text(text, false, 80);
+
+        // Both code blocks should be present with fence markers
+        assert!(result.contains("```python"));
+        assert!(result.contains("```javascript"));
+
+        // Check for highlighted code tokens
+        assert!(result.contains("def"));
+        assert!(result.contains("hello"));
+        assert!(result.contains("const"));
+
+        // Should have syntax highlighting
+        assert!(result.contains("\x1b["));
+    }
+
+    #[test]
+    fn test_no_code_blocks() {
+        let text = "Just plain text without any code blocks.";
+        let result = render_assistant_text(text, false, 80);
+
+        assert!(result.contains("Just plain text"));
+        // No ANSI escape codes for syntax highlighting
+        assert!(!result.contains("\x1b[38;2;"));
+    }
+
+    #[test]
+    fn test_render_all_suppresses_trailing_checkmark() {
+        enable_colors();
+        let events = vec![
+            HistoryEvent::FileDiff {
+                diff: "some diff".to_string(),
+                language: None,
+            },
+            HistoryEvent::ToolResult {
+                output: "".to_string(),
+                is_error: false,
+            },
+        ];
+
+        let result = render_all(&events, 80);
+
+        // Should have one checkmark (from FileDiff)
+        assert!(result.contains("✓"));
+        // Should NOT have two checkmarks
+        assert_eq!(result.matches("✓").count(), 1);
+    }
+}

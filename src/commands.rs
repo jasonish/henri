@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
-//! Unified slash command definitions for both CLI and TUI modes.
+//! Unified slash command definitions for CLI mode.
 
 use crate::config::ConfigFile;
 
@@ -24,13 +24,12 @@ pub(crate) enum Command {
     BuildAgentsMd,
     ClaudeCountTokens,
     Clear,
-    Cli,
-    Tui,
     Compact,
     Custom { name: String, args: String },
-    DumpConversation,
     DumpPrompt,
+    Echo { text: String },
     Help,
+    Lsp,
     Mcp,
     Model,
     Quit,
@@ -40,7 +39,6 @@ pub(crate) enum Command {
     Sessions,
     Settings,
     StartTransactionLogging,
-    Status,
     StopTransactionLogging,
     Tools,
     Truncate,
@@ -58,10 +56,6 @@ pub(crate) enum Availability {
     ClaudeOnly,
     /// Only available when a Claude provider with OAuth is configured
     ClaudeOAuthConfigured,
-    /// Only available in TUI mode
-    TuiOnly,
-    /// Only available in CLI mode
-    CliOnly,
 }
 
 #[derive(Debug, Clone)]
@@ -78,75 +72,6 @@ pub(crate) struct DynamicSlashCommand {
     pub command: Command,
     pub name: String,
     pub description: String,
-}
-
-/// Session state for mode transitions.
-/// This carries the current session directly to avoid reloading from disk.
-#[derive(Debug, Clone)]
-pub(crate) struct ModeTransferSession {
-    pub messages: Vec<crate::provider::Message>,
-    pub provider: crate::providers::ModelProvider,
-    pub model_id: String,
-    pub thinking_enabled: bool,
-    pub read_only: bool,
-    pub session_id: Option<String>,
-}
-
-impl ModeTransferSession {
-    /// Convert to RestoredSession for compatibility with existing mode interfaces.
-    pub(crate) fn into_restored_session(
-        self,
-        working_dir: &std::path::Path,
-    ) -> crate::session::RestoredSession {
-        use crate::session::{RestoredSession, SerializableMessage, SessionMeta, SessionState};
-        use chrono::Utc;
-
-        let session_id = self
-            .session_id
-            .clone()
-            .unwrap_or_else(crate::session::generate_session_id);
-
-        // Create minimal session state for compatibility
-        let meta = SessionMeta {
-            version: 2,
-            session_id: session_id.clone(),
-            working_directory: working_dir.to_path_buf(),
-            saved_at: Utc::now(),
-            provider: self.provider.id().to_string(),
-            model_id: self.model_id.clone(),
-            thinking_enabled: self.thinking_enabled,
-            read_only: self.read_only,
-            todos: None,
-        };
-
-        let serializable_messages: Vec<SerializableMessage> =
-            self.messages.iter().map(|m| m.into()).collect();
-
-        let state = SessionState {
-            meta,
-            messages: serializable_messages,
-        };
-
-        RestoredSession {
-            session_id,
-            messages: self.messages,
-            provider: self.provider.id().to_string(),
-            model_id: self.model_id,
-            thinking_enabled: self.thinking_enabled,
-            read_only: self.read_only,
-            state,
-        }
-    }
-}
-
-/// Status returned when exiting a mode (CLI or TUI)
-#[derive(Debug, Clone)]
-pub(crate) enum ExitStatus {
-    Quit,
-    /// Switch to CLI mode, optionally carrying current session state
-    SwitchToCli(Option<ModeTransferSession>),
-    /// Switch to TUI mode, optionally carrying current session state
-    SwitchToTui(Option<ModeTransferSession>),
 }
 
 pub(crate) const COMMANDS: &[SlashCommand] = &[
@@ -181,15 +106,17 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         availability: Availability::Always,
     },
     SlashCommand {
-        command: Command::DumpConversation,
-        name: "dump-conversation",
-        description: "Display conversation context as JSON",
-        availability: Availability::TuiOnly,
-    },
-    SlashCommand {
         command: Command::DumpPrompt,
         name: "dump-prompt",
         description: "Dump the full API request",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Echo {
+            text: String::new(),
+        },
+        name: "echo",
+        description: "Echo text to the output area",
         availability: Availability::Always,
     },
     SlashCommand {
@@ -199,22 +126,16 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         availability: Availability::Always,
     },
     SlashCommand {
+        command: Command::Lsp,
+        name: "lsp",
+        description: "Show LSP server status",
+        availability: Availability::Always,
+    },
+    SlashCommand {
         command: Command::Mcp,
         name: "mcp",
         description: "Manage MCP server connections",
         availability: Availability::Always,
-    },
-    SlashCommand {
-        command: Command::Cli,
-        name: "cli",
-        description: "Switch to CLI mode",
-        availability: Availability::TuiOnly,
-    },
-    SlashCommand {
-        command: Command::Tui,
-        name: "tui",
-        description: "Switch to TUI mode",
-        availability: Availability::CliOnly,
     },
     SlashCommand {
         command: Command::Model,
@@ -265,12 +186,6 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         availability: Availability::Always,
     },
     SlashCommand {
-        command: Command::Status,
-        name: "status",
-        description: "Show usage statistics",
-        availability: Availability::CliOnly,
-    },
-    SlashCommand {
         command: Command::StopTransactionLogging,
         name: "stop-transaction-logging",
         description: "Disable transaction logging",
@@ -308,12 +223,9 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
     },
 ];
 
-pub(crate) const SLASH_MENU_MAX_VISIBLE: usize = 6;
-
 /// Filter commands based on context.
 pub(crate) fn filter_commands(
     query: &str,
-    is_tui: bool,
     is_claude: bool,
     has_claude_oauth: bool,
     custom_commands: &[crate::custom_commands::CustomCommand],
@@ -332,8 +244,6 @@ pub(crate) fn filter_commands(
             }
 
             match cmd.availability {
-                Availability::TuiOnly if !is_tui => return false,
-                Availability::CliOnly if is_tui => return false,
                 Availability::ClaudeOnly if !is_claude => return false,
                 Availability::ClaudeOAuthConfigured if !has_claude_oauth => return false,
                 _ => {}
@@ -378,6 +288,11 @@ pub(crate) fn parse(
     } else {
         (input.to_lowercase(), String::new())
     };
+
+    // Handle echo specially since it takes arguments
+    if cmd_name == "echo" {
+        return Some(Command::Echo { text: args });
+    }
 
     // Check built-in commands (they don't accept arguments currently)
     if let Some(cmd) = COMMANDS.iter().find(|cmd| cmd.name == cmd_name) {

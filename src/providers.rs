@@ -56,19 +56,6 @@ impl ModelProvider {
             ModelProvider::OpenRouter => "openrouter",
         }
     }
-
-    pub(crate) fn from_id(id: &str) -> Option<Self> {
-        match id {
-            "antigravity" => Some(ModelProvider::Antigravity),
-            "zen" => Some(ModelProvider::OpenCodeZen),
-            "copilot" => Some(ModelProvider::GitHubCopilot),
-            "claude" => Some(ModelProvider::Claude),
-            "openai" => Some(ModelProvider::OpenAi),
-            "openai_compat" => Some(ModelProvider::OpenAiCompat),
-            "openrouter" => Some(ModelProvider::OpenRouter),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -386,6 +373,54 @@ pub(crate) fn build_model_choices() -> Vec<ModelChoice> {
     choices
 }
 
+/// Get only the favorite model choices, sorted by display name
+pub(crate) fn get_favorite_models() -> Vec<ModelChoice> {
+    build_model_choices()
+        .into_iter()
+        .filter(|c| c.is_favorite)
+        .collect()
+}
+
+/// Cycle to the next favorite model.
+/// Returns the next favorite model, or None if there are no favorites.
+/// If the current model is not a favorite, returns the first favorite.
+/// `reverse` cycles backwards through the list.
+pub(crate) fn cycle_favorite_model(current_model: &str, reverse: bool) -> Option<ModelChoice> {
+    let favorites = get_favorite_models();
+    if favorites.is_empty() {
+        return None;
+    }
+
+    // Find current model's position in favorites
+    let current_idx = favorites
+        .iter()
+        .position(|c| c.short_display() == current_model);
+
+    let next_idx = match current_idx {
+        Some(idx) => {
+            if reverse {
+                if idx == 0 {
+                    favorites.len() - 1
+                } else {
+                    idx - 1
+                }
+            } else {
+                (idx + 1) % favorites.len()
+            }
+        }
+        // Current model not in favorites, start from first (or last if reverse)
+        None => {
+            if reverse {
+                favorites.len() - 1
+            } else {
+                0
+            }
+        }
+    };
+
+    favorites.into_iter().nth(next_idx)
+}
+
 /// Manages all provider instances and handles routing chat requests
 pub(crate) struct ProviderManager {
     zen_provider: ZenProvider,
@@ -442,24 +477,6 @@ impl ProviderManager {
             current_model_id,
             current_custom_provider,
             services,
-        }
-    }
-
-    /// Get a reference to the services container.
-    pub(crate) fn services(&self) -> &Services {
-        &self.services
-    }
-
-    pub(crate) fn current_model_string(&self) -> String {
-        match self.current_provider {
-            ModelProvider::Antigravity | ModelProvider::OpenAiCompat => {
-                if let Some(custom_name) = &self.current_custom_provider {
-                    format!("{}/{}", custom_name, self.current_model_id)
-                } else {
-                    format!("{}/{}", self.current_provider.id(), self.current_model_id)
-                }
-            }
-            _ => format!("{}/{}", self.current_provider.id(), self.current_model_id),
         }
     }
 

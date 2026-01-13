@@ -34,19 +34,34 @@ pub(crate) enum DefaultModel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum UiDefault {
-    /// Terminal UI (ratatui-based)
+    /// Command-line interface
     #[default]
-    Tui,
-    /// Command-line REPL interface
     Cli,
+}
+
+/// UI layout mode for chat output.
+///
+/// Currently only Spaced mode is supported. The enum is kept for backwards
+/// compatibility with existing config files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum UiLayoutMode {
+    /// No tags; insert one empty line between blocks.
+    #[default]
+    #[serde(other)]
+    Spaced,
 }
 
 /// UI configuration section.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct UiConfig {
-    /// Default interface to use (tui or cli). Defaults to tui.
+    /// Default interface to use. Defaults to cli.
     #[serde(default)]
     pub default: UiDefault,
+
+    /// Layout mode for the chat log. Defaults to spaced.
+    #[serde(default)]
+    pub layout_mode: UiLayoutMode,
 }
 
 /// Auto-compaction configuration section.
@@ -552,7 +567,126 @@ impl ConfigFile {
 
         let content = fs::read_to_string(&path).map_err(|e| error::Error::Config(e.to_string()))?;
 
-        toml::from_str(&content).map_err(|e| error::Error::Config(e.to_string()))
+        match toml::from_str(&content) {
+            Ok(config) => Ok(config),
+            Err(_) => {
+                // Try to load with toml::Value first to get what we can
+                Self::load_with_fallback(&content)
+            }
+        }
+    }
+
+    /// Attempt to load config with fallback for invalid fields.
+    /// This parses the TOML as a raw Value first, then selectively
+    /// deserializes fields that work, using defaults for the rest.
+    fn load_with_fallback(content: &str) -> Result<Self> {
+        let raw: toml::Value =
+            toml::from_str(content).map_err(|e| error::Error::Config(e.to_string()))?;
+
+        let mut config = Self::default();
+
+        // Try to extract each field, falling back to default on failure
+        if let Some(table) = raw.as_table() {
+            // providers
+            if let Some(providers_val) = table.get("providers")
+                && let Ok(providers) = providers_val.clone().try_into()
+            {
+                config.providers = providers;
+            }
+
+            // model
+            if let Some(model_val) = table.get("model")
+                && let Some(model) = model_val.as_str()
+            {
+                config.model = Some(model.to_string());
+            }
+
+            // default-model
+            if let Some(dm_val) = table.get("default-model")
+                && let Ok(dm) = dm_val.clone().try_into()
+            {
+                config.default_model = dm;
+            }
+
+            // state
+            if let Some(state_val) = table.get("state")
+                && let Ok(state) = state_val.clone().try_into()
+            {
+                config.state = Some(state);
+            }
+
+            // mcp
+            if let Some(mcp_val) = table.get("mcp")
+                && let Ok(mcp) = mcp_val.clone().try_into()
+            {
+                config.mcp = Some(mcp);
+            }
+
+            // lsp
+            if let Some(lsp_val) = table.get("lsp")
+                && let Ok(lsp) = lsp_val.clone().try_into()
+            {
+                config.lsp = Some(lsp);
+            }
+
+            // ui - skip invalid values silently (use default)
+            if let Some(ui_val) = table.get("ui")
+                && let Ok(ui) = ui_val.clone().try_into()
+            {
+                config.ui = ui;
+            }
+
+            // show-network-stats
+            if let Some(val) = table.get("show-network-stats")
+                && let Some(b) = val.as_bool()
+            {
+                config.show_network_stats = b;
+            }
+
+            // show-diffs
+            if let Some(val) = table.get("show-diffs")
+                && let Some(b) = val.as_bool()
+            {
+                config.show_diffs = b;
+            }
+
+            // lsp-enabled
+            if let Some(val) = table.get("lsp-enabled")
+                && let Some(b) = val.as_bool()
+            {
+                config.lsp_enabled = b;
+            }
+
+            // favorite-models
+            if let Some(val) = table.get("favorite-models")
+                && let Ok(fav) = val.clone().try_into()
+            {
+                config.favorite_models = fav;
+            }
+
+            // auto-compact
+            if let Some(val) = table.get("auto-compact")
+                && let Ok(ac) = val.clone().try_into()
+            {
+                config.auto_compact = ac;
+            }
+
+            // todo-enabled
+            if let Some(val) = table.get("todo-enabled")
+                && let Some(b) = val.as_bool()
+            {
+                config.todo_enabled = b;
+            }
+
+            // disabled-tools
+            if let Some(val) = table.get("disabled-tools")
+                && let Ok(dt) = val.clone().try_into()
+            {
+                config.disabled_tools = dt;
+            }
+        }
+
+        Ok(config)
     }
 
     pub(crate) fn save(&self) -> Result<()> {
@@ -615,14 +749,14 @@ impl ConfigFile {
         self.disabled_tools.iter().any(|t| t == tool_name)
     }
 
-    /// Toggle a tool's disabled status. Returns true if now disabled.
+    /// Toggle a tool's disabled status. Returns true if tool is now enabled.
     pub(crate) fn toggle_tool_disabled(&mut self, tool_name: &str) -> bool {
         if self.is_tool_disabled(tool_name) {
             self.disabled_tools.retain(|t| t != tool_name);
-            false
+            true // now enabled
         } else {
             self.disabled_tools.push(tool_name.to_string());
-            true
+            false // now disabled
         }
     }
 
@@ -667,17 +801,6 @@ impl Config {
 
         Ok(Self { api_key, model })
     }
-
-    pub(crate) fn save_state_model(model: &str) -> Result<()> {
-        let mut config = ConfigFile::load()?;
-        if config.state.is_none() {
-            config.state = Some(State::default());
-        }
-        if let Some(state) = config.state.as_mut() {
-            state.last_model = Some(model.to_string());
-        }
-        config.save()
-    }
 }
 
 /// Initialize MCP and LSP servers from configuration.
@@ -700,9 +823,9 @@ pub async fn initialize_servers(working_dir: &Path, lsp_override: Option<bool>) 
             .filter(|s| s.enabled)
             .map(|s| crate::mcp::McpServerConfig {
                 name: s.name.clone(),
-                command: s.command.clone(),
-                args: s.args.clone(),
-                env: s.env.clone(),
+                _command: s.command.clone(),
+                _args: s.args.clone(),
+                _env: s.env.clone(),
             })
             .collect();
         crate::mcp::register_servers(servers).await;
@@ -903,5 +1026,47 @@ expires-at = 12345
             "Expected 'default-model = \"zen/grok-code\"', got: {}",
             toml
         );
+    }
+
+    #[test]
+    fn test_ui_default_is_cli() {
+        assert_eq!(UiDefault::default(), UiDefault::Cli);
+        let config = ConfigFile::default();
+        assert_eq!(config.ui.default, UiDefault::Cli);
+    }
+
+    #[test]
+    fn test_ui_layout_mode_default_is_spaced() {
+        assert_eq!(UiLayoutMode::default(), UiLayoutMode::Spaced);
+        let config = ConfigFile::default();
+        assert_eq!(config.ui.layout_mode, UiLayoutMode::Spaced);
+    }
+
+    #[test]
+    fn test_invalid_ui_default_uses_fallback() {
+        // Test that an invalid ui.default value falls back to default, not error
+        let toml_str = r#"
+show-network-stats = false
+show-diffs = true
+
+[ui]
+default = "tui"
+"#;
+
+        // First, verify direct parsing would fail
+        let result: std::result::Result<ConfigFile, _> = toml::from_str(toml_str);
+        assert!(
+            result.is_err(),
+            "Direct parse should fail with invalid ui.default"
+        );
+
+        // Now test the fallback mechanism
+        let config = ConfigFile::load_with_fallback(toml_str).unwrap();
+
+        // The invalid ui.default should fall back to default (Cli)
+        assert_eq!(config.ui.default, UiDefault::Cli);
+        // But other valid fields should be preserved
+        assert!(!config.show_network_stats);
+        assert!(config.show_diffs);
     }
 }

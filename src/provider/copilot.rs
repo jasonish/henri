@@ -728,7 +728,10 @@ impl Provider for CopilotProvider {
             });
         }
 
-        output::print_text_end(output);
+        // Only end the text block if we actually streamed any text.
+        if !full_text.is_empty() {
+            output::print_text_end(output);
+        }
 
         if crate::provider::transaction_log::is_active() {
             let url = if self.use_responses_api() {
@@ -1022,7 +1025,10 @@ impl CopilotProvider {
             StopReason::ToolUse
         };
 
-        output::print_text_end(output);
+        // Only end the text block if we actually streamed any text.
+        if !full_text.is_empty() {
+            output::print_text_end(output);
+        }
 
         if crate::provider::transaction_log::is_active() {
             let url = if self.use_responses_api() {

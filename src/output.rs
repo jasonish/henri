@@ -3,9 +3,7 @@
 
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-
-/// Unified output events for CLI and TUI rendering
+/// Unified output events for CLI rendering
 #[derive(Debug, Clone)]
 pub(crate) enum OutputEvent {
     /// Thinking/reasoning started
@@ -25,15 +23,11 @@ pub(crate) enum OutputEvent {
         is_error: bool,
         error_preview: Option<String>,
     },
-    /// Start spinner with message
-    SpinnerStart(String),
-    /// Stop spinner
-    SpinnerStop,
     /// Informational message
     Info(String),
-    /// Error message (terminal - ends chat in TUI)
+    /// Error message (terminal)
     Error(String),
-    /// Warning message (non-terminal - does not end chat in TUI)
+    /// Warning message (non-terminal)
     Warning(String),
     /// Waiting for model response
     Waiting,
@@ -52,10 +46,7 @@ pub(crate) enum OutputEvent {
     TodoList { todos: Vec<crate::tools::TodoItem> },
     /// File was modified, here's the diff
     FileDiff {
-        path: String,
         diff: String,
-        lines_added: usize,
-        lines_removed: usize,
         /// Language for syntax highlighting (derived from file extension)
         language: Option<String>,
     },
@@ -74,7 +65,6 @@ pub(crate) trait OutputListener: Send + Sync {
 #[derive(Clone)]
 pub(crate) struct OutputContext {
     listener: Option<Arc<dyn OutputListener>>,
-    event_sender: Option<mpsc::UnboundedSender<OutputEvent>>,
 }
 
 impl OutputContext {
@@ -82,15 +72,6 @@ impl OutputContext {
     pub(crate) fn new_cli(listener: Arc<dyn OutputListener>) -> Self {
         Self {
             listener: Some(listener),
-            event_sender: None,
-        }
-    }
-
-    /// Create a new output context for TUI mode with an event channel
-    pub(crate) fn new_tui(event_sender: mpsc::UnboundedSender<OutputEvent>) -> Self {
-        Self {
-            listener: None,
-            event_sender: Some(event_sender),
         }
     }
 
@@ -98,29 +79,19 @@ impl OutputContext {
     pub(crate) fn new_quiet() -> Self {
         Self {
             listener: Some(Arc::new(crate::cli::listener::QuietListener::new())),
-            event_sender: None,
         }
     }
 
     /// Create a null output context that discards all events (for tests)
     #[cfg(test)]
     pub(crate) fn null() -> Self {
-        Self {
-            listener: None,
-            event_sender: None,
-        }
+        Self { listener: None }
     }
 
-    /// Emit an output event to both listener and channel
+    /// Emit an output event to listener
     pub(crate) fn emit(&self, event: OutputEvent) {
-        // Call listener synchronously
         if let Some(listener) = &self.listener {
             listener.on_event(&event);
-        }
-
-        // Send to channel for TUI
-        if let Some(sender) = &self.event_sender {
-            let _ = sender.send(event);
         }
     }
 }
@@ -188,14 +159,6 @@ pub(crate) fn print_text_end(ctx: &OutputContext) {
     ctx.emit(OutputEvent::TextEnd);
 }
 
-pub(crate) fn start_spinner(ctx: &OutputContext, message: &str) {
-    ctx.emit(OutputEvent::SpinnerStart(message.to_string()));
-}
-
-pub(crate) fn stop_spinner(ctx: &OutputContext) {
-    ctx.emit(OutputEvent::SpinnerStop);
-}
-
 /// Print a tool call announcement
 pub(crate) fn print_tool_call(ctx: &OutputContext, _name: &str, description: &str) {
     ctx.emit(OutputEvent::ToolCall {
@@ -252,12 +215,12 @@ pub(crate) fn emit_context_update(
     });
 }
 
-/// Emit error message (terminal - ends chat in TUI)
+/// Emit error message (terminal - ends chat loop)
 pub(crate) fn emit_error(ctx: &OutputContext, message: &str) {
     ctx.emit(OutputEvent::Error(message.to_string()));
 }
 
-/// Emit warning message (non-terminal - does not end chat in TUI)
+/// Emit warning message (non-terminal - does not end chat loop)
 pub(crate) fn emit_warning(ctx: &OutputContext, message: &str) {
     ctx.emit(OutputEvent::Warning(message.to_string()));
 }

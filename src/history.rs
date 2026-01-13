@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
-use base64::Engine;
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -22,37 +21,6 @@ pub(crate) struct HistoryImage {
     pub marker: String,
     pub mime_type: String,
     pub data: String, // Base64 encoded image data
-}
-
-impl HistoryImage {
-    /// Create a HistoryImage from raw image data (encodes to base64)
-    pub(crate) fn from_raw_data(
-        marker: String,
-        mime_type: String,
-        data: Vec<u8>,
-    ) -> Result<Self, base64::EncodeSliceError> {
-        let encoded = base64::engine::general_purpose::STANDARD.encode(&data);
-        Ok(Self {
-            marker,
-            mime_type,
-            data: encoded,
-        })
-    }
-
-    /// Get the raw image data (decodes from base64)
-    pub(crate) fn to_raw_data(&self) -> Result<Vec<u8>, base64::DecodeError> {
-        base64::engine::general_purpose::STANDARD.decode(&self.data)
-    }
-
-    /// Convert to PastedImage for use in prompts
-    pub(crate) fn to_pasted_image(&self) -> Result<crate::cli::PastedImage, base64::DecodeError> {
-        let raw_data = self.to_raw_data()?;
-        Ok(crate::cli::PastedImage {
-            marker: self.marker.clone(),
-            mime_type: self.mime_type.clone(),
-            data: raw_data,
-        })
-    }
 }
 
 pub(crate) struct FileHistory {
@@ -173,36 +141,6 @@ impl FileHistory {
     pub(crate) fn entries(&self) -> &[String] {
         &self.entries
     }
-
-    /// Get images for a specific history entry by index
-    pub(crate) fn get_images_for_entry(&self, index: usize) -> Option<Vec<HistoryImage>> {
-        if index >= self.entries.len() {
-            return None;
-        }
-
-        let prompt = &self.entries[index];
-        self.load_images_for_prompt(prompt)
-    }
-
-    /// Load images for a specific prompt from the history file
-    fn load_images_for_prompt(&self, target_prompt: &str) -> Option<Vec<HistoryImage>> {
-        let Ok(file) = File::open(&self.path) else {
-            return None;
-        };
-
-        let reader = BufReader::new(file);
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                continue;
-            };
-            if let Ok(entry) = serde_json::from_str::<HistoryEntry>(&line)
-                && entry.prompt == target_prompt
-            {
-                return Some(entry.images);
-            }
-        }
-        None
-    }
 }
 
 impl Default for FileHistory {
@@ -252,7 +190,20 @@ mod tests {
         t1.join().unwrap();
         t2.join().unwrap();
 
-        // Loading the history file should not panic, even if entries are corrupted
-        let _history = FileHistory::new_with_path(dir.path().join("history.json"));
+        // Append a known-good entry after concurrent writes so the file isn't
+        // considered entirely unusable even if earlier lines were corrupted.
+        let mut history = FileHistory::new_with_path(history_path);
+        history.add_with_images("final", vec![]);
+
+        let history = FileHistory::new_with_path(dir.path().join("history.json"));
+
+        // Concurrent appends without file locking may lose entries due to write
+        // races (interleaved bytes corrupt JSON lines, which are skipped on load).
+        // This is acceptable for command history - we just verify it doesn't completely fail.
+        assert!(
+            history.entries.contains(&"final".to_string()),
+            "Expected sentinel entry to survive: {:?}",
+            history.entries
+        );
     }
 }

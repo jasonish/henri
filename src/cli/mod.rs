@@ -1,781 +1,160 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
-//! CLI interface for Henri - the traditional REPL-style interface.
+//! CLI interface for Henri.
+//!
+//! Uses an event-driven architecture with a unified event loop that handles
+//! keyboard input, resize events, and chat streaming concurrently.
 
+mod clipboard;
+pub(crate) mod history;
 mod input;
 pub(crate) mod listener;
+mod markdown;
+mod menus;
+mod prompt;
+pub(crate) mod render;
+mod slash_menu;
+pub(crate) mod terminal;
 
-pub(crate) use input::{PastedImage, PromptInfo, PromptOutcome, PromptUi};
+mod editor;
 
+use std::collections::VecDeque;
+use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use colored::Colorize;
-use inquire::Select;
+use crossterm::event::{
+    DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
+use crossterm::execute;
+use crossterm::terminal as crossterm_terminal;
+use futures::FutureExt;
+use tokio::sync::oneshot;
 
-use crate::commands::{self, Command, ExitStatus, ModeTransferSession};
-use crate::config::{self, Config, ConfigFile, DefaultModel, UiDefault};
-use crate::custom_commands;
-use crate::error;
+/// An image pasted from the clipboard
+#[derive(Debug, Clone)]
+pub(crate) struct PastedImage {
+    pub marker: String,
+    pub mime_type: String,
+    pub data: Vec<u8>,
+}
+
+use crate::commands::Command;
+use crate::config::Config;
+use crate::custom_commands::{self, CustomCommand};
 use crate::history::FileHistory;
-use crate::output;
+use crate::output::{self, OutputContext};
 use crate::provider::zen::ZenProvider;
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
-use crate::providers::{ModelProvider, ProviderManager, ThinkingState, build_model_choices};
+use crate::providers::{
+    ModelChoice, ModelProvider, ProviderManager, cycle_thinking_state, default_thinking_state,
+};
+use crate::services::Services;
 use crate::session;
 use crate::tools::todo::clear_todos;
-use crate::usage;
 
-enum CommandResult {
-    Quit,
-    SwitchToTui,
-    Continue,
-    ClearHistory,
-    SelectModel,
-    Status,
-    Usage,
-    DumpPrompt,
-    StartTransactionLogging,
-    StopTransactionLogging,
-    Compact,
-    CountTokens,
-    CustomPrompt {
-        prompt: String,
-        model: Option<String>,
-    },
-    Sessions,
-    Settings,
-    Mcp,
-    Tools,
-    Truncate,
-    Undo,
-    Forget,
-    SetReadWrite,
-    SetReadOnly,
-    SetYolo,
+use input::{InputAction, InputState};
+use menus::{
+    HistorySearchState, McpMenuState, ModelMenuState, SessionMenuState, SettingsMenuAction,
+    SettingsMenuState, ToolsMenuState,
+};
+use prompt::{PromptBox, SecurityStatus, ThinkingStatus};
+
+/// A queued prompt waiting for the current chat to complete
+struct PendingPrompt {
+    /// The prompt text to send
+    input: String,
+    /// Images pasted with this prompt
+    images: Vec<PastedImage>,
 }
 
-fn handle_command(
-    input: &str,
-    current_provider: ModelProvider,
-    custom_commands: &[custom_commands::CustomCommand],
-    output: &output::OutputContext,
-) -> CommandResult {
-    let input = input.trim();
+#[derive(Debug)]
+enum ChatTaskStatus {
+    Ok,
+    Interrupted,
+    Error(String),
+    Panic(String),
+}
 
-    // Handle /exit as an alias for /quit
-    if input == "/exit" {
-        return CommandResult::Quit;
-    }
+struct ChatTaskResult {
+    provider_manager: ProviderManager,
+    messages: Vec<Message>,
+    status: ChatTaskStatus,
+    can_retry_prompt: bool,
+}
 
-    let Some(cmd_str) = input.strip_prefix('/') else {
-        output.emit(output::OutputEvent::Error(format!(
-            "Unknown command: {}",
-            input
-        )));
-        output.emit(output::OutputEvent::Info(
-            "Type /help for available commands.".into(),
-        ));
-        return CommandResult::Continue;
-    };
+/// State for an active chat task
+struct ChatTask {
+    result_rx: oneshot::Receiver<ChatTaskResult>,
+    interrupted: Arc<AtomicBool>,
+    /// Cached provider info for shortcuts during streaming
+    provider: crate::providers::ModelProvider,
+    model_id: String,
+    /// Custom provider name (if any)
+    custom_provider: Option<String>,
+    /// Compaction state, if this is a compaction chat
+    compaction: Option<CompactionState>,
+}
 
-    let Some(cmd) = commands::parse(cmd_str, custom_commands) else {
-        output.emit(output::OutputEvent::Error(format!(
-            "Unknown command: {}",
-            input
-        )));
-        output.emit(output::OutputEvent::Info(
-            "Type /help for available commands.".into(),
-        ));
-        return CommandResult::Continue;
-    };
+/// State for an in-progress compaction operation
+struct CompactionState {
+    /// Messages to preserve (not compacted)
+    preserved: Vec<Message>,
+    /// Number of messages being compacted
+    messages_compacted: usize,
+    /// Original messages (for rollback)
+    original: Vec<Message>,
+}
 
-    match cmd {
-        Command::BuildAgentsMd => CommandResult::CustomPrompt {
-            prompt: crate::prompts::BUILD_AGENTS_MD_PROMPT.to_string(),
-            model: None,
-        },
-        Command::Quit => CommandResult::Quit,
-        Command::Tui => CommandResult::SwitchToTui,
-        Command::Cli => {
-            output.emit(output::OutputEvent::Error("Already in CLI mode.".into()));
-            CommandResult::Continue
-        }
-        Command::Help => {
-            output.emit(output::OutputEvent::Info(
-                "Available commands:".cyan().bold().to_string(),
-            ));
-            for slash_cmd in commands::COMMANDS {
-                match slash_cmd.availability {
-                    commands::Availability::TuiOnly => continue,
-                    commands::Availability::ClaudeOnly
-                        if !matches!(current_provider, ModelProvider::Claude) =>
-                    {
-                        continue;
-                    }
-                    _ => {}
-                }
-                let cmd_name = format!("/{:<32}", slash_cmd.name);
-                output.emit(output::OutputEvent::Info(format!(
-                    "  {} - {}",
-                    cmd_name.green(),
-                    slash_cmd.description
-                )));
-            }
-            if !custom_commands.is_empty() {
-                output.emit(output::OutputEvent::Info(
-                    "\nCustom commands:".cyan().bold().to_string(),
-                ));
-                for custom_cmd in custom_commands {
-                    let cmd_name = format!("/{:<32}", custom_cmd.name);
-                    output.emit(output::OutputEvent::Info(format!(
-                        "  {} - {}",
-                        cmd_name.green(),
-                        custom_cmd.description
-                    )));
-                }
-            }
-            output.emit(output::OutputEvent::Info(
-                "\nShell commands:".cyan().bold().to_string(),
-            ));
-            let shell_cmd = format!("{:<33}", "!<cmd>");
-            output.emit(output::OutputEvent::Info(format!(
-                "  {} - Run a shell command (e.g., !ls -la)",
-                shell_cmd.green()
-            )));
-            output.emit(output::OutputEvent::Info(
-                "\nKeyboard shortcuts:".cyan().bold().to_string(),
-            ));
-            let shortcut = format!("{:<33}", "Ctrl+M");
-            output.emit(output::OutputEvent::Info(format!(
-                "  {} - Switch model",
-                shortcut.yellow()
-            )));
-            let shortcut = format!("{:<33}", "Ctrl+T");
-            output.emit(output::OutputEvent::Info(format!(
-                "  {} - Toggle thinking",
-                shortcut.yellow()
-            )));
-            let shortcut = format!("{:<33}", "Ctrl+X");
-            output.emit(output::OutputEvent::Info(format!(
-                "  {} - Cycle security mode (Read-Write -> Read-Only -> YOLO)",
-                shortcut.yellow()
-            )));
-            let shortcut = format!("{:<33}", "Shift+Tab");
-            output.emit(output::OutputEvent::Info(format!(
-                "  {} - Cycle favorite models",
-                shortcut.yellow()
-            )));
-            let shortcut = format!("{:<33}", "Ctrl+R");
-            output.emit(output::OutputEvent::Info(format!(
-                "  {} - Search history",
-                shortcut.yellow()
-            )));
-            output.emit(output::OutputEvent::Info(
-                "\nType any other text to chat with the AI.".into(),
-            ));
-            CommandResult::Continue
-        }
-        Command::Clear => {
-            output.emit(output::OutputEvent::Info(
-                "Conversation history cleared.".into(),
-            ));
-            CommandResult::ClearHistory
-        }
-        Command::Truncate => {
-            output.emit(output::OutputEvent::Info(
-                "Conversation history truncated to last message.".into(),
-            ));
-            CommandResult::Truncate
-        }
-        Command::Undo => CommandResult::Undo,
-        Command::Forget => CommandResult::Forget,
-        Command::StartTransactionLogging => CommandResult::StartTransactionLogging,
-        Command::StopTransactionLogging => CommandResult::StopTransactionLogging,
-        Command::Model => CommandResult::SelectModel,
-        Command::Status => CommandResult::Status,
-        Command::DumpPrompt => CommandResult::DumpPrompt,
-        Command::Compact => CommandResult::Compact,
-        Command::Usage => {
-            if crate::commands::has_claude_oauth_provider() {
-                CommandResult::Usage
-            } else {
-                output.emit(output::OutputEvent::Error(
-                    "/claude-usage requires a Claude provider with OAuth authentication configured."
-                        .into(),
-                ));
-                CommandResult::Continue
-            }
-        }
-        Command::ClaudeCountTokens => {
-            if matches!(current_provider, ModelProvider::Claude) {
-                CommandResult::CountTokens
-            } else {
-                output.emit(output::OutputEvent::Error(
-                    "/claude-count-tokens is only available when using Claude (Anthropic) provider."
-                        .into(),
-                ));
-                CommandResult::Continue
-            }
-        }
-        // TUI-only commands - should not be reachable in CLI mode
-        Command::DumpConversation => {
-            output.emit(output::OutputEvent::Error(
-                "This command is only available in TUI mode.".into(),
-            ));
-            CommandResult::Continue
-        }
-        Command::Sessions => CommandResult::Sessions,
-        Command::Settings => CommandResult::Settings,
-        Command::ReadOnly => CommandResult::SetReadOnly,
-        Command::ReadWrite => CommandResult::SetReadWrite,
-        Command::Yolo => CommandResult::SetYolo,
-        Command::Mcp => CommandResult::Mcp,
-        Command::Tools => CommandResult::Tools,
-        Command::Custom { name, args } => {
-            if let Some(custom) = custom_commands.iter().find(|c| c.name == name) {
-                let prompt = custom_commands::substitute_variables(&custom.prompt, &args);
-                CommandResult::CustomPrompt {
-                    prompt,
-                    model: custom.model.clone(),
-                }
-            } else {
-                output.emit(output::OutputEvent::Error(format!(
-                    "Custom command '{}' not found",
-                    name
-                )));
-                CommandResult::Continue
-            }
-        }
+/// Arguments for the CLI interface
+pub(crate) struct CliArgs {
+    pub model: Option<String>,
+    pub prompt: Vec<String>,
+    pub working_dir: PathBuf,
+    pub restored_session: Option<session::RestoredSession>,
+    /// LSP override: Some(true) = force enable, Some(false) = force disable, None = use config
+    pub lsp_override: Option<bool>,
+    /// Enable read-only mode (disables file editing tools)
+    pub read_only: bool,
+    /// Exit after processing the prompt (batch mode)
+    pub batch: bool,
+}
+
+/// Events from chat completion
+enum ChatOutcome {
+    /// Chat completed successfully
+    Complete,
+    /// Chat was interrupted
+    Interrupted,
+}
+
+fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
     }
 }
 
-/// Interactive model selection using inquire.
-/// Returns `true` if the provider changed (requiring thinking block cleanup).
-fn select_model(provider_manager: &mut ProviderManager) -> bool {
-    let choices = build_model_choices();
-
-    if choices.is_empty() {
-        println!("No models available.");
-        return false;
-    }
-
-    // Find current selection index
-    let current_model_id = provider_manager.current_model_id();
-    let current_provider = provider_manager.current_provider();
-    let start_idx = choices
-        .iter()
-        .position(|m| m.model_id == current_model_id && m.provider == current_provider)
-        .unwrap_or(0);
-
-    match Select::new("Select a model:", choices)
-        .with_starting_cursor(start_idx)
-        .with_page_size(output::menu_page_size())
-        .prompt()
+/// Shorten a path by replacing the home directory with ~
+fn shorten_path(path: &std::path::Path) -> String {
+    if let Some(home) = dirs::home_dir()
+        && let Ok(stripped) = path.strip_prefix(&home)
     {
-        Ok(choice) => {
-            let model_str = choice.short_display();
-            let provider_changed = provider_manager.set_model(
-                choice.provider,
-                choice.model_id.clone(),
-                choice.custom_provider.clone(),
-            );
-
-            // Save selection to config
-            let _ = Config::save_state_model(&model_str);
-
-            println!(
-                "Model set to: {} ({})",
-                model_str,
-                choice.provider.display_name()
-            );
-            provider_changed
-        }
-        Err(_) => {
-            println!("Selection cancelled.");
-            false
-        }
+        return format!("~/{}", stripped.display());
     }
+    path.display().to_string()
 }
 
-/// Cycle through favorite models (triggered by Shift+Tab)
-/// Returns (provider_display, model_id, provider_enum, provider_changed, thinking_mode) if successful
-fn cycle_favorite_model(
-    provider_manager: &mut ProviderManager,
-) -> Option<(String, String, ModelProvider, bool, Option<String>)> {
-    let choices = build_model_choices();
-    let favorites: Vec<_> = choices.iter().filter(|c| c.is_favorite).collect();
-
-    if favorites.is_empty() {
-        return None;
-    }
-
-    // Find current model's position in favorites
-    let current_model_id = provider_manager.current_model_id();
-    let current_provider = provider_manager.current_provider();
-    let current_idx = favorites
-        .iter()
-        .position(|c| c.provider == current_provider && c.model_id == current_model_id);
-
-    // Cycle to next favorite (or first if not found)
-    let next_idx = match current_idx {
-        Some(idx) => (idx + 1) % favorites.len(),
-        None => 0,
-    };
-
-    let next_model = favorites[next_idx];
-    let model_str = next_model.short_display();
-
-    // Update provider manager
-    let provider_changed = provider_manager.set_model(
-        next_model.provider,
-        next_model.model_id.clone(),
-        next_model.custom_provider.clone(),
-    );
-
-    // Save selection to config
-    let _ = Config::save_state_model(&model_str);
-
-    // Return new display values
-    let provider_display = next_model
-        .custom_provider
-        .clone()
-        .unwrap_or_else(|| next_model.provider.display_name().to_string());
-    let mut thinking_mode = None;
-    if provider_changed {
-        thinking_mode = provider_manager.default_thinking().mode;
-    }
-
-    Some((
-        provider_display,
-        next_model.model_id.clone(),
-        next_model.provider,
-        provider_changed,
-        thinking_mode,
-    ))
-}
-
-/// Settings menu options
-#[derive(Clone)]
-enum SettingChoice {
-    NetworkStats(bool),
-    ShowDiffs(bool),
-    DefaultModel(DefaultModel),
-    DefaultUi(UiDefault),
-    LspEnabled(bool),
-}
-
-impl std::fmt::Display for SettingChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SettingChoice::NetworkStats(enabled) => write!(
-                f,
-                "Network Stats: {}",
-                if *enabled { "Enabled" } else { "Disabled" }
-            ),
-            SettingChoice::ShowDiffs(enabled) => {
-                write!(
-                    f,
-                    "Show Diffs: {}",
-                    if *enabled { "Enabled" } else { "Disabled" }
-                )
-            }
-            SettingChoice::DefaultModel(dm) => match dm {
-                DefaultModel::LastUsed => write!(f, "Default Model: :last-used"),
-                DefaultModel::Specific(m) => write!(f, "Default Model: {}", m),
-            },
-            SettingChoice::DefaultUi(ui) => match ui {
-                UiDefault::Tui => write!(f, "Default UI: tui"),
-                UiDefault::Cli => write!(f, "Default UI: cli"),
-            },
-            SettingChoice::LspEnabled(enabled) => write!(
-                f,
-                "LSP Integration: {}",
-                if *enabled { "Enabled" } else { "Disabled" }
-            ),
-        }
-    }
-}
-
-/// Interactive settings menu using inquire
-async fn show_settings_menu(working_dir: &std::path::Path) {
-    let config = match ConfigFile::load() {
-        Ok(c) => c,
-        Err(e) => {
-            println!("Failed to load config: {}", e);
-            return;
-        }
-    };
-
-    let choices = vec![
-        SettingChoice::NetworkStats(config.show_network_stats),
-        SettingChoice::ShowDiffs(config.show_diffs),
-        SettingChoice::LspEnabled(config.lsp_enabled),
-        SettingChoice::DefaultModel(config.default_model.clone()),
-        SettingChoice::DefaultUi(config.ui.default),
-    ];
-
-    let selection = match Select::new("Settings:", choices)
-        .with_page_size(output::menu_page_size())
-        .prompt()
-    {
-        Ok(choice) => choice,
-        Err(_) => {
-            println!("Selection cancelled.");
-            return;
-        }
-    };
-
-    match selection {
-        SettingChoice::NetworkStats(current) => {
-            let toggle_choices = vec!["Enabled", "Disabled"];
-            let start_idx = if current { 0 } else { 1 };
-            match Select::new("Network Stats:", toggle_choices)
-                .with_starting_cursor(start_idx)
-                .prompt()
-            {
-                Ok(choice) => {
-                    let enabled = choice == "Enabled";
-                    if let Ok(mut cfg) = ConfigFile::load() {
-                        cfg.show_network_stats = enabled;
-                        if cfg.save().is_ok() {
-                            println!(
-                                "Network Stats: {}",
-                                if enabled { "Enabled" } else { "Disabled" }
-                            );
-                        }
-                    }
-                }
-                Err(_) => println!("Selection cancelled."),
-            }
-        }
-        SettingChoice::ShowDiffs(current) => {
-            let toggle_choices = vec!["Enabled", "Disabled"];
-            let start_idx = if current { 0 } else { 1 };
-            match Select::new("Show Diffs:", toggle_choices)
-                .with_starting_cursor(start_idx)
-                .prompt()
-            {
-                Ok(choice) => {
-                    let enabled = choice == "Enabled";
-                    if let Ok(mut cfg) = ConfigFile::load() {
-                        cfg.show_diffs = enabled;
-                        if cfg.save().is_ok() {
-                            println!(
-                                "Show Diffs: {}",
-                                if enabled { "Enabled" } else { "Disabled" }
-                            );
-                        }
-                    }
-                }
-                Err(_) => println!("Selection cancelled."),
-            }
-        }
-        SettingChoice::DefaultModel(current) => {
-            show_default_model_menu(&current);
-        }
-        SettingChoice::DefaultUi(current) => {
-            let choices = vec!["tui", "cli"];
-            let start_idx = match current {
-                UiDefault::Tui => 0,
-                UiDefault::Cli => 1,
-            };
-            match Select::new("Default UI:", choices)
-                .with_starting_cursor(start_idx)
-                .prompt()
-            {
-                Ok(choice) => {
-                    let ui = if choice == "tui" {
-                        UiDefault::Tui
-                    } else {
-                        UiDefault::Cli
-                    };
-                    if let Ok(mut cfg) = ConfigFile::load() {
-                        cfg.ui.default = ui;
-                        if cfg.save().is_ok() {
-                            println!("Default UI: {}", choice);
-                        }
-                    }
-                }
-                Err(_) => println!("Selection cancelled."),
-            }
-        }
-        SettingChoice::LspEnabled(current) => {
-            let toggle_choices = vec!["Enabled", "Disabled"];
-            let start_idx = if current { 0 } else { 1 };
-            match Select::new("LSP Integration:", toggle_choices)
-                .with_starting_cursor(start_idx)
-                .prompt()
-            {
-                Ok(choice) => {
-                    let enabled = choice == "Enabled";
-                    if let Ok(mut cfg) = ConfigFile::load() {
-                        cfg.lsp_enabled = enabled;
-                        if cfg.save().is_ok() {
-                            println!(
-                                "LSP Integration: {}",
-                                if enabled { "Enabled" } else { "Disabled" }
-                            );
-
-                            // Reload LSP servers in real-time
-                            match crate::lsp::reload_from_config(working_dir).await {
-                                Ok(count) if enabled => {
-                                    println!("Started {} LSP server(s)", count);
-                                }
-                                Ok(_) => {
-                                    println!("LSP servers stopped");
-                                }
-                                Err(e) => {
-                                    println!("Warning: Failed to reload LSP: {}", e);
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(_) => println!("Selection cancelled."),
-            }
-        }
-    }
-}
-
-/// Interactive MCP server management menu using inquire
-async fn show_mcp_menu() {
-    use inquire::MultiSelect;
-
-    let statuses = crate::mcp::manager().server_statuses().await;
-
-    if statuses.is_empty() {
-        println!("No MCP servers configured.");
-        println!("\nTo add MCP servers, run:");
-        println!("  henri mcp add <name> <command...>");
-        println!("\nExample:");
-        println!("  henri mcp add my-server npx -y @anthropic/mcp-server");
-        return;
-    }
-
-    // Build choices - just server names
-    let choices: Vec<&str> = statuses.iter().map(|s| s.name.as_str()).collect();
-
-    // Pre-select currently running servers
-    let defaults: Vec<usize> = statuses
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| s.is_running)
-        .map(|(i, _)| i)
-        .collect();
-
-    let selected = match MultiSelect::new("MCP Servers:", choices.clone())
-        .with_default(&defaults)
-        .with_page_size(output::menu_page_size())
-        .prompt()
-    {
-        Ok(sel) => sel,
-        Err(_) => {
-            println!("Cancelled.");
-            return;
-        }
-    };
-
-    // Determine which servers to start/stop
-    let selected_names: std::collections::HashSet<&str> = selected.into_iter().collect();
-
-    for status in &statuses {
-        let is_selected = selected_names.contains(status.name.as_str());
-        let name = &status.name;
-
-        if is_selected && !status.is_running {
-            // Start server
-            match crate::mcp::start_server(name).await {
-                Ok(()) => println!("Started '{}'", name),
-                Err(e) => println!("Failed to start '{}': {}", name, e),
-            }
-        } else if !is_selected && status.is_running {
-            // Stop server
-            match crate::mcp::stop_server(name).await {
-                Ok(()) => println!("Stopped '{}'", name),
-                Err(e) => println!("Failed to stop '{}': {}", name, e),
-            }
-        }
-    }
-}
-
-/// Interactive tools management menu using inquire
-fn show_tools_menu(read_only: bool) {
-    use crate::tools::{READ_ONLY_DISABLED_TOOLS, TOOL_INFO};
-    use inquire::MultiSelect;
-    use std::collections::HashSet;
-
-    let config = config::ConfigFile::load().unwrap_or_default();
-    let disabled_tools = &config.disabled_tools;
-
-    if read_only {
-        println!("Read-only mode: write-capable tools are hidden.");
-        println!();
-    }
-
-    let visible_tools: Vec<(&str, &str)> = TOOL_INFO
-        .iter()
-        .filter(|(name, _)| !(read_only && READ_ONLY_DISABLED_TOOLS.contains(name)))
-        .map(|(name, desc)| (*name, *desc))
-        .collect();
-
-    let choices: Vec<String> = visible_tools
-        .iter()
-        .map(|(name, desc)| format!("{:<12} - {}", name, desc))
-        .collect();
-
-    let defaults: Vec<usize> = visible_tools
-        .iter()
-        .enumerate()
-        .filter(|(_, (name, _))| !disabled_tools.iter().any(|t| t == *name))
-        .map(|(i, _)| i)
-        .collect();
-
-    let selected = match MultiSelect::new("Tools:", choices.clone())
-        .with_default(&defaults)
-        .with_page_size(output::menu_page_size())
-        .prompt()
-    {
-        Ok(sel) => sel,
-        Err(_) => {
-            println!("Cancelled.");
-            return;
-        }
-    };
-
-    let selected_indices: HashSet<usize> = selected
-        .iter()
-        .filter_map(|s| choices.iter().position(|c| c == s))
-        .collect();
-
-    let mut disabled_set: HashSet<String> = disabled_tools.iter().cloned().collect();
-
-    for (i, (name, _)) in visible_tools.iter().enumerate() {
-        if selected_indices.contains(&i) {
-            disabled_set.remove(*name);
-        } else {
-            disabled_set.insert((*name).to_string());
-        }
-    }
-
-    let new_disabled_tools: Vec<String> = TOOL_INFO
-        .iter()
-        .filter_map(|(name, _)| {
-            if disabled_set.contains(*name) {
-                Some((*name).to_string())
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Save to config
-    if let Ok(mut config) = config::ConfigFile::load() {
-        config.disabled_tools = new_disabled_tools;
-        if let Err(e) = config.save() {
-            println!("Failed to save config: {}", e);
-        } else {
-            println!("Tool settings saved.");
-        }
-    }
-}
-
-/// Interactive session selection menu using inquire.
-/// Returns the selected SessionInfo if one was chosen.
-fn show_sessions_menu(working_dir: &std::path::Path) -> Option<session::SessionInfo> {
-    let sessions = session::list_sessions(working_dir);
-
-    if sessions.is_empty() {
-        println!("No previous sessions found for this directory.");
-        return None;
-    }
-
-    // Build display strings for each session
-    let choices: Vec<String> = sessions.iter().map(|s| s.display_string()).collect();
-
-    match Select::new("Select a session:", choices)
-        .with_page_size(output::menu_page_size())
-        .prompt()
-    {
-        Ok(choice) => {
-            // Find the corresponding session by matching display string
-            let idx = sessions
-                .iter()
-                .position(|s| s.display_string() == choice)
-                .unwrap_or(0);
-            Some(sessions[idx].clone())
-        }
-        Err(_) => {
-            println!("Selection cancelled.");
-            None
-        }
-    }
-}
-
-/// A choice in the default model submenu
-#[derive(Clone)]
-enum DefaultModelChoice {
-    LastUsed,
-    Specific(crate::providers::ModelChoice),
-}
-
-impl std::fmt::Display for DefaultModelChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DefaultModelChoice::LastUsed => write!(f, ":last-used"),
-            DefaultModelChoice::Specific(model) => {
-                write!(f, "{}", model.display())?;
-                if let Some(suffix) = model.display_suffix() {
-                    write!(f, "{}", suffix)?;
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
-/// Show the default model selection submenu
-fn show_default_model_menu(current: &DefaultModel) {
-    let model_choices = build_model_choices();
-
-    let mut choices: Vec<DefaultModelChoice> = vec![DefaultModelChoice::LastUsed];
-    choices.extend(model_choices.into_iter().map(DefaultModelChoice::Specific));
-
-    // Find the index of the current default model
-    let start_idx = match current {
-        DefaultModel::LastUsed => 0,
-        DefaultModel::Specific(model_str) => choices
-            .iter()
-            .position(|c| match c {
-                DefaultModelChoice::Specific(m) => m.short_display() == *model_str,
-                _ => false,
-            })
-            .unwrap_or(0),
-    };
-
-    match Select::new("Default Model:", choices)
-        .with_starting_cursor(start_idx)
-        .with_page_size(output::menu_page_size())
-        .prompt()
-    {
-        Ok(choice) => {
-            let new_default = match &choice {
-                DefaultModelChoice::LastUsed => DefaultModel::LastUsed,
-                DefaultModelChoice::Specific(m) => DefaultModel::Specific(m.short_display()),
-            };
-            if let Ok(mut cfg) = ConfigFile::load() {
-                cfg.default_model = new_default;
-                if cfg.save().is_ok() {
-                    println!("Default Model: {}", choice);
-                }
-            }
-        }
-        Err(_) => println!("Selection cancelled."),
-    }
-}
-
-pub(crate) fn supports_thinking(provider: ModelProvider, model: &str) -> bool {
+/// Check if thinking is available and toggleable for a given provider/model
+fn supports_thinking(provider: ModelProvider, model: &str) -> bool {
     match provider {
         ModelProvider::Antigravity => true,
         ModelProvider::OpenCodeZen => ZenProvider::model_thinking_toggleable(model),
@@ -787,221 +166,127 @@ pub(crate) fn supports_thinking(provider: ModelProvider, model: &str) -> bool {
     }
 }
 
-fn supports_images(provider: ModelProvider, model: &str) -> bool {
-    match provider {
-        ModelProvider::Antigravity => true,
-        ModelProvider::OpenCodeZen => !matches!(model, "big-pickle" | "glm-4.6"),
-        ModelProvider::GitHubCopilot => model.starts_with("gpt-5"),
-        ModelProvider::Claude => true,
-        ModelProvider::OpenAi => true,
-        ModelProvider::OpenAiCompat => true,
-        ModelProvider::OpenRouter => true,
-    }
-}
-
-/// Chat with any provider that supports tools, handling tool calls in a loop.
-///
-/// This is a CLI-specific wrapper around the shared chat::run_chat_loop
-/// that toggles the interrupt flag when Ctrl+C arrives so in-flight
-/// requests can be cancelled without exiting the process.
-async fn run_chat_loop(
-    provider_manager: &mut ProviderManager,
-    messages: &mut Vec<Message>,
-    interrupted: &Arc<AtomicBool>,
-    output: &output::OutputContext,
-) -> error::Result<()> {
-    let ctrl_c_interrupted = Arc::clone(interrupted);
-    let ctrl_c_task = tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            ctrl_c_interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-    });
-
-    let result = provider_manager.chat(messages, interrupted, output).await;
-    ctrl_c_task.abort();
-    result
-}
-
-fn show_status(provider_manager: &ProviderManager, output: &output::OutputContext) {
-    let provider = provider_manager.current_provider();
-    let model = provider_manager.current_model_id();
-
-    output.emit(output::OutputEvent::Info(format!(
-        "Provider: {} ({})",
-        provider.display_name(),
-        provider.id()
-    )));
-    output.emit(output::OutputEvent::Info(format!("Model: {}", model)));
-
-    if matches!(provider, ModelProvider::Claude) {
-        let u = usage::anthropic();
-        let context_limit = crate::provider::context_limit(provider, model);
-
-        output.emit(output::OutputEvent::Info(String::new()));
-        if let Some(limit) = context_limit {
-            let pct = (u.last_input() as f64 / limit as f64) * 100.0;
-            output.emit(output::OutputEvent::Info(format!(
-                "Context: {} / {} tokens ({:.1}%)",
-                u.last_input(),
-                limit,
-                pct
-            )));
-        } else {
-            output.emit(output::OutputEvent::Info(format!(
-                "Context: {} tokens",
-                u.last_input()
-            )));
-        }
-
-        output.emit(output::OutputEvent::Info(String::new()));
-        output.emit(output::OutputEvent::Info("Session totals:".into()));
-        output.emit(output::OutputEvent::Info(format!(
-            "  Input:  {}",
-            u.total_input()
-        )));
-        output.emit(output::OutputEvent::Info(format!(
-            "  Output: {}",
-            u.total_output()
-        )));
-    }
-}
-
-fn get_git_branch() -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+/// Get the LSP server count, respecting the lsp_enabled setting
+async fn get_lsp_server_count() -> usize {
+    let config = crate::config::ConfigFile::load().unwrap_or_default();
+    if config.lsp_enabled {
+        crate::lsp::manager().server_count().await
     } else {
-        None
+        0
     }
 }
 
-fn build_prompt(
+/// Get the count of running MCP servers
+async fn get_mcp_server_count(services: &Services) -> usize {
+    services
+        .mcp
+        .server_statuses()
+        .await
+        .iter()
+        .filter(|s| s.is_running)
+        .count()
+}
+
+/// Update the prompt box with current provider/model, cwd, and thinking info
+async fn update_prompt_status(
+    prompt_box: &mut PromptBox,
     provider_manager: &ProviderManager,
-    read_only: bool,
-    sandbox_enabled: bool,
-) -> PromptInfo {
-    let provider = provider_manager.current_provider();
-    let model = provider_manager.current_model_id();
-    let custom_provider = provider_manager.current_custom_provider();
+    working_dir: &std::path::Path,
+    thinking_state: &crate::providers::ThinkingState,
+    services: &Services,
+) {
+    let provider = provider_manager
+        .current_custom_provider()
+        .unwrap_or_else(|| provider_manager.current_provider().id())
+        .to_string();
+    let model = provider_manager.current_model_id().to_string();
+    let cwd = shorten_path(working_dir);
 
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "?".to_string());
-
-    let home = std::env::var("HOME").unwrap_or_default();
-    let path = if !home.is_empty() && cwd.starts_with(&home) {
-        cwd.replacen(&home, "~", 1)
-    } else {
-        cwd
+    let thinking = ThinkingStatus {
+        available: supports_thinking(provider_manager.current_provider(), &model),
+        enabled: thinking_state.enabled,
+        mode: thinking_state.mode.clone(),
     };
 
-    let provider_name = if provider == ModelProvider::OpenAiCompat {
-        custom_provider
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| provider.id().to_string())
-    } else {
-        provider.id().to_string()
+    let security = SecurityStatus {
+        read_only: services.is_read_only(),
+        sandbox_enabled: services.is_sandbox_enabled(),
     };
 
-    PromptInfo {
-        provider: provider_name,
-        model: model.to_string(),
-        provider_enum: provider,
-        path,
-        git_branch: get_git_branch(),
-        thinking_available: supports_thinking(provider, model),
-        show_thinking_status: !matches!(provider, ModelProvider::OpenAi),
-        read_only,
-        sandbox_enabled,
-    }
+    let lsp_server_count = get_lsp_server_count().await;
+    let mcp_server_count = get_mcp_server_count(services).await;
+
+    prompt_box.set_status(
+        provider,
+        model,
+        cwd,
+        thinking,
+        security,
+        lsp_server_count,
+        mcp_server_count,
+    );
 }
 
-/// Run a slash command in non-interactive mode.
-/// Returns ExitStatus::Quit on success, exits with code 1 on error.
-async fn run_noninteractive_command(
-    input: &str,
-    custom_commands: &[custom_commands::CustomCommand],
-    output: &output::OutputContext,
-) -> std::io::Result<ExitStatus> {
-    let input = input.trim();
-
-    // Handle /exit as an alias for /quit
-    if input == "/exit" {
-        return Ok(ExitStatus::Quit);
-    }
-
-    let Some(cmd_str) = input.strip_prefix('/') else {
-        eprintln!("Error: Expected a command starting with '/'");
-        std::process::exit(1);
+async fn update_prompt_status_from_task(
+    prompt_box: &mut PromptBox,
+    task: &ChatTask,
+    working_dir: &std::path::Path,
+    thinking_state: &crate::providers::ThinkingState,
+    services: &Services,
+) {
+    let provider_name = task
+        .custom_provider
+        .as_deref()
+        .unwrap_or_else(|| task.provider.id())
+        .to_string();
+    let cwd = shorten_path(working_dir);
+    let thinking = ThinkingStatus {
+        available: supports_thinking(task.provider, &task.model_id),
+        enabled: thinking_state.enabled,
+        mode: thinking_state.mode.clone(),
     };
-
-    let Some(cmd) = commands::parse(cmd_str, custom_commands) else {
-        eprintln!("Error: Unknown command: {}", input);
-        eprintln!("Run 'henri cli' and type /help for available commands.");
-        std::process::exit(1);
+    let security = SecurityStatus {
+        read_only: services.is_read_only(),
+        sandbox_enabled: services.is_sandbox_enabled(),
     };
-
-    match cmd {
-        commands::Command::Quit => Ok(ExitStatus::Quit),
-        commands::Command::Usage => {
-            if !commands::has_claude_oauth_provider() {
-                eprintln!(
-                    "Error: /claude-usage requires a Claude provider with OAuth authentication."
-                );
-                std::process::exit(1);
-            }
-            output::start_spinner(output, "Fetching rate limits...");
-            match usage::fetch_anthropic_rate_limits().await {
-                Ok(limits) => {
-                    output::stop_spinner(output);
-                    limits.display();
-                    Ok(ExitStatus::Quit)
-                }
-                Err(e) => {
-                    output::stop_spinner(output);
-                    eprintln!("Error: Failed to fetch rate limits: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-        commands::Command::Help => {
-            eprintln!("Error: /help is only available in interactive mode.");
-            eprintln!("Run 'henri cli' to enter interactive mode.");
-            std::process::exit(1);
-        }
-        _ => {
-            eprintln!(
-                "Error: Command {} is only available in interactive mode.",
-                input
-            );
-            eprintln!("Run 'henri cli' to enter interactive mode.");
-            std::process::exit(1);
-        }
-    }
+    let lsp_server_count = get_lsp_server_count().await;
+    let mcp_server_count = get_mcp_server_count(services).await;
+    prompt_box.set_status(
+        provider_name,
+        task.model_id.clone(),
+        cwd,
+        thinking,
+        security,
+        lsp_server_count,
+        mcp_server_count,
+    );
 }
 
-/// Arguments specific to the CLI interface
-pub(crate) struct CliArgs {
-    pub model: Option<String>,
-    pub prompt: Vec<String>,
-    pub working_dir: std::path::PathBuf,
-    pub restored_session: Option<session::RestoredSession>,
-    /// LSP override: Some(true) = force enable, Some(false) = force disable, None = use config
-    pub lsp_override: Option<bool>,
-    /// Enable read-only mode (disables file editing tools)
-    pub read_only: bool,
+async fn refresh_prompt_status(
+    prompt_box: &mut PromptBox,
+    provider_manager: &Option<ProviderManager>,
+    chat_task: &Option<ChatTask>,
+    working_dir: &std::path::Path,
+    thinking_state: &crate::providers::ThinkingState,
+    services: &Services,
+) {
+    if let Some(pm) = provider_manager {
+        update_prompt_status(prompt_box, pm, working_dir, thinking_state, services).await;
+    } else if let Some(task) = chat_task {
+        update_prompt_status_from_task(prompt_box, task, working_dir, thinking_state, services)
+            .await;
+    }
 }
 
 /// Main entry point for the CLI interface
-pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
+pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
     // Create output context for CLI
     let output = {
-        let listener: Arc<dyn crate::output::OutputListener> =
-            Arc::new(listener::CliListener::new());
-        output::OutputContext::new_cli(listener)
+        let listener = Box::leak(Box::new(listener::CliListener::new()));
+        listener.register_active();
+        let proxy: Arc<dyn output::OutputListener> =
+            Arc::new(listener::CliListenerProxy::new(listener));
+        OutputContext::new_cli(proxy)
     };
 
     // If no model specified on CLI, try to use the one from the restored session
@@ -1014,637 +299,1865 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<ExitStatus> {
     let config = match Config::load(model) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            terminal::println_above(&format!("Error: {}", e).red().to_string());
             std::process::exit(1);
         }
     };
 
     // Initialize MCP and LSP servers
-    config::initialize_servers(&args.working_dir, args.lsp_override).await;
+    crate::config::initialize_servers(&args.working_dir, args.lsp_override).await;
 
-    let services = crate::services::Services::new();
+    let services = Services::new();
 
     // Enable read-only mode if --read-only was passed
     if args.read_only {
         services.set_read_only(true);
     }
 
-    let mut provider_manager = ProviderManager::new(&config, services.clone());
-
-    // Non-interactive mode: run single prompt and exit
-    if !args.prompt.is_empty() {
-        let prompt = args.prompt.join(" ");
-
-        // Handle slash commands in non-interactive mode
-        if prompt.trim().starts_with('/') {
-            let custom_commands = custom_commands::load_custom_commands().unwrap_or_default();
-            return run_noninteractive_command(&prompt, &custom_commands, &output).await;
-        }
-
-        let mut messages = vec![Message::user(&prompt)];
-        let interrupted = Arc::new(AtomicBool::new(false));
-
-        // Set thinking mode for the current model
-        let thinking_state = provider_manager.default_thinking();
-        if let Some(mode) = thinking_state.mode.clone() {
-            provider_manager.set_thinking_mode(Some(mode));
-        } else {
-            provider_manager.set_thinking_mode(None);
-        }
-        provider_manager.set_thinking_enabled(thinking_state.enabled);
-
-        match run_chat_loop(&mut provider_manager, &mut messages, &interrupted, &output).await {
-            Ok(()) => {
-                print_usage_for_provider(&provider_manager);
-            }
-            Err(error::Error::Interrupted) => {}
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        return Ok(ExitStatus::Quit);
-    }
-
-    // Interactive REPL mode
-    let config_file = crate::config::ConfigFile::load().unwrap_or_default();
-    let has_configured_providers = config_file
-        .providers
-        .entries
-        .iter()
-        .any(|(_, p)| !matches!(p.provider_type(), crate::config::ProviderType::Zen));
-
-    // Determine sandbox status message
-    let sandbox_status = if !services.is_sandbox_enabled() {
-        "Sandbox: disabled"
-    } else if crate::tools::sandbox_available() {
-        "Sandbox: enabled"
-    } else {
-        "Sandbox: unavailable (Landlock not supported)"
-    };
-
-    if has_configured_providers {
-        output.emit(output::OutputEvent::Info(
-            "Welcome to Henri, your Golden Retriever coding assistant! 🐕".into(),
-        ));
-        output.emit(output::OutputEvent::Info(sandbox_status.into()));
-        output.emit(output::OutputEvent::Info("Type /help for help.".into()));
-    } else {
-        output.emit(output::OutputEvent::Info(
-            format!("Welcome to Henri! 🐕\n\nYou are currently using the free 'zen/grok-code' model. It's great for getting started!\nFor more powerful models (Claude, GPT-4), try connecting your accounts:\n\n  henri provider add      # Authenticate with GitHub Copilot, etc.\n\n{sandbox_status}\n\nType /help for help."),
-        ));
-    }
-
-    let custom_commands = custom_commands::load_custom_commands().unwrap_or_else(|e| {
-        eprintln!("Warning: Failed to load custom commands: {}", e);
-        Vec::new()
-    });
-
-    let working_dir = args.working_dir;
-
-    let mut history = FileHistory::new();
-    let mut prompt_ui = PromptUi::new(custom_commands.clone(), working_dir.clone());
+    let provider_manager = ProviderManager::new(&config, services.clone());
     let mut messages: Vec<Message> = Vec::new();
     let mut thinking_state = provider_manager.default_thinking();
-
-    // Track current session ID for saving
     let mut current_session_id: Option<String> = None;
-    let mut read_only = false;
-    let mut sandbox_enabled = services.is_sandbox_enabled();
+    let read_only = args.read_only;
+    let working_dir = args.working_dir;
 
     // Apply restored session if provided
     if let Some(restored) = args.restored_session {
         messages = restored.messages;
         thinking_state.enabled = restored.thinking_enabled;
-        read_only = restored.read_only;
-        services.set_read_only(read_only);
-        // Sync sandbox state from services (it might have been set by args)
-        sandbox_enabled = services.is_sandbox_enabled();
         current_session_id = Some(restored.session_id);
     } else {
         clear_todos();
     }
 
-    loop {
-        let mut prompt_info = build_prompt(&provider_manager, read_only, sandbox_enabled);
-        // Track if provider changed during cycle_favorite so we can strip thinking blocks
-        let mut provider_changed_in_cycle = false;
-        let outcome = prompt_ui.read(
-            &mut prompt_info,
-            &mut thinking_state.enabled,
-            &mut thinking_state.mode,
-            &mut history,
-            || {
-                let result = cycle_favorite_model(&mut provider_manager);
-                if let Some((_, _, _, changed, _)) = &result
-                    && *changed
-                {
-                    provider_changed_in_cycle = true;
-                }
-                result
-            },
+    // Convert prompt args to initial prompt for interactive mode
+    let initial_prompt = if args.prompt.is_empty() {
+        None
+    } else {
+        Some(args.prompt.join(" "))
+    };
+
+    // Load custom commands
+    let custom_commands = custom_commands::load_custom_commands().unwrap_or_default();
+
+    // Load prompt history
+    let mut prompt_history = FileHistory::new();
+
+    // Run the event-driven main loop
+    run_event_loop(
+        &output,
+        provider_manager,
+        messages,
+        &mut thinking_state,
+        &mut current_session_id,
+        read_only,
+        &working_dir,
+        &services,
+        &custom_commands,
+        &mut prompt_history,
+        initial_prompt,
+        None,
+        args.batch,
+    )
+    .await
+}
+
+/// Run the main event loop
+#[allow(clippy::too_many_arguments)]
+async fn run_event_loop(
+    output: &OutputContext,
+    provider_manager: ProviderManager,
+    messages: Vec<Message>,
+    thinking_state: &mut crate::providers::ThinkingState,
+    current_session_id: &mut Option<String>,
+    read_only: bool,
+    working_dir: &std::path::Path,
+    services: &Services,
+    custom_commands: &[CustomCommand],
+    prompt_history: &mut FileHistory,
+    initial_prompt: Option<String>,
+    welcome_message: Option<String>,
+    batch: bool,
+) -> std::io::Result<()> {
+    let mut prompt_box = PromptBox::new();
+    let mut input_state = InputState::new(working_dir.to_path_buf());
+
+    // Wrap in Option for ownership transfer during chat
+    let mut provider_manager: Option<ProviderManager> = Some(provider_manager);
+    let mut messages: Vec<Message> = messages;
+
+    // Active chat task state
+    let mut chat_task: Option<ChatTask> = None;
+
+    // Model menu state (active when Some)
+    let mut model_menu: Option<ModelMenuState> = None;
+
+    // Session menu state (active when Some)
+    let mut session_menu: Option<SessionMenuState> = None;
+
+    // Settings menu state (active when Some)
+    let mut settings_menu: Option<SettingsMenuState> = None;
+
+    // MCP menu state (active when Some)
+    let mut mcp_menu: Option<McpMenuState> = None;
+
+    // Tools menu state (active when Some)
+    let mut tools_menu: Option<ToolsMenuState> = None;
+
+    // History search menu state (active when Some)
+    let mut history_search: Option<HistorySearchState> = None;
+
+    // Pending model change to apply when chat completes
+    let mut pending_model_change: Option<ModelChoice> = None;
+
+    // Pending prompts queue - prompts entered during an active chat
+    let mut pending_prompts: VecDeque<PendingPrompt> = VecDeque::new();
+    // Only support editing/deleting the most recently queued prompt.
+    // When editing, we pop it out of the queue and put it back into the input buffer.
+    let mut editing_pending_prompt: Option<PendingPrompt> = None;
+
+    // Exit prompt state
+    let mut exit_prompt: Option<std::time::Instant> = None;
+    prompt_box.set_exit_hint(exit_prompt);
+
+    // Track if we're processing the initial prompt (for batch mode)
+    let mut processing_initial_prompt = false;
+
+    // Enable raw mode for the entire session (skip in batch mode)
+    if !batch {
+        crossterm_terminal::enable_raw_mode()?;
+        // Enable keyboard enhancement for Ctrl+M support (to distinguish from Enter)
+        // Enable bracketed paste to handle multi-line paste properly
+        execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+            EnableBracketedPaste
         )?;
+    }
 
-        // Transform thinking blocks if provider changed during Shift+Tab cycling
-        if provider_changed_in_cycle {
-            crate::provider::transform_thinking_for_provider_switch(&mut messages);
+    // Initial draw (skip in batch mode - no interactive prompt needed)
+    if !batch {
+        let show_welcome_hint = initial_prompt.is_none();
+        prompt_box.set_welcome_hint(show_welcome_hint);
+        if let Some(ref pm) = provider_manager {
+            update_prompt_status(&mut prompt_box, pm, working_dir, thinking_state, services).await;
         }
 
-        // Sync security state if changed during prompt editing (Ctrl+x)
-        if prompt_info.read_only != read_only || prompt_info.sandbox_enabled != sandbox_enabled {
-            if !prompt_info.read_only && !prompt_info.sandbox_enabled {
-                output.emit(output::OutputEvent::Info(
-                    "⚠ YOLO mode enabled (Sandbox disabled)"
-                        .yellow()
-                        .to_string(),
+        // Print welcome message before drawing the prompt so it appears below the shell prompt.
+        // Make sure we're on a new line first so we don't overwrite the command that launched henri.
+        terminal::ensure_cursor_on_new_line();
+        if let Some(msg) = welcome_message {
+            terminal::println_above(&msg);
+        }
+
+        prompt_box.draw(&input_state, true)?;
+
+        // If we started with a restored session, replay it into the output history now that
+        // the prompt is visible and output can be rendered above it.
+        if let Some(session_id) = current_session_id.as_deref()
+            && let Some(state) = session::load_session_by_id(working_dir, session_id)
+        {
+            session::replay_session_into_output(&state);
+            prompt_box.redraw_history().ok();
+            // Restore user draft after redraw (redraw_history draws a fresh prompt state).
+            prompt_box.draw(&input_state, false)?;
+        }
+
+        // Start spinner/bandwidth updates; status line row is activated lazily when needed.
+        listener::reload_show_network_stats();
+        listener::init_spinner();
+    }
+
+    // Submit initial prompt if provided
+    if let Some(prompt) = initial_prompt {
+        if provider_manager.is_none() {
+            terminal::println_above(
+                &"No provider available. Use /model to configure."
+                    .red()
+                    .to_string(),
+            );
+            return Ok(());
+        }
+
+        let result = process_input(
+            &prompt,
+            &mut messages,
+            current_session_id,
+            working_dir,
+            &mut prompt_box,
+            &mut input_state,
+            services,
+            custom_commands,
+            provider_manager.as_mut().expect("provider checked"),
+            thinking_state,
+        )
+        .await;
+
+        match result {
+            ProcessResult::Continue => {
+                if batch {
+                    return Ok(());
+                }
+            }
+            ProcessResult::Quit => return Ok(()),
+            ProcessResult::StartChat(prompt, history_entry) => {
+                let history_text = history_entry.as_ref().unwrap_or(&prompt);
+                let _ = prompt_history.add_with_images(history_text, vec![]);
+
+                processing_initial_prompt = batch;
+
+                if let Some(pm) = provider_manager.take() {
+                    chat_task = Some(spawn_chat_task(
+                        prompt,
+                        vec![],
+                        &mut messages,
+                        pm,
+                        thinking_state,
+                        output,
+                    ));
+                }
+            }
+            ProcessResult::OpenModelMenu => {
+                if batch {
+                    return Ok(());
+                }
+                if let Some(pm) = provider_manager.as_mut() {
+                    model_menu = Some(ModelMenuState::new(pm));
+                    prompt_box.draw_with_model_menu(&input_state, model_menu.as_ref().unwrap())?;
+                }
+            }
+            ProcessResult::OpenSessionsMenu => {
+                if batch {
+                    return Ok(());
+                }
+                session_menu = Some(SessionMenuState::new(
+                    working_dir,
+                    current_session_id.as_deref(),
                 ));
+                prompt_box.draw_with_sessions_menu(&input_state, session_menu.as_ref().unwrap())?;
             }
-            read_only = prompt_info.read_only;
-            sandbox_enabled = prompt_info.sandbox_enabled;
-            services.set_read_only(read_only);
-            services.set_sandbox_enabled(sandbox_enabled);
-        }
-
-        match outcome {
-            PromptOutcome::Interrupted => {
-                output.emit(output::OutputEvent::Info("^C".into()));
-                continue;
+            ProcessResult::OpenSettings => {
+                if batch {
+                    return Ok(());
+                }
+                settings_menu = Some(SettingsMenuState::new());
+                prompt_box
+                    .draw_with_settings_menu(&input_state, settings_menu.as_ref().unwrap())?;
             }
-            PromptOutcome::ContinueWithMode(mode) => {
-                // Provider changed - use the provided thinking mode or get new provider's default
-                if let Some(mode) = mode {
-                    thinking_state = ThinkingState::new(mode != "off", Some(mode));
+            ProcessResult::OpenMcpMenu => {
+                if batch {
+                    return Ok(());
+                }
+                let statuses = services.mcp.server_statuses().await;
+                mcp_menu = Some(McpMenuState::new(statuses));
+                prompt_box.draw_with_mcp_menu(&input_state, mcp_menu.as_ref().unwrap())?;
+            }
+            ProcessResult::OpenLspMenu => {
+                if batch {
+                    return Ok(());
+                }
+                // /lsp behaves like /settings: show status immediately, even during streaming.
+                let config = crate::config::ConfigFile::load().unwrap_or_default();
+                if !config.lsp_enabled {
+                    let msg = "LSP integration is disabled. Enable it in /settings.".to_string();
+                    terminal::println_above(&msg);
+                    history::push(history::HistoryEvent::Info(msg));
                 } else {
-                    thinking_state = provider_manager.default_thinking();
-                }
-                continue;
-            }
-            PromptOutcome::Eof => return Ok(ExitStatus::Quit),
-            PromptOutcome::SelectModel => {
-                if select_model(&mut provider_manager) {
-                    // Provider changed - transform thinking blocks as signatures are provider-specific
-                    crate::provider::transform_thinking_for_provider_switch(&mut messages);
-                }
-                thinking_state = provider_manager.default_thinking();
-            }
-
-            PromptOutcome::Submitted {
-                content,
-                pasted_images,
-            } => {
-                if content.trim().is_empty() && pasted_images.is_empty() {
-                    continue;
-                }
-
-                let input = content.trim_end_matches('\n').to_string();
-                let mut resolved_input = input.clone();
-                let mut model_override_spec: Option<String> = None;
-
-                let is_custom_prompt = if input.trim_start().starts_with('/') {
-                    let current_provider = provider_manager.current_provider();
-                    let cmd_result =
-                        handle_command(&input, current_provider, &custom_commands, &output);
-                    let is_custom = matches!(cmd_result, CommandResult::CustomPrompt { .. });
-
-                    match cmd_result {
-                        CommandResult::Quit => return Ok(ExitStatus::Quit),
-                        CommandResult::SwitchToTui => {
-                            let session = if messages.is_empty() {
-                                None
+                    let servers = crate::lsp::manager().server_info().await;
+                    if servers.is_empty() {
+                        let msg = "No LSP servers connected.".to_string();
+                        terminal::println_above(&msg);
+                        history::push(history::HistoryEvent::Info(msg));
+                    } else {
+                        let msg = format!("LSP servers connected: {}", servers.len());
+                        terminal::println_above(&msg);
+                        history::push(history::HistoryEvent::Info(msg));
+                        for server in servers {
+                            let extensions = if server.file_extensions.is_empty() {
+                                String::new()
                             } else {
-                                Some(ModeTransferSession {
-                                    messages: messages.clone(),
-                                    provider: provider_manager.current_provider(),
-                                    model_id: provider_manager.current_model_id().to_string(),
-                                    thinking_enabled: thinking_state.enabled,
-                                    read_only,
-                                    session_id: current_session_id.clone(),
-                                })
+                                format!(" ({})", server.file_extensions.join(", "))
                             };
-                            return Ok(ExitStatus::SwitchToTui(session));
+                            let msg = format!("  • {}{}", server.name, extensions);
+                            terminal::println_above(&msg);
+                            history::push(history::HistoryEvent::Info(msg));
                         }
-                        CommandResult::ClearHistory => {
-                            messages.clear();
-                            if let Some(ref session_id) = current_session_id {
-                                let _ = session::delete_session(&working_dir, session_id);
-                            }
-                            current_session_id = None;
-                            crate::usage::network_stats().clear();
-                        }
-                        CommandResult::Truncate => {
-                            if messages.len() > 1 {
-                                let last_message = messages.pop();
-                                messages.clear();
-                                if let Some(msg) = last_message {
-                                    messages.push(msg);
+                    }
+                }
+                // Ensure the prompt/status reflects any changes in server count.
+                refresh_prompt_status(
+                    &mut prompt_box,
+                    &provider_manager,
+                    &chat_task,
+                    working_dir,
+                    thinking_state,
+                    services,
+                )
+                .await;
+                prompt_box.draw(&input_state, false)?;
+            }
+            ProcessResult::OpenToolsMenu => {
+                if batch {
+                    return Ok(());
+                }
+                tools_menu = Some(ToolsMenuState::new(services.is_read_only()));
+                prompt_box.draw_with_tools_menu(&input_state, tools_menu.as_ref().unwrap())?;
+            }
+            ProcessResult::StartCompaction(data) => {
+                processing_initial_prompt = batch;
+                if let Some(pm) = provider_manager.take() {
+                    chat_task = Some(spawn_compaction_chat(data, &mut messages, pm, output));
+                }
+            }
+        }
+    }
+
+    loop {
+        // Poll for chat completion if a task is running
+        if let Some(ref mut task) = chat_task {
+            match task.result_rx.try_recv() {
+                Ok(task_result) => {
+                    // Chat completed - restore state
+                    provider_manager = Some(task_result.provider_manager);
+
+                    let was_interrupted = task.interrupted.load(Ordering::SeqCst)
+                        || matches!(task_result.status, ChatTaskStatus::Interrupted);
+
+                    // Handle compaction completion
+                    if let Some(compaction_state) = task.compaction.take() {
+                        if was_interrupted || !matches!(task_result.status, ChatTaskStatus::Ok) {
+                            // Rollback on interrupt
+                            messages = compaction_state.original;
+                            terminal::println_above(&match task_result.status {
+                                ChatTaskStatus::Ok | ChatTaskStatus::Interrupted => {
+                                    "Compaction cancelled.".yellow().to_string()
                                 }
-                            }
-                            // Update session with truncated history
-                            if let Some(ref session_id) = current_session_id {
-                                let _ = session::save_session(
-                                    &working_dir,
-                                    &messages,
-                                    &provider_manager.current_provider(),
-                                    provider_manager.current_model_id(),
-                                    thinking_state.enabled,
-                                    read_only,
-                                    Some(session_id),
-                                );
-                            }
-                        }
-                        CommandResult::Undo => {
-                            let removed = crate::provider::remove_last_turn(&mut messages);
-                            if removed > 0 {
-                                output.emit(output::OutputEvent::Info(
-                                    "Removed last turn from conversation.".into(),
-                                ));
-                                // Update session
-                                if let Some(ref session_id) = current_session_id {
-                                    let _ = session::save_session(
-                                        &working_dir,
-                                        &messages,
-                                        &provider_manager.current_provider(),
-                                        provider_manager.current_model_id(),
-                                        thinking_state.enabled,
-                                        read_only,
-                                        Some(session_id),
-                                    );
+                                ChatTaskStatus::Error(msg) | ChatTaskStatus::Panic(msg) => {
+                                    format!("Compaction failed: {}", msg).red().to_string()
                                 }
-                            } else {
-                                output
-                                    .emit(output::OutputEvent::Info("No messages to undo.".into()));
-                            }
+                            });
+                            pending_prompts.clear();
+                        } else {
+                            // Finalize compaction
+                            messages = finalize_compaction(task_result.messages, compaction_state);
+                            terminal::println_above(
+                                &format!("Compacted {} messages into summary.", messages.len())
+                                    .green()
+                                    .to_string(),
+                            );
                         }
-                        CommandResult::Forget => {
-                            let removed = crate::provider::remove_first_turn(&mut messages);
-                            if removed > 0 {
-                                output.emit(output::OutputEvent::Info(
-                                    "Removed oldest turn from conversation.".into(),
-                                ));
-                                // Update session
-                                if let Some(ref session_id) = current_session_id {
-                                    let _ = session::save_session(
-                                        &working_dir,
-                                        &messages,
-                                        &provider_manager.current_provider(),
-                                        provider_manager.current_model_id(),
-                                        thinking_state.enabled,
-                                        read_only,
-                                        Some(session_id),
-                                    );
-                                }
-                            } else {
-                                output.emit(output::OutputEvent::Info(
-                                    "No messages to forget.".into(),
-                                ));
-                            }
-                        }
-                        CommandResult::SelectModel => {
-                            if select_model(&mut provider_manager) {
-                                // Provider changed - transform thinking blocks as signatures are provider-specific
+                        chat_task = None;
+                    } else {
+                        // Normal chat completion
+                        messages = task_result.messages;
+
+                        // Apply pending model change if any
+                        if let Some(choice) = pending_model_change.take()
+                            && let Some(ref mut pm) = provider_manager
+                        {
+                            let provider_changed = pm.set_model(
+                                choice.provider,
+                                choice.model_id.clone(),
+                                choice.custom_provider.clone(),
+                            );
+                            if provider_changed {
                                 crate::provider::transform_thinking_for_provider_switch(
                                     &mut messages,
                                 );
                             }
-                            thinking_state = provider_manager.default_thinking();
+                            // Update thinking state to new model's default
+                            let new_thinking =
+                                default_thinking_state(choice.provider, &choice.model_id);
+                            thinking_state.enabled = new_thinking.enabled;
+                            thinking_state.mode = new_thinking.mode;
                         }
-                        CommandResult::Continue => {}
-                        CommandResult::Status => {
-                            show_status(&provider_manager, &output);
-                        }
-                        CommandResult::Usage => {
-                            output::start_spinner(&output, "Fetching rate limits...");
-                            match usage::fetch_anthropic_rate_limits().await {
-                                Ok(limits) => {
-                                    output::stop_spinner(&output);
-                                    limits.display();
-                                }
-                                Err(e) => {
-                                    output::stop_spinner(&output);
-                                    output.emit(output::OutputEvent::Error(format!(
-                                        "Failed to fetch rate limits: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        }
-                        CommandResult::DumpPrompt => {
-                            match provider_manager.prepare_request(messages.clone()).await {
-                                Ok(json) => {
-                                    let pretty = serde_json::to_string_pretty(&json)
-                                        .unwrap_or_else(|_| json.to_string());
-                                    println!("{}", pretty);
-                                }
-                                Err(e) => {
-                                    output.emit(output::OutputEvent::Error(format!(
-                                        "Failed to prepare request: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        }
-                        CommandResult::StartTransactionLogging => {
-                            let path = crate::provider::transaction_log::start(None);
-                            output.emit(output::OutputEvent::Info(format!(
-                                "Transaction logging started to: {}",
-                                path.display()
-                            )));
-                        }
-                        CommandResult::StopTransactionLogging => {
-                            crate::provider::transaction_log::stop();
-                            output.emit(output::OutputEvent::Info(
-                                "Transaction logging stopped.".into(),
-                            ));
-                        }
-                        CommandResult::Compact => {
-                            if messages.is_empty() {
-                                output.emit(output::OutputEvent::Info(
-                                    "No messages to compact.".into(),
-                                ));
-                                continue;
-                            }
 
-                            output::start_spinner(&output, "Compacting context...");
+                        chat_task = None;
 
-                            match provider_manager
-                                .compact_context(&mut messages, 0, &output)
-                                .await
-                            {
-                                Ok(result) => {
-                                    output::stop_spinner(&output);
-                                    output.emit(output::OutputEvent::Info(format!(
-                                        "Compacted {} messages into summary.",
-                                        result.messages_compacted
-                                    )));
+                        match task_result.status {
+                            ChatTaskStatus::Ok | ChatTaskStatus::Interrupted => {
+                                let outcome = if was_interrupted {
+                                    // Clear pending prompts on interrupt
+                                    pending_prompts.clear();
+                                    ChatOutcome::Interrupted
+                                } else {
+                                    ChatOutcome::Complete
+                                };
 
-                                    match session::save_session(
-                                        &working_dir,
-                                        &messages,
-                                        &provider_manager.current_provider(),
-                                        provider_manager.current_model_id(),
-                                        thinking_state.enabled,
+                                if let Some(ref pm) = provider_manager {
+                                    handle_chat_outcome(
+                                        outcome,
+                                        &mut messages,
+                                        pm,
+                                        thinking_state,
+                                        current_session_id,
                                         read_only,
-                                        current_session_id.as_deref(),
-                                    ) {
-                                        Ok(id) => current_session_id = Some(id),
-                                        Err(e) => {
-                                            eprintln!("Warning: Failed to save session: {}", e)
-                                        }
+                                        working_dir,
+                                        &mut prompt_box,
+                                    )?;
+
+                                    update_prompt_status(
+                                        &mut prompt_box,
+                                        pm,
+                                        working_dir,
+                                        thinking_state,
+                                        services,
+                                    )
+                                    .await;
+                                }
+
+                                // Exit in batch mode after initial prompt completes
+                                if processing_initial_prompt {
+                                    break;
+                                }
+                            }
+                            ChatTaskStatus::Error(msg) | ChatTaskStatus::Panic(msg) => {
+                                pending_prompts.clear();
+
+                                if batch {
+                                    return Err(std::io::Error::other(msg));
+                                }
+
+                                terminal::println_above(
+                                    &if task_result.can_retry_prompt {
+                                        "Request failed. Press ↑ then Enter to retry."
+                                    } else {
+                                        "Request failed. Send a new prompt to continue."
                                     }
-                                }
-                                Err(e) => {
-                                    output::stop_spinner(&output);
-                                    output.emit(output::OutputEvent::Error(format!(
-                                        "Compaction failed: {}",
-                                        e
-                                    )));
-                                }
-                            }
-                        }
-                        CommandResult::CountTokens => {
-                            output::start_spinner(&output, "Counting tokens...");
-                            match provider_manager.count_tokens(&messages).await {
-                                Ok(json) => {
-                                    output::stop_spinner(&output);
-                                    let pretty = serde_json::to_string_pretty(&json)
-                                        .unwrap_or_else(|_| json.to_string());
-                                    println!("{}", pretty);
-                                }
-                                Err(e) => {
-                                    output::stop_spinner(&output);
-                                    output.emit(output::OutputEvent::Error(format!(
-                                        "Failed to count tokens: {}",
-                                        e
-                                    )));
+                                    .yellow()
+                                    .to_string(),
+                                );
+
+                                prompt_box.draw(&input_state, true)?;
+
+                                if let Some(ref pm) = provider_manager {
+                                    update_prompt_status(
+                                        &mut prompt_box,
+                                        pm,
+                                        working_dir,
+                                        thinking_state,
+                                        services,
+                                    )
+                                    .await;
                                 }
                             }
                         }
-                        CommandResult::CustomPrompt { prompt, model } => {
-                            println!("\n{}\n", prompt);
-                            resolved_input = prompt.clone();
-                            model_override_spec = model;
+                    }
+
+                    // Pop next prompt from queue and start it
+                    if let Some(next) = pending_prompts.pop_front()
+                        && let Some(pm) = provider_manager.take()
+                    {
+                        // Save to history
+                        let _ = prompt_history.add_with_images(&next.input, vec![]);
+
+                        // Draw prompt first so it's visible for spawn_chat_task's println_above
+                        prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+
+                        chat_task = Some(spawn_chat_task(
+                            next.input,
+                            next.images,
+                            &mut messages,
+                            pm,
+                            thinking_state,
+                            output,
+                        ));
+                    } else {
+                        prompt_box.draw(&input_state, true)?;
+                    }
+                }
+                Err(oneshot::error::TryRecvError::Closed) => {
+                    // Task panicked or was dropped - treat as error
+                    chat_task = None;
+                    pending_prompts.clear(); // Clear queue on error
+                    output::emit_error(
+                        output,
+                        "Chat task failed unexpectedly and did not return. Please retry.",
+                    );
+                    prompt_box.draw(&input_state, true)?;
+                }
+                Err(oneshot::error::TryRecvError::Empty) => {
+                    // Still running, continue
+                }
+            }
+        }
+
+        let event = if crossterm::event::poll(Duration::from_millis(50))? {
+            Some(crossterm::event::read()?)
+        } else {
+            None
+        };
+
+        if let Some(evt) = event {
+            match evt {
+                Event::Resize(cols, rows) => {
+                    // In batch mode the prompt is never shown; ignore resize events.
+                    // Handling resizes here can force a prompt redraw and make it visible.
+                    if !batch {
+                        prompt_box.handle_resize(&input_state, cols, rows).await?;
+                    }
+                }
+                Event::Paste(text) => {
+                    // Handle bracketed paste - insert the full text with newlines
+                    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                    input_state.insert_str(&normalized);
+                    prompt_box.draw(&input_state, false)?;
+                }
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    // Handle ESC during chat to interrupt (cancel agent loop)
+                    // But if a menu is open, just close the menu instead
+                    if chat_task.is_some() && key.code == KeyCode::Esc {
+                        if input_state.slash_menu_active() || input_state.completion_active() {
+                            // Let the input handler close the menu
+                            let action = input_state.handle_key(key);
+                            if matches!(action, InputAction::Redraw) {
+                                prompt_box.draw(&input_state, false)?;
+                            }
+                            continue;
                         }
-                        CommandResult::Sessions => {
-                            if let Some(selected) = show_sessions_menu(&working_dir) {
-                                // Load the selected session
+                        // Close model menu if open, don't interrupt work
+                        if model_menu.is_some() {
+                            model_menu = None;
+                            prompt_box.draw(&input_state, false)?;
+                            continue;
+                        }
+                        // Close settings menu if open, don't interrupt work
+                        if settings_menu.is_some() {
+                            settings_menu = None;
+                            prompt_box.draw(&input_state, false)?;
+                            continue;
+                        }
+                        // Close MCP menu if open, don't interrupt work
+                        if mcp_menu.is_some() {
+                            mcp_menu = None;
+                            prompt_box.draw(&input_state, false)?;
+                            continue;
+                        }
+                        // LSP menu is output-only; don't interrupt work if invoked
+                        // Close tools menu if open, don't interrupt work
+                        if tools_menu.is_some() {
+                            tools_menu = None;
+                            prompt_box.draw(&input_state, false)?;
+                            continue;
+                        }
+                        if let Some(ref task) = chat_task {
+                            task.interrupted.store(true, Ordering::SeqCst);
+                        }
+                        continue;
+                    }
+
+                    // Handle Ctrl+T during chat using cached provider info
+                    if let Some(ref task) = chat_task
+                        && key.code == KeyCode::Char('t')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        // Toggle thinking for next request using cached provider/model
+                        if supports_thinking(task.provider, &task.model_id) {
+                            let next =
+                                cycle_thinking_state(task.provider, &task.model_id, thinking_state);
+                            thinking_state.enabled = next.enabled;
+                            thinking_state.mode = next.mode;
+
+                            // Update status bar with cached provider info
+                            let provider_name = task
+                                .custom_provider
+                                .as_deref()
+                                .unwrap_or_else(|| task.provider.id())
+                                .to_string();
+                            let cwd = shorten_path(working_dir);
+                            let thinking = ThinkingStatus {
+                                available: true, // We already checked supports_thinking
+                                enabled: thinking_state.enabled,
+                                mode: thinking_state.mode.clone(),
+                            };
+                            let security = SecurityStatus {
+                                read_only: services.is_read_only(),
+                                sandbox_enabled: services.is_sandbox_enabled(),
+                            };
+                            let lsp_server_count = get_lsp_server_count().await;
+                            let mcp_server_count = get_mcp_server_count(services).await;
+                            prompt_box.set_status(
+                                provider_name,
+                                task.model_id.clone(),
+                                cwd,
+                                thinking,
+                                security,
+                                lsp_server_count,
+                                mcp_server_count,
+                            );
+                            prompt_box.draw(&input_state, false)?;
+                        }
+                        continue;
+                    }
+
+                    // Handle Ctrl+X during chat to toggle sandbox mode
+                    if let Some(ref task) = chat_task
+                        && key.code == KeyCode::Char('x')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        services.cycle_sandbox_mode();
+                        // Update status bar with cached provider info
+                        let provider_name = task
+                            .custom_provider
+                            .as_deref()
+                            .unwrap_or_else(|| task.provider.id())
+                            .to_string();
+                        let cwd = shorten_path(working_dir);
+                        let thinking = ThinkingStatus {
+                            available: supports_thinking(task.provider, &task.model_id),
+                            enabled: thinking_state.enabled,
+                            mode: thinking_state.mode.clone(),
+                        };
+                        let security = SecurityStatus {
+                            read_only: services.is_read_only(),
+                            sandbox_enabled: services.is_sandbox_enabled(),
+                        };
+                        let lsp_server_count = get_lsp_server_count().await;
+                        let mcp_server_count = get_mcp_server_count(services).await;
+                        prompt_box.set_status(
+                            provider_name,
+                            task.model_id.clone(),
+                            cwd,
+                            thinking,
+                            security,
+                            lsp_server_count,
+                            mcp_server_count,
+                        );
+                        prompt_box.draw(&input_state, false)?;
+                        continue;
+                    }
+
+                    // Handle Ctrl+M (via keyboard enhancement) or Ctrl+O to open model menu
+                    if ((key.code == KeyCode::Char('m')
+                        && key.modifiers.contains(KeyModifiers::CONTROL))
+                        || (key.code == KeyCode::Char('o')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)))
+                        && model_menu.is_none()
+                    {
+                        // Build current model string from available sources
+                        let current_model = if let Some(ref task) = chat_task {
+                            format!(
+                                "{}/{}",
+                                task.custom_provider
+                                    .as_deref()
+                                    .unwrap_or_else(|| task.provider.id()),
+                                task.model_id
+                            )
+                        } else if let Some(ref pm) = provider_manager {
+                            format!(
+                                "{}/{}",
+                                pm.current_custom_provider()
+                                    .unwrap_or_else(|| pm.current_provider().id()),
+                                pm.current_model_id()
+                            )
+                        } else {
+                            String::new()
+                        };
+                        model_menu = Some(ModelMenuState::with_current_model(current_model));
+                        prompt_box
+                            .draw_with_model_menu(&input_state, model_menu.as_ref().unwrap())?;
+                        continue;
+                    }
+
+                    // During chat: allow typing but block submission and other shortcuts
+                    let chatting = chat_task.is_some();
+
+                    if chatting
+                        && key.code == KeyCode::Up
+                        && key.modifiers.contains(KeyModifiers::SHIFT)
+                        && editing_pending_prompt.is_none()
+                        && !pending_prompts.is_empty()
+                        && input_state.can_edit_pending_prompt()
+                    {
+                        // Pop most recent queued prompt into input for editing.
+                        if let Some(pending) = pending_prompts.pop_back() {
+                            let prompt_text = pending.input.clone();
+                            let images = pending.images.clone();
+
+                            editing_pending_prompt = Some(pending);
+                            input_state.set_content_with_images(&prompt_text, images);
+
+                            terminal::write_status_line(
+                                &"Editing queued message (Enter to re-queue, Esc to cancel, Shift+Delete to discard)"
+                                    .bright_black()
+                                    .to_string(),
+                            );
+                            prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            continue;
+                        }
+                    }
+
+                    if chatting
+                        && key.code == KeyCode::Delete
+                        && key.modifiers.contains(KeyModifiers::SHIFT)
+                        && (editing_pending_prompt.is_some()
+                            || (!pending_prompts.is_empty()
+                                && input_state.can_delete_pending_prompt()))
+                    {
+                        // If we're editing a queued prompt, discard it (do not re-queue).
+                        if editing_pending_prompt.is_some() {
+                            editing_pending_prompt = None;
+                            input_state.clear();
+                            terminal::write_status_line(
+                                &"Discarded queued message".bright_black().to_string(),
+                            );
+                            prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            continue;
+                        }
+
+                        // Otherwise delete the most recently queued prompt.
+                        if pending_prompts.pop_back().is_some() {
+                            terminal::write_status_line(
+                                &"Deleted queued message".bright_black().to_string(),
+                            );
+                            prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            continue;
+                        }
+                    }
+
+                    // Handle global shortcuts only when not chatting
+                    if !chatting
+                        && let Some(ref mut pm) = provider_manager
+                        && handle_global_shortcuts(
+                            key,
+                            thinking_state,
+                            pm,
+                            services,
+                            &mut prompt_box,
+                            &input_state,
+                            working_dir,
+                        )
+                        .await?
+                    {
+                        continue;
+                    }
+
+                    // Handle model menu if active
+                    if let Some(ref mut menu) = model_menu {
+                        use menus::ModelMenuAction;
+                        match menu.handle_key(key) {
+                            ModelMenuAction::None => {}
+                            ModelMenuAction::Redraw => {
+                                prompt_box.draw_with_model_menu(&input_state, menu)?;
+                            }
+                            ModelMenuAction::Cancel => {
+                                model_menu = None;
+                                prompt_box.draw(&input_state, false)?;
+                            }
+                            ModelMenuAction::Select(choice) => {
+                                model_menu = None;
+
+                                if chat_task.is_some() {
+                                    // Chat is running - queue the model change and update status bar
+                                    // Update status bar to show the queued model
+                                    let cwd = shorten_path(working_dir);
+                                    let thinking = ThinkingStatus {
+                                        available: supports_thinking(
+                                            choice.provider,
+                                            &choice.model_id,
+                                        ),
+                                        enabled: thinking_state.enabled,
+                                        mode: thinking_state.mode.clone(),
+                                    };
+                                    let security = SecurityStatus {
+                                        read_only: services.is_read_only(),
+                                        sandbox_enabled: services.is_sandbox_enabled(),
+                                    };
+                                    let lsp_server_count = get_lsp_server_count().await;
+                                    let mcp_server_count = get_mcp_server_count(services).await;
+                                    prompt_box.set_status(
+                                        choice
+                                            .custom_provider
+                                            .clone()
+                                            .unwrap_or_else(|| choice.provider.id().to_string()),
+                                        choice.model_id.clone(),
+                                        cwd,
+                                        thinking,
+                                        security,
+                                        lsp_server_count,
+                                        mcp_server_count,
+                                    );
+                                    pending_model_change = Some(choice);
+                                } else if let Some(ref mut pm) = provider_manager {
+                                    // Chat is not running - apply immediately
+                                    let provider_changed = pm.set_model(
+                                        choice.provider,
+                                        choice.model_id.clone(),
+                                        choice.custom_provider.clone(),
+                                    );
+                                    if provider_changed {
+                                        crate::provider::transform_thinking_for_provider_switch(
+                                            &mut messages,
+                                        );
+                                    }
+                                    // Update thinking state to new model's default
+                                    let new_thinking =
+                                        default_thinking_state(choice.provider, &choice.model_id);
+                                    thinking_state.enabled = new_thinking.enabled;
+                                    thinking_state.mode = new_thinking.mode;
+                                    update_prompt_status(
+                                        &mut prompt_box,
+                                        pm,
+                                        working_dir,
+                                        thinking_state,
+                                        services,
+                                    )
+                                    .await;
+                                }
+                                prompt_box.draw(&input_state, false)?;
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Handle session menu if active
+                    if let Some(ref mut menu) = session_menu {
+                        use menus::SessionMenuAction;
+                        match menu.handle_key(key) {
+                            SessionMenuAction::None => {}
+                            SessionMenuAction::Redraw => {
+                                prompt_box.draw_with_sessions_menu(&input_state, menu)?;
+                            }
+                            SessionMenuAction::Cancel => {
+                                session_menu = None;
+                                input_state.clear();
+                                prompt_box.draw(&input_state, false)?;
+                            }
+                            SessionMenuAction::Select(selected_session) => {
+                                session_menu = None;
+                                input_state.clear();
+
+                                // Load and apply the selected session
                                 if let Some(state) =
-                                    session::load_session_by_id(&working_dir, &selected.id)
+                                    session::load_session_by_id(working_dir, &selected_session.id)
                                 {
                                     let restored = session::RestoredSession::from_state(&state);
                                     messages = restored.messages;
                                     thinking_state.enabled = restored.thinking_enabled;
-                                    read_only = restored.read_only;
-                                    services.set_read_only(read_only);
-                                    // Use the ID we loaded by, not from metadata (may be empty for v1)
-                                    current_session_id = Some(selected.id.clone());
+                                    services.set_read_only(restored.read_only);
+                                    // Use the ID we loaded by
+                                    *current_session_id = Some(selected_session.id.clone());
 
-                                    // Replay session
-                                    session::replay_session(&state);
+                                    // Clear history and replay session
+                                    session::replay_session_into_output(&state);
+                                    prompt_box.redraw_history().ok();
+
+                                    terminal::println_above(&format!(
+                                        "Loaded session: {} ({} messages)",
+                                        selected_session
+                                            .preview
+                                            .as_deref()
+                                            .unwrap_or("(no preview)"),
+                                        state.messages.len()
+                                    ));
+
+                                    // Update provider/model from session
+                                    if let Some(ref mut pm) = provider_manager {
+                                        let (provider, model_id, custom_provider) =
+                                            crate::providers::parse_model_spec(&format!(
+                                                "{}/{}",
+                                                restored.provider, restored.model_id
+                                            ));
+                                        let provider_changed =
+                                            pm.set_model(provider, model_id, custom_provider);
+                                        if provider_changed {
+                                            crate::provider::transform_thinking_for_provider_switch(
+                                                &mut messages,
+                                            );
+                                        }
+                                        pm.set_thinking_enabled(thinking_state.enabled);
+
+                                        update_prompt_status(
+                                            &mut prompt_box,
+                                            pm,
+                                            working_dir,
+                                            thinking_state,
+                                            services,
+                                        )
+                                        .await;
+                                    }
+                                } else {
+                                    terminal::println_above(
+                                        &"Failed to load session".red().to_string(),
+                                    );
+                                }
+                                prompt_box.draw(&input_state, false)?;
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Handle settings menu if active
+                    if let Some(ref mut menu) = settings_menu {
+                        match menu.handle_key(key) {
+                            SettingsMenuAction::None => {}
+                            SettingsMenuAction::Redraw => {
+                                refresh_prompt_status(
+                                    &mut prompt_box,
+                                    &provider_manager,
+                                    &chat_task,
+                                    working_dir,
+                                    thinking_state,
+                                    services,
+                                )
+                                .await;
+                                prompt_box.draw_with_settings_menu(&input_state, menu)?;
+                            }
+                            SettingsMenuAction::Close => {
+                                settings_menu = None;
+                                input_state.clear();
+                                // Reload settings after changes
+                                prompt_box.reload_settings();
+                                listener::reload_show_network_stats();
+                                refresh_prompt_status(
+                                    &mut prompt_box,
+                                    &provider_manager,
+                                    &chat_task,
+                                    working_dir,
+                                    thinking_state,
+                                    services,
+                                )
+                                .await;
+                                prompt_box.draw(&input_state, false)?;
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Handle MCP menu if active
+                    if let Some(ref mut menu) = mcp_menu {
+                        use menus::McpMenuAction;
+                        match menu.handle_key(key) {
+                            McpMenuAction::None => {}
+                            McpMenuAction::Redraw => {
+                                prompt_box.draw_with_mcp_menu(&input_state, menu)?;
+                            }
+                            McpMenuAction::Close => {
+                                mcp_menu = None;
+                                input_state.clear();
+                                prompt_box.draw(&input_state, false)?;
+                            }
+                            McpMenuAction::ToggleServer(_index) => {
+                                // Get the server name and current state
+                                if let Some(name) = menu.selected_server_name().map(String::from) {
+                                    // If disabled, show "Starting" immediately before async call
+                                    if menu.is_server_disabled(&name) {
+                                        menu.set_server_starting(&name);
+                                        prompt_box.draw_with_mcp_menu(&input_state, menu)?;
+                                    }
+
+                                    // Toggle the server
+                                    let result = services.mcp.toggle_server(&name).await;
+                                    match result {
+                                        Ok((is_running, tool_count)) => {
+                                            menu.update_server_status(
+                                                &name, is_running, tool_count,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            // On error, reset to disabled
+                                            menu.update_server_status(&name, false, 0);
+                                            terminal::println_above(
+                                                &format!("Failed to toggle MCP server: {}", e)
+                                                    .red()
+                                                    .to_string(),
+                                            );
+                                        }
+                                    }
+
+                                    // Update prompt status to reflect new MCP count
+                                    refresh_prompt_status(
+                                        &mut prompt_box,
+                                        &provider_manager,
+                                        &chat_task,
+                                        working_dir,
+                                        thinking_state,
+                                        services,
+                                    )
+                                    .await;
+
+                                    prompt_box.draw_with_mcp_menu(&input_state, menu)?;
                                 }
                             }
                         }
-                        CommandResult::Settings => {
-                            show_settings_menu(&working_dir).await;
+                        continue;
+                    }
+
+                    // Handle tools menu if active
+                    if let Some(ref mut menu) = tools_menu {
+                        use menus::ToolsMenuAction;
+                        match menu.handle_key(key) {
+                            ToolsMenuAction::None => {}
+                            ToolsMenuAction::Redraw => {
+                                prompt_box.draw_with_tools_menu(&input_state, menu)?;
+                            }
+                            ToolsMenuAction::Close => {
+                                tools_menu = None;
+                                input_state.clear();
+                                prompt_box.draw(&input_state, false)?;
+                            }
                         }
-                        CommandResult::Mcp => {
-                            show_mcp_menu().await;
+                        continue;
+                    }
+
+                    // Handle history search menu if active
+                    if let Some(ref mut menu) = history_search {
+                        use menus::HistorySearchAction;
+                        match menu.handle_key(key) {
+                            HistorySearchAction::None => {}
+                            HistorySearchAction::Redraw => {
+                                prompt_box.draw_with_history_search(&input_state, menu)?;
+                            }
+                            HistorySearchAction::Cancel => {
+                                history_search = None;
+                                prompt_box.draw(&input_state, false)?;
+                            }
+                            HistorySearchAction::Select(entry) => {
+                                history_search = None;
+                                input_state.set_content(&entry);
+                                prompt_box.draw(&input_state, false)?;
+                            }
                         }
-                        CommandResult::Tools => {
-                            show_tools_menu(read_only);
+                        continue;
+                    }
+
+                    let action = input_state.handle_key(key);
+
+                    // Clear exit prompt if action is not ClearOrExit
+                    if !matches!(action, InputAction::ClearOrExit) {
+                        exit_prompt = None;
+                        prompt_box.set_exit_hint(exit_prompt);
+                    }
+
+                    if !matches!(action, InputAction::None) {
+                        prompt_box.set_welcome_hint(false);
+                    }
+
+                    match action {
+                        InputAction::None => {}
+                        InputAction::RedrawLine => {
+                            // Always do a full redraw to ensure correct cursor positioning
+                            // with word wrapping and viewport scrolling
+                            if pending_prompts.is_empty() {
+                                prompt_box.draw(&input_state, false)?;
+                            } else {
+                                prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            }
                         }
-                        CommandResult::SetReadWrite => {
-                            read_only = false;
-                            sandbox_enabled = true;
+                        InputAction::Redraw => {
+                            if pending_prompts.is_empty() {
+                                prompt_box.draw(&input_state, false)?;
+                            } else {
+                                prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            }
+                        }
+                        InputAction::MoveCursor => {
+                            prompt_box.position_cursor(&input_state)?;
+                        }
+                        InputAction::HistoryUp => {
+                            input_state.apply_history_up(prompt_history);
+                            if pending_prompts.is_empty() {
+                                prompt_box.draw(&input_state, false)?;
+                            } else {
+                                prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            }
+                        }
+                        InputAction::HistoryDown => {
+                            input_state.apply_history_down(prompt_history);
+                            if pending_prompts.is_empty() {
+                                prompt_box.draw(&input_state, false)?;
+                            } else {
+                                prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            }
+                        }
+                        InputAction::ClipboardPaste => {
+                            // Try image first, then text
+                            if let Ok((bytes, mime)) = clipboard::paste_image() {
+                                input_state.add_pasted_image(mime, bytes);
+                            } else if let Ok(text) = clipboard::paste_text() {
+                                // Normalize newlines and insert
+                                let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                                input_state.insert_str(&normalized);
+                            }
+                            if pending_prompts.is_empty() {
+                                prompt_box.draw(&input_state, false)?;
+                            } else {
+                                prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            }
+                        }
+                        InputAction::HistorySearch => {
+                            if history_search.is_none() {
+                                history_search = Some(HistorySearchState::new(prompt_history));
+                                prompt_box.draw_with_history_search(
+                                    &input_state,
+                                    history_search.as_ref().unwrap(),
+                                )?;
+                            }
+                        }
+                        InputAction::EditInEditor => {
+                            if chatting {
+                                continue;
+                            }
+
+                            let initial = input_state.content();
+
+                            let _ = crossterm_terminal::disable_raw_mode();
+                            let _ = prompt_box.hide_and_clear();
+
+                            let edited = editor::edit_text_in_external_editor(&initial);
+
+                            let _ = crossterm_terminal::enable_raw_mode();
+
+                            match edited {
+                                Ok(Some(text)) => {
+                                    input_state.set_content(text.trim_end_matches('\n'));
+                                    input_state.prune_unused_images();
+                                    prompt_box.draw(&input_state, true)?;
+                                }
+                                Ok(None) => {
+                                    prompt_box.draw(&input_state, true)?;
+                                }
+                                Err(e) => {
+                                    terminal::println_above(
+                                        &format!("Failed to open editor: {}", e).red().to_string(),
+                                    );
+                                    prompt_box.draw(&input_state, true)?;
+                                }
+                            }
+                        }
+                        InputAction::OpenModelMenu => {
+                            // Open model menu - works during streaming too
+                            if model_menu.is_none() {
+                                let current_model = if let Some(ref task) = chat_task {
+                                    format!(
+                                        "{}/{}",
+                                        task.custom_provider
+                                            .as_deref()
+                                            .unwrap_or_else(|| task.provider.id()),
+                                        task.model_id
+                                    )
+                                } else if let Some(ref pm) = provider_manager {
+                                    format!(
+                                        "{}/{}",
+                                        pm.current_custom_provider()
+                                            .unwrap_or_else(|| pm.current_provider().id()),
+                                        pm.current_model_id()
+                                    )
+                                } else {
+                                    String::new()
+                                };
+                                model_menu =
+                                    Some(ModelMenuState::with_current_model(current_model));
+                                prompt_box.draw_with_model_menu(
+                                    &input_state,
+                                    model_menu.as_ref().unwrap(),
+                                )?;
+                            }
+                        }
+                        InputAction::OpenSettingsMenu => {
+                            if settings_menu.is_none() {
+                                settings_menu = Some(SettingsMenuState::new());
+                                prompt_box.draw_with_settings_menu(
+                                    &input_state,
+                                    settings_menu.as_ref().unwrap(),
+                                )?;
+                            }
+                        }
+                        InputAction::OpenToolsMenu => {
+                            if tools_menu.is_none() {
+                                tools_menu = Some(ToolsMenuState::new(services.is_read_only()));
+                                prompt_box.draw_with_tools_menu(
+                                    &input_state,
+                                    tools_menu.as_ref().unwrap(),
+                                )?;
+                            }
+                        }
+                        InputAction::OpenMcpMenu => {
+                            if mcp_menu.is_none() {
+                                let statuses = services.mcp.server_statuses().await;
+                                mcp_menu = Some(McpMenuState::new(statuses));
+                                prompt_box
+                                    .draw_with_mcp_menu(&input_state, mcp_menu.as_ref().unwrap())?;
+                            }
+                        }
+                        InputAction::OpenLspMenu => {
+                            // /lsp behaves like /settings: show status immediately, even during streaming.
+                            let config = crate::config::ConfigFile::load().unwrap_or_default();
+                            if !config.lsp_enabled {
+                                let msg = "LSP integration is disabled. Enable it in /settings."
+                                    .to_string();
+                                terminal::println_above(&msg);
+                                history::push(history::HistoryEvent::Info(msg));
+                            } else {
+                                let servers = crate::lsp::manager().server_info().await;
+                                if servers.is_empty() {
+                                    let msg = "No LSP servers connected.".to_string();
+                                    terminal::println_above(&msg);
+                                    history::push(history::HistoryEvent::Info(msg));
+                                } else {
+                                    let msg = format!("LSP servers connected: {}", servers.len());
+                                    terminal::println_above(&msg);
+                                    history::push(history::HistoryEvent::Info(msg));
+                                    for server in servers {
+                                        let extensions = if server.file_extensions.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" ({})", server.file_extensions.join(", "))
+                                        };
+                                        let msg = format!("  • {}{}", server.name, extensions);
+                                        terminal::println_above(&msg);
+                                        history::push(history::HistoryEvent::Info(msg));
+                                    }
+                                }
+                            }
+                            refresh_prompt_status(
+                                &mut prompt_box,
+                                &provider_manager,
+                                &chat_task,
+                                working_dir,
+                                thinking_state,
+                                services,
+                            )
+                            .await;
+                            prompt_box.draw(&input_state, false)?;
+                        }
+                        InputAction::TriggerReadOnly => {
+                            // Allow toggling while chatting
+                            services.set_read_only(true);
+                            terminal::println_above("Switched to Read-Only mode.");
+                            if let Some(ref pm) = provider_manager {
+                                update_prompt_status(
+                                    &mut prompt_box,
+                                    pm,
+                                    working_dir,
+                                    thinking_state,
+                                    services,
+                                )
+                                .await;
+                            }
+                            prompt_box.draw(&input_state, false)?;
+                        }
+                        InputAction::TriggerReadWrite => {
+                            // Allow toggling while chatting
                             services.set_read_only(false);
                             services.set_sandbox_enabled(true);
-                            output.emit(output::OutputEvent::Info(
-                                "Read-Write mode enabled (Sandboxed).".into(),
-                            ));
+                            terminal::println_above(
+                                "Switched to Read-Write mode (Sandbox enabled).",
+                            );
+                            if let Some(ref pm) = provider_manager {
+                                update_prompt_status(
+                                    &mut prompt_box,
+                                    pm,
+                                    working_dir,
+                                    thinking_state,
+                                    services,
+                                )
+                                .await;
+                            }
+                            prompt_box.draw(&input_state, false)?;
                         }
-                        CommandResult::SetYolo => {
-                            // Only show warning if not already in YOLO mode
-                            if read_only || sandbox_enabled {
-                                output.emit(output::OutputEvent::Info(
-                                    "⚠ YOLO mode enabled (Sandbox disabled)"
+                        InputAction::TriggerClear => {
+                            // Don't allow /clear during streaming
+                            if chatting {
+                                continue;
+                            }
+                            // Start a new session id, but keep prior sessions for /sessions restore.
+                            messages.clear();
+                            *current_session_id = None;
+                            history::clear();
+                            clear_todos();
+                            terminal::redraw_from_history(prompt_box.height());
+                        }
+                        InputAction::Submit => {
+                            let content = input_state.content();
+                            if content.trim().is_empty() {
+                                continue;
+                            }
+
+                            // Editing a queued prompt: hitting Enter re-queues it.
+                            if chatting && editing_pending_prompt.is_some() {
+                                // Replace the original with the edited version.
+                                editing_pending_prompt = None;
+                                pending_prompts.push_back(PendingPrompt {
+                                    input: content,
+                                    images: input_state.active_images(),
+                                });
+                                input_state.clear();
+                                prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                                continue;
+                            }
+
+                            // During chat: handle some commands immediately, queue other prompts
+                            if chatting {
+                                // Check if this is a /settings command - handle it immediately
+                                if content.trim() == "/settings" {
+                                    input_state.clear();
+                                    settings_menu = Some(SettingsMenuState::new());
+                                    prompt_box.draw_with_settings_menu(
+                                        &input_state,
+                                        settings_menu.as_ref().unwrap(),
+                                    )?;
+                                    continue;
+                                }
+
+                                // Allow transaction logging commands to run immediately while the model is working.
+                                if let Some(cmd_input) = content.trim().strip_prefix('/')
+                                    && let Some(command) =
+                                        crate::commands::parse(cmd_input, custom_commands)
+                                    && matches!(
+                                        command,
+                                        Command::StartTransactionLogging
+                                            | Command::StopTransactionLogging
+                                    )
+                                {
+                                    match command {
+                                        Command::StartTransactionLogging => {
+                                            let path =
+                                                crate::provider::transaction_log::start(None);
+                                            terminal::println_above(&format!(
+                                                "Transaction logging started: {}",
+                                                path.display()
+                                            ));
+                                        }
+                                        Command::StopTransactionLogging => {
+                                            crate::provider::transaction_log::stop();
+                                            terminal::println_above("Transaction logging stopped.");
+                                        }
+                                        _ => {}
+                                    }
+
+                                    input_state.clear();
+                                    if pending_prompts.is_empty() {
+                                        prompt_box.draw(&input_state, false)?;
+                                    } else {
+                                        prompt_box
+                                            .draw_with_pending(&input_state, &pending_prompts)?;
+                                    }
+                                    continue;
+                                }
+
+                                let pasted_images = input_state.active_images();
+
+                                pending_prompts.push_back(PendingPrompt {
+                                    input: content,
+                                    images: pasted_images,
+                                });
+
+                                input_state.clear();
+
+                                // Redraw with pending prompts visible
+                                prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                                continue;
+                            }
+
+                            // Skip if provider not available
+                            let Some(ref mut pm) = provider_manager else {
+                                terminal::println_above(
+                                    &"No provider available. Use /model to configure."
+                                        .red()
+                                        .to_string(),
+                                );
+                                continue;
+                            };
+
+                            let content = input_state.content();
+                            if !content.trim().is_empty() {
+                                let result = process_input(
+                                    &content,
+                                    &mut messages,
+                                    current_session_id,
+                                    working_dir,
+                                    &mut prompt_box,
+                                    &mut input_state,
+                                    services,
+                                    custom_commands,
+                                    pm,
+                                    thinking_state,
+                                )
+                                .await;
+
+                                match result {
+                                    ProcessResult::Continue => {
+                                        input_state.clear();
+                                        update_prompt_status(
+                                            &mut prompt_box,
+                                            pm,
+                                            working_dir,
+                                            thinking_state,
+                                            services,
+                                        )
+                                        .await;
+                                        prompt_box.draw(&input_state, true)?;
+                                    }
+                                    ProcessResult::Quit => {
+                                        break;
+                                    }
+                                    ProcessResult::StartChat(prompt, history_entry) => {
+                                        // Get active images before clearing
+                                        let pasted_images = input_state.active_images();
+
+                                        // Save to history before clearing.
+                                        // Use history_entry if provided (for custom commands),
+                                        // otherwise use the prompt.
+                                        let history_text =
+                                            history_entry.as_ref().unwrap_or(&prompt);
+                                        let _ =
+                                            prompt_history.add_with_images(history_text, vec![]);
+
+                                        // Clear input and redraw prompt BEFORE spawning chat task.
+                                        // This ensures the prompt box is at the correct position
+                                        // when spawn_chat_task echoes the user's input to the
+                                        // output area.
+                                        input_state.clear();
+                                        prompt_box.draw(&input_state, false)?;
+
+                                        // Spawn chat task (takes ownership of provider_manager)
+                                        if let Some(pm) = provider_manager.take() {
+                                            chat_task = Some(spawn_chat_task(
+                                                prompt,
+                                                pasted_images,
+                                                &mut messages,
+                                                pm,
+                                                thinking_state,
+                                                output,
+                                            ));
+                                        }
+                                    }
+                                    ProcessResult::OpenModelMenu => {
+                                        input_state.clear();
+                                        model_menu = Some(ModelMenuState::new(pm));
+                                        prompt_box.draw_with_model_menu(
+                                            &input_state,
+                                            model_menu.as_ref().unwrap(),
+                                        )?;
+                                    }
+                                    ProcessResult::OpenSessionsMenu => {
+                                        input_state.clear();
+                                        session_menu = Some(SessionMenuState::new(
+                                            working_dir,
+                                            current_session_id.as_deref(),
+                                        ));
+                                        prompt_box.draw_with_sessions_menu(
+                                            &input_state,
+                                            session_menu.as_ref().unwrap(),
+                                        )?;
+                                    }
+                                    ProcessResult::OpenSettings => {
+                                        input_state.clear();
+                                        settings_menu = Some(SettingsMenuState::new());
+                                        prompt_box.draw_with_settings_menu(
+                                            &input_state,
+                                            settings_menu.as_ref().unwrap(),
+                                        )?;
+                                    }
+                                    ProcessResult::OpenMcpMenu => {
+                                        input_state.clear();
+                                        let statuses = services.mcp.server_statuses().await;
+                                        mcp_menu = Some(McpMenuState::new(statuses));
+                                        prompt_box.draw_with_mcp_menu(
+                                            &input_state,
+                                            mcp_menu.as_ref().unwrap(),
+                                        )?;
+                                    }
+                                    ProcessResult::OpenLspMenu => {
+                                        input_state.clear();
+                                        let config =
+                                            crate::config::ConfigFile::load().unwrap_or_default();
+                                        if !config.lsp_enabled {
+                                            let msg = "LSP integration is disabled. Enable it in /settings."
+                                                .to_string();
+                                            terminal::println_above(&msg);
+                                            history::push(history::HistoryEvent::Info(msg));
+                                        } else {
+                                            let servers = crate::lsp::manager().server_info().await;
+                                            if servers.is_empty() {
+                                                let msg = "No LSP servers connected.".to_string();
+                                                terminal::println_above(&msg);
+                                                history::push(history::HistoryEvent::Info(msg));
+                                            } else {
+                                                let msg = format!(
+                                                    "LSP servers connected: {}",
+                                                    servers.len()
+                                                );
+                                                terminal::println_above(&msg);
+                                                history::push(history::HistoryEvent::Info(msg));
+                                                for server in servers {
+                                                    let extensions =
+                                                        if server.file_extensions.is_empty() {
+                                                            String::new()
+                                                        } else {
+                                                            format!(
+                                                                " ({})",
+                                                                server.file_extensions.join(", ")
+                                                            )
+                                                        };
+                                                    let msg = format!(
+                                                        "  • {}{}",
+                                                        server.name, extensions
+                                                    );
+                                                    terminal::println_above(&msg);
+                                                    history::push(history::HistoryEvent::Info(msg));
+                                                }
+                                            }
+                                        }
+                                        refresh_prompt_status(
+                                            &mut prompt_box,
+                                            &provider_manager,
+                                            &chat_task,
+                                            working_dir,
+                                            thinking_state,
+                                            services,
+                                        )
+                                        .await;
+                                        prompt_box.draw(&input_state, false)?;
+                                    }
+                                    ProcessResult::OpenToolsMenu => {
+                                        input_state.clear();
+                                        tools_menu =
+                                            Some(ToolsMenuState::new(services.is_read_only()));
+                                        prompt_box.draw_with_tools_menu(
+                                            &input_state,
+                                            tools_menu.as_ref().unwrap(),
+                                        )?;
+                                    }
+                                    ProcessResult::StartCompaction(data) => {
+                                        input_state.clear();
+                                        prompt_box.draw(&input_state, false)?;
+
+                                        // Spawn compaction chat task
+                                        if let Some(pm) = provider_manager.take() {
+                                            chat_task = Some(spawn_compaction_chat(
+                                                data,
+                                                &mut messages,
+                                                pm,
+                                                output,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        InputAction::CancelAgentLoop => {
+                            if chatting && editing_pending_prompt.is_some() {
+                                if let Some(pending) = editing_pending_prompt.take() {
+                                    pending_prompts.push_back(pending);
+                                }
+                                input_state.clear();
+                                prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            }
+                            // ESC when not chatting - no-op (agent interruption handled above)
+                            // Could add "clear input" behavior here if desired
+                        }
+                        InputAction::ClearOrExit => {
+                            // This triggers when Ctrl+C is pressed and input is empty
+
+                            let now = std::time::Instant::now();
+                            if let Some(expires) = exit_prompt
+                                && now < expires
+                            {
+                                break;
+                            }
+
+                            exit_prompt = Some(now + Duration::from_secs(2));
+                            prompt_box.set_exit_hint(exit_prompt);
+                            prompt_box.draw(&input_state, false)?;
+                        }
+                        InputAction::CycleFavoritesForward
+                        | InputAction::CycleFavoritesBackward => {
+                            let reverse = matches!(action, InputAction::CycleFavoritesBackward);
+
+                            // Get current model string
+                            let current_model = if let Some(pending) = pending_model_change.as_ref()
+                                && chatting
+                            {
+                                pending.short_display()
+                            } else if let Some(ref task) = chat_task {
+                                format!(
+                                    "{}/{}",
+                                    task.custom_provider
+                                        .as_deref()
+                                        .unwrap_or_else(|| task.provider.id()),
+                                    task.model_id
+                                )
+                            } else if let Some(ref pm) = provider_manager {
+                                format!(
+                                    "{}/{}",
+                                    pm.current_custom_provider()
+                                        .unwrap_or_else(|| pm.current_provider().id()),
+                                    pm.current_model_id()
+                                )
+                            } else {
+                                String::new()
+                            };
+
+                            if let Some(next) =
+                                crate::providers::cycle_favorite_model(&current_model, reverse)
+                            {
+                                let display_name = next
+                                    .custom_provider
+                                    .as_deref()
+                                    .unwrap_or_else(|| next.provider.display_name());
+
+                                if chatting {
+                                    // Chat is running - queue the model change and update status bar
+                                    // Update status bar to show the queued model
+                                    let cwd = shorten_path(working_dir);
+                                    let thinking = ThinkingStatus {
+                                        available: supports_thinking(next.provider, &next.model_id),
+                                        enabled: thinking_state.enabled,
+                                        mode: thinking_state.mode.clone(),
+                                    };
+                                    let security = SecurityStatus {
+                                        read_only: services.is_read_only(),
+                                        sandbox_enabled: services.is_sandbox_enabled(),
+                                    };
+                                    let lsp_server_count = get_lsp_server_count().await;
+                                    let mcp_server_count = get_mcp_server_count(services).await;
+                                    prompt_box.set_status(
+                                        next.custom_provider
+                                            .clone()
+                                            .unwrap_or_else(|| next.provider.id().to_string()),
+                                        next.model_id.clone(),
+                                        cwd,
+                                        thinking,
+                                        security,
+                                        lsp_server_count,
+                                        mcp_server_count,
+                                    );
+                                    pending_model_change = Some(next);
+                                } else if let Some(ref mut pm) = provider_manager {
+                                    // Chat is not running - apply immediately
+                                    let provider_changed = pm.set_model(
+                                        next.provider,
+                                        next.model_id.clone(),
+                                        next.custom_provider.clone(),
+                                    );
+                                    if provider_changed {
+                                        crate::provider::transform_thinking_for_provider_switch(
+                                            &mut messages,
+                                        );
+                                    }
+                                    // Update thinking state to new model's default
+                                    let new_thinking =
+                                        default_thinking_state(next.provider, &next.model_id);
+                                    thinking_state.enabled = new_thinking.enabled;
+                                    thinking_state.mode = new_thinking.mode;
+
+                                    terminal::println_above(&format!(
+                                        "Switched to {} / {}",
+                                        display_name, next.model_id
+                                    ));
+
+                                    update_prompt_status(
+                                        &mut prompt_box,
+                                        pm,
+                                        working_dir,
+                                        thinking_state,
+                                        services,
+                                    )
+                                    .await;
+                                }
+                                prompt_box.draw(&input_state, false)?;
+                            } else {
+                                terminal::println_above(
+                                    &"No favorite models configured. Use ^F in /model menu to add favorites."
                                         .yellow()
                                         .to_string(),
-                                ));
+                                );
+                                prompt_box.draw(&input_state, false)?;
                             }
-                            read_only = false;
-                            sandbox_enabled = false;
-                            services.set_read_only(false);
-                            services.set_sandbox_enabled(false);
                         }
-                        CommandResult::SetReadOnly => {
-                            read_only = true;
-                            sandbox_enabled = true;
-                            services.set_read_only(true);
-                            services.set_sandbox_enabled(true);
-                            output
-                                .emit(output::OutputEvent::Info("Read-Only mode enabled.".into()));
+                        InputAction::Quit => {
+                            break;
                         }
                     }
-
-                    is_custom
-                } else {
-                    false
-                };
-
-                // Skip chat processing for regular commands
-                if input.trim_start().starts_with('/') && !is_custom_prompt {
-                    continue;
                 }
-
-                // Handle shell commands starting with '!'
-                if input.trim_start().starts_with('!') {
-                    let cmd = input.trim_start().strip_prefix('!').unwrap_or("");
-                    if !cmd.is_empty() {
-                        let status = std::process::Command::new("sh").arg("-c").arg(cmd).status();
-                        match status {
-                            Ok(exit_status) => {
-                                if !exit_status.success()
-                                    && let Some(code) = exit_status.code()
-                                {
-                                    eprintln!("[Command exited with status {}]", code);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to execute command: {}", e);
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                let mut model_override = None;
-                if let Some(model_spec) = model_override_spec.as_deref() {
-                    model_override = Some(apply_model_override(
-                        &mut provider_manager,
-                        &mut messages,
-                        &mut thinking_state,
-                        model_spec,
-                    ));
-                }
-
-                output::start_spinner(&output, "Waiting...");
-
-                run_chat_with_images(
-                    &mut provider_manager,
-                    &mut messages,
-                    &mut thinking_state,
-                    &resolved_input,
-                    pasted_images,
-                    read_only,
-                    &working_dir,
-                    &mut current_session_id,
-                    &output,
-                )
-                .await;
-
-                restore_model_override(
-                    &mut provider_manager,
-                    &mut messages,
-                    &mut thinking_state,
-                    model_override,
-                );
+                _ => {}
             }
+        } else {
+            tokio::task::yield_now().await;
         }
     }
-    // Unreachable due to loop structure
-    #[allow(unreachable_code)]
-    Ok(ExitStatus::Quit)
-}
 
-struct ModelOverride {
-    provider: ModelProvider,
-    model_id: String,
-    custom_provider: Option<String>,
-    thinking_state: ThinkingState,
-}
-
-fn apply_model_override(
-    provider_manager: &mut ProviderManager,
-    messages: &mut [Message],
-    thinking_state: &mut ThinkingState,
-    model_spec: &str,
-) -> ModelOverride {
-    let original = ModelOverride {
-        provider: provider_manager.current_provider(),
-        model_id: provider_manager.current_model_id().to_string(),
-        custom_provider: provider_manager
-            .current_custom_provider()
-            .map(|s| s.to_string()),
-        thinking_state: thinking_state.clone(),
-    };
-    let (provider, model_id, custom_provider) = crate::providers::parse_model_spec(model_spec);
-    let provider_changed = provider_manager.set_model(provider, model_id, custom_provider);
-    if provider_changed {
-        crate::provider::transform_thinking_for_provider_switch(messages);
+    // Restore terminal state (skip in batch mode - we never enabled raw mode)
+    if !batch {
+        execute!(
+            std::io::stdout(),
+            PopKeyboardEnhancementFlags,
+            DisableBracketedPaste
+        )?;
+        crossterm_terminal::disable_raw_mode()?;
+        prompt_box.hide_and_exit()?;
     }
-    *thinking_state = provider_manager.default_thinking();
-    provider_manager.set_thinking_enabled(thinking_state.enabled);
-    provider_manager.set_thinking_mode(thinking_state.mode.clone());
-    original
-}
 
-fn restore_model_override(
-    provider_manager: &mut ProviderManager,
-    messages: &mut [Message],
-    thinking_state: &mut ThinkingState,
-    original: Option<ModelOverride>,
-) {
-    let Some(original) = original else {
-        return;
-    };
-    let provider_changed = provider_manager.set_model(
-        original.provider,
-        original.model_id,
-        original.custom_provider,
-    );
-    if provider_changed {
-        crate::provider::transform_thinking_for_provider_switch(messages);
-    }
-    *thinking_state = original.thinking_state;
-    provider_manager.set_thinking_enabled(thinking_state.enabled);
-    provider_manager.set_thinking_mode(thinking_state.mode.clone());
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_chat_with_images(
-    provider_manager: &mut ProviderManager,
+fn handle_chat_outcome(
+    outcome: ChatOutcome,
     messages: &mut Vec<Message>,
-    thinking_state: &mut ThinkingState,
-    input: &str,
-    pasted_images: Vec<PastedImage>,
+    provider_manager: &ProviderManager,
+    thinking_state: &crate::providers::ThinkingState,
+    current_session_id: &mut Option<String>,
     read_only: bool,
     working_dir: &std::path::Path,
-    current_session_id: &mut Option<String>,
-    output: &output::OutputContext,
-) {
-    let messages_count = messages.len();
-    let current_provider = provider_manager.current_provider();
-    let model_id = provider_manager.current_model_id().to_string();
-
-    // Validate image support for current model
-    if !pasted_images.is_empty() && !supports_images(current_provider, &model_id) {
-        output::stop_spinner(output);
-        eprintln!(
-            "Error: Model {}/{} does not support images.",
-            current_provider.id(),
-            model_id
-        );
-        return;
+    prompt_box: &mut PromptBox,
+) -> std::io::Result<()> {
+    match outcome {
+        ChatOutcome::Complete => {
+            match session::save_session(
+                working_dir,
+                messages,
+                &provider_manager.current_provider(),
+                provider_manager.current_model_id(),
+                thinking_state.enabled,
+                read_only,
+                current_session_id.as_deref(),
+            ) {
+                Ok(id) => *current_session_id = Some(id),
+                Err(e) => {
+                    terminal::println_above(&format!("Warning: Failed to save session: {}", e));
+                }
+            }
+            prompt_box.hide()?;
+        }
+        ChatOutcome::Interrupted => {
+            terminal::println_above("Cancelled");
+            messages.pop();
+            prompt_box.hide()?;
+        }
     }
+
+    Ok(())
+}
+
+async fn handle_global_shortcuts(
+    key: crossterm::event::KeyEvent,
+    thinking_state: &mut crate::providers::ThinkingState,
+    provider_manager: &ProviderManager,
+    services: &Services,
+    prompt_box: &mut PromptBox,
+    input_state: &InputState,
+    working_dir: &std::path::Path,
+) -> std::io::Result<bool> {
+    match (key.code, key.modifiers) {
+        (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
+            let provider = provider_manager.current_provider();
+            let model = provider_manager.current_model_id();
+
+            // Only cycle if thinking is available for this model
+            if supports_thinking(provider, model) {
+                let next = cycle_thinking_state(provider, model, thinking_state);
+                thinking_state.enabled = next.enabled;
+                thinking_state.mode = next.mode;
+
+                // Update prompt status to show new thinking state
+                update_prompt_status(
+                    prompt_box,
+                    provider_manager,
+                    working_dir,
+                    thinking_state,
+                    services,
+                )
+                .await;
+            }
+            prompt_box.draw(input_state, false)?;
+            Ok(true)
+        }
+        (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+            services.cycle_sandbox_mode();
+            update_prompt_status(
+                prompt_box,
+                provider_manager,
+                working_dir,
+                thinking_state,
+                services,
+            )
+            .await;
+            prompt_box.draw(input_state, false)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Spawn a chat task that runs asynchronously
+fn spawn_chat_task(
+    prompt: String,
+    pasted_images: Vec<PastedImage>,
+    messages: &mut Vec<Message>,
+    mut provider_manager: ProviderManager,
+    thinking_state: &crate::providers::ThinkingState,
+    output: &OutputContext,
+) -> ChatTask {
+    // Reset streaming stats for this new turn
+    listener::reset_turn_stats();
+
+    // Capture provider info before moving provider_manager
+    let provider = provider_manager.current_provider();
+    let model_id = provider_manager.current_model_id().to_string();
+    let custom_provider = provider_manager
+        .current_custom_provider()
+        .map(|s| s.to_string());
+
+    // Show the submitted input above the prompt with grey background
+    // The prompt text contains inline image markers like Image#1, Image#2, etc.
+    let display_prompt = prompt.strip_prefix('!').unwrap_or(&prompt);
+    let term_width = terminal::term_width() as usize;
+    let prompt_prefix = if prompt.trim_start().starts_with('!') {
+        input::SHELL_PROMPT
+    } else {
+        input::PROMPT
+    };
+    let content_width = term_width.saturating_sub(2); // prefix is 2 chars
+    let mut is_first_row = true;
+    for (i, line) in display_prompt.lines().enumerate() {
+        // Wrap each logical line to fit terminal width
+        let wrapped = render::wrap_text(line, content_width);
+        for wrapped_line in &wrapped {
+            let prefix = if is_first_row {
+                is_first_row = false;
+                prompt_prefix
+            } else if i == 0 {
+                // Continuation of first line (wrapped)
+                input::CONTINUATION
+            } else {
+                // Continuation of subsequent lines
+                input::CONTINUATION
+            };
+            // Colorize image markers
+            let styled_line = render::colorize_image_markers(wrapped_line);
+            // Calculate display width and pad to terminal width
+            let line_display_width =
+                render::display_width(prefix) + render::display_width(wrapped_line);
+            let padding = term_width.saturating_sub(line_display_width);
+            let padding_str = " ".repeat(padding);
+            let full_line = format!("{}{}{}", prefix, styled_line, padding_str);
+            terminal::println_above(&full_line.on_color(render::BG_GREY).to_string());
+        }
+    }
+
+    // Add to history for resize redraw
+    let image_metas: Vec<history::ImageMeta> = pasted_images
+        .iter()
+        .map(|img| history::ImageMeta {
+            _marker: img.marker.clone(),
+            _mime_type: img.mime_type.clone(),
+            _size_bytes: img.data.len(),
+        })
+        .collect();
+    history::push_user_prompt(&prompt, image_metas);
 
     // Create message with text and images
     let message = if pasted_images.is_empty() {
-        Message::user(input)
+        Message::user(&prompt)
     } else {
         let mut blocks = Vec::new();
 
-        if !input.trim().is_empty() {
+        if !prompt.trim().is_empty() {
             blocks.push(ContentBlock::Text {
-                text: input.to_string(),
+                text: prompt.clone(),
             });
         }
 
@@ -1663,75 +2176,750 @@ async fn run_chat_with_images(
 
     messages.push(message);
 
-    // Set thinking state
+    // Set up thinking state
     provider_manager.set_thinking_enabled(thinking_state.enabled);
     provider_manager.set_thinking_mode(thinking_state.mode.clone());
 
+    // Create interrupt flag and result channel
     let interrupted = Arc::new(AtomicBool::new(false));
+    let (result_tx, result_rx) = oneshot::channel();
 
-    let result = run_chat_loop(provider_manager, messages, &interrupted, output).await;
+    // Take messages for the async task
+    let mut task_messages = std::mem::take(messages);
+    let pre_prompt_len = task_messages.len().saturating_sub(1);
+    let task_interrupted = Arc::clone(&interrupted);
+    let task_output = output.clone();
 
-    match result {
-        Err(error::Error::Interrupted) => {
-            output::stop_spinner(output);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            print!("\x1b[2K\rCancelled\n");
-            std::io::Write::flush(&mut std::io::stdout()).ok();
-            messages.truncate(messages_count);
-        }
-        Err(e) => {
-            output::stop_spinner(output);
-            eprintln!("Error: {}", e);
-            messages.truncate(messages_count);
-        }
-        Ok(()) => {
-            print_usage_for_provider(provider_manager);
+    tokio::spawn(async move {
+        let initial_len = task_messages.len();
 
-            match session::save_session(
-                working_dir,
-                messages,
-                &provider_manager.current_provider(),
-                provider_manager.current_model_id(),
-                thinking_state.enabled,
-                read_only,
-                current_session_id.as_deref(),
-            ) {
-                Ok(id) => *current_session_id = Some(id),
-                Err(e) => eprintln!("Warning: Failed to save session: {}", e),
+        let result = AssertUnwindSafe(provider_manager.chat(
+            &mut task_messages,
+            &task_interrupted,
+            &task_output,
+        ))
+        .catch_unwind()
+        .await;
+
+        let status = match result {
+            Ok(Ok(())) => ChatTaskStatus::Ok,
+            Ok(Err(crate::error::Error::Interrupted)) => ChatTaskStatus::Interrupted,
+            Ok(Err(e)) => ChatTaskStatus::Error(e.display_message()),
+            Err(panic) => {
+                let msg = panic_payload_to_string(panic);
+                output::emit_error(
+                    &task_output,
+                    &format!(
+                        "Internal error: chat task panicked ({}) — try again, and consider running with RUST_BACKTRACE=1.",
+                        msg
+                    ),
+                );
+                ChatTaskStatus::Panic(msg)
             }
+        };
+
+        let can_retry_prompt =
+            matches!(status, ChatTaskStatus::Error(_) | ChatTaskStatus::Panic(_))
+                && task_messages.len() == initial_len;
+
+        if can_retry_prompt {
+            task_messages.truncate(pre_prompt_len);
+        }
+
+        let _ = result_tx.send(ChatTaskResult {
+            provider_manager,
+            messages: task_messages,
+            status,
+            can_retry_prompt,
+        });
+    });
+
+    ChatTask {
+        result_rx,
+        interrupted,
+        provider,
+        model_id,
+        custom_provider,
+        compaction: None,
+    }
+}
+
+/// Spawn a compaction chat task that summarizes old messages
+fn spawn_compaction_chat(
+    data: CompactionData,
+    messages: &mut Vec<Message>,
+    mut provider_manager: ProviderManager,
+    output: &OutputContext,
+) -> ChatTask {
+    use crate::compaction;
+
+    // Reset streaming stats for this turn
+    listener::reset_turn_stats();
+
+    // Capture provider info
+    let provider = provider_manager.current_provider();
+    let model_id = provider_manager.current_model_id().to_string();
+    let custom_provider = provider_manager
+        .current_custom_provider()
+        .map(|s| s.to_string());
+
+    // Show summarization request in history
+    history::push_user_prompt(&data.request_text, vec![]);
+
+    // Set up compaction messages: system prompt + user request
+    let compaction_messages = vec![
+        Message::system(compaction::summarization_system_prompt()),
+        Message::user(&data.request_text),
+    ];
+
+    // Store original messages for rollback, but set up the compaction messages for the task
+    *messages = compaction_messages;
+
+    // Disable thinking for compaction (simpler, faster)
+    provider_manager.set_thinking_enabled(false);
+
+    // Create interrupt flag and result channel
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let (result_tx, result_rx) = oneshot::channel();
+
+    // Take messages for the async task
+    let mut task_messages = std::mem::take(messages);
+    let task_interrupted = Arc::clone(&interrupted);
+    let task_output = output.clone();
+
+    tokio::spawn(async move {
+        let result = AssertUnwindSafe(provider_manager.chat(
+            &mut task_messages,
+            &task_interrupted,
+            &task_output,
+        ))
+        .catch_unwind()
+        .await;
+
+        let status = match result {
+            Ok(Ok(())) => ChatTaskStatus::Ok,
+            Ok(Err(crate::error::Error::Interrupted)) => ChatTaskStatus::Interrupted,
+            Ok(Err(e)) => ChatTaskStatus::Error(e.display_message()),
+            Err(panic) => {
+                let msg = panic_payload_to_string(panic);
+                output::emit_error(
+                    &task_output,
+                    &format!(
+                        "Internal error: compaction task panicked ({}) — try again, and consider running with RUST_BACKTRACE=1.",
+                        msg
+                    ),
+                );
+                ChatTaskStatus::Panic(msg)
+            }
+        };
+
+        let _ = result_tx.send(ChatTaskResult {
+            provider_manager,
+            messages: task_messages,
+            status,
+            can_retry_prompt: false,
+        });
+    });
+
+    ChatTask {
+        result_rx,
+        interrupted,
+        provider,
+        model_id,
+        custom_provider,
+        compaction: Some(CompactionState {
+            preserved: data.preserved,
+            messages_compacted: data.messages_compacted,
+            original: data.original,
+        }),
+    }
+}
+
+/// Finalize compaction: extract summary from response and rebuild messages
+fn finalize_compaction(chat_messages: Vec<Message>, state: CompactionState) -> Vec<Message> {
+    // Extract summary from the last assistant message
+    let summary = chat_messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::Assistant)
+        .map(|m| match &m.content {
+            MessageContent::Text(t) => t.clone(),
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .filter_map(|b| {
+                    if let ContentBlock::Text { text } = b {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        })
+        .unwrap_or_default();
+
+    // Build new messages: summary block + preserved messages
+    let summary_message = Message {
+        role: Role::User,
+        content: MessageContent::Blocks(vec![ContentBlock::Summary {
+            summary,
+            messages_compacted: state.messages_compacted,
+        }]),
+    };
+
+    let mut new_messages = vec![summary_message];
+    new_messages.extend(state.preserved);
+    new_messages
+}
+
+enum ProcessResult {
+    /// Continue to next input
+    Continue,
+    /// Quit the application
+    Quit,
+    /// Start a chat with the model.
+    /// Contains (prompt_to_send, history_entry).
+    /// If history_entry is None, use prompt_to_send for history.
+    StartChat(String, Option<String>),
+    /// Open the model selection menu
+    OpenModelMenu,
+    /// Open the session selection menu
+    OpenSessionsMenu,
+    /// Open the MCP server menu
+    OpenMcpMenu,
+    /// Open the LSP menu
+    OpenLspMenu,
+    /// Open the settings panel
+    OpenSettings,
+    /// Open the tools menu
+    OpenToolsMenu,
+    /// Start compaction
+    StartCompaction(CompactionData),
+}
+
+/// Process user input and return what to do next
+#[allow(clippy::too_many_arguments)]
+async fn process_input(
+    input: &str,
+    messages: &mut Vec<Message>,
+    current_session_id: &mut Option<String>,
+    working_dir: &std::path::Path,
+    prompt_box: &mut PromptBox,
+    input_state: &mut InputState,
+    services: &Services,
+    custom_commands: &[CustomCommand],
+    provider_manager: &mut ProviderManager,
+    _thinking_state: &mut crate::providers::ThinkingState,
+) -> ProcessResult {
+    let input = input.trim();
+
+    // Handle shell commands starting with '!'
+    if input.starts_with('!') {
+        // Disable raw mode for shell command
+        let _ = crossterm_terminal::disable_raw_mode();
+        let _ = prompt_box.hide_and_clear();
+
+        let cmd = input.strip_prefix('!').unwrap_or("");
+        if !cmd.is_empty() {
+            history::push_user_prompt(&format!("!{}", cmd), vec![]);
+            let output = std::process::Command::new("sh").arg("-c").arg(cmd).output();
+            match output {
+                Ok(result) => {
+                    let stdout = String::from_utf8_lossy(&result.stdout);
+                    let stderr = String::from_utf8_lossy(&result.stderr);
+                    let mut combined = String::new();
+                    if !stdout.is_empty() {
+                        combined.push_str(&stdout);
+                    }
+                    if !stderr.is_empty() {
+                        if !combined.is_empty() && !combined.ends_with('\n') {
+                            combined.push('\n');
+                        }
+                        combined.push_str(&stderr);
+                    }
+                    if !combined.is_empty() {
+                        let mut cleaned = combined.clone();
+                        if cleaned.ends_with('\n') {
+                            cleaned.pop();
+                        }
+                        history::push(history::HistoryEvent::Info(cleaned));
+                        print!("{}", combined);
+                    }
+                    if !result.status.success()
+                        && let Some(code) = result.status.code()
+                    {
+                        terminal::println_above(
+                            &format!("[Command exited with status {}]", code)
+                                .bright_black()
+                                .to_string(),
+                        );
+                    }
+                }
+                Err(e) => {
+                    terminal::println_above(
+                        &format!("Failed to execute command: {}", e)
+                            .red()
+                            .to_string(),
+                    );
+                    history::push(history::HistoryEvent::Error(format!(
+                        "Failed to execute command: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
+        // Re-enable raw mode
+        let _ = crossterm_terminal::enable_raw_mode();
+        return ProcessResult::Continue;
+    }
+
+    // Handle slash commands
+    if input.starts_with('/') {
+        let cmd_input = input.strip_prefix('/').unwrap_or("");
+        if let Some(command) = crate::commands::parse(cmd_input, custom_commands) {
+            // Track if this is a custom command for history
+            let is_custom = matches!(command, Command::Custom { .. });
+            match handle_command(
+                command,
+                messages,
+                current_session_id,
+                working_dir,
+                prompt_box,
+                input_state,
+                services,
+                custom_commands,
+                provider_manager,
+            )
+            .await
+            {
+                CommandResult::Continue => return ProcessResult::Continue,
+                CommandResult::Quit => return ProcessResult::Quit,
+                CommandResult::SendToModel(prompt) => {
+                    // For custom commands, save original command to history instead of expanded prompt
+                    let history_entry = if is_custom {
+                        Some(input.to_string())
+                    } else {
+                        None
+                    };
+                    return ProcessResult::StartChat(prompt, history_entry);
+                }
+                CommandResult::OpenModelMenu => return ProcessResult::OpenModelMenu,
+                CommandResult::OpenSessionsMenu => return ProcessResult::OpenSessionsMenu,
+                CommandResult::OpenMcpMenu => return ProcessResult::OpenMcpMenu,
+                CommandResult::OpenLspMenu => return ProcessResult::OpenLspMenu,
+                CommandResult::OpenSettings => return ProcessResult::OpenSettings,
+                CommandResult::OpenToolsMenu => return ProcessResult::OpenToolsMenu,
+                CommandResult::StartCompaction(data) => {
+                    return ProcessResult::StartCompaction(data);
+                }
+            }
+        } else {
+            // Unknown command
+            let cmd_name = cmd_input.split_whitespace().next().unwrap_or(cmd_input);
+            terminal::println_above(&format!("Unknown command: /{}", cmd_name).red().to_string());
+            return ProcessResult::Continue;
+        }
+    }
+
+    // Regular user message - spawn_chat_task will display the prompt
+    ProcessResult::StartChat(input.to_string(), None)
+}
+
+/// Result of handling a slash command.
+enum CommandResult {
+    /// Command handled, continue to next input
+    Continue,
+    /// Quit the application
+    Quit,
+    /// Send the given prompt to the model
+    SendToModel(String),
+    /// Open the model selection menu
+    OpenModelMenu,
+    /// Open the session selection menu
+    OpenSessionsMenu,
+    /// Open the MCP server menu
+    OpenMcpMenu,
+    /// Open the LSP menu
+    OpenLspMenu,
+    /// Open the settings panel
+    OpenSettings,
+    /// Open the tools menu
+    OpenToolsMenu,
+    /// Start compaction with the given data
+    StartCompaction(CompactionData),
+}
+
+/// Data needed to perform compaction
+struct CompactionData {
+    /// Messages to preserve (not compacted)
+    preserved: Vec<Message>,
+    /// Number of messages being compacted
+    messages_compacted: usize,
+    /// Original messages (for rollback)
+    original: Vec<Message>,
+    /// Summarization request text
+    request_text: String,
+}
+
+/// Handle a parsed slash command.
+#[allow(clippy::too_many_arguments)]
+async fn handle_command(
+    command: Command,
+    messages: &mut Vec<Message>,
+    current_session_id: &mut Option<String>,
+    _working_dir: &std::path::Path,
+    prompt_box: &mut PromptBox,
+    input_state: &mut InputState,
+    services: &Services,
+    custom_commands: &[CustomCommand],
+    provider_manager: &mut ProviderManager,
+) -> CommandResult {
+    match command {
+        Command::Quit => CommandResult::Quit,
+
+        Command::Clear => {
+            // Start a new session by dropping the current session id, but keep the
+            // previous session on disk so it can be restored via /sessions.
+            messages.clear();
+            *current_session_id = None;
+            history::clear();
+            clear_todos();
+            terminal::redraw_from_history(prompt_box.height());
+            CommandResult::Continue
+        }
+
+        Command::Echo { text } => {
+            terminal::println_above(&text);
+            CommandResult::Continue
+        }
+
+        Command::Help => {
+            show_help(custom_commands);
+            CommandResult::Continue
+        }
+
+        Command::Lsp => {
+            // Keep /lsp as a menu-style action so it can run while streaming.
+            CommandResult::OpenLspMenu
+        }
+
+        Command::ReadOnly => {
+            services.set_read_only(true);
+            terminal::println_above("Switched to Read-Only mode.");
+            CommandResult::Continue
+        }
+
+        Command::ReadWrite => {
+            services.set_read_only(false);
+            services.set_sandbox_enabled(true);
+            terminal::println_above("Switched to Read-Write mode (Sandbox enabled).");
+            CommandResult::Continue
+        }
+
+        Command::Yolo => {
+            services.set_read_only(false);
+            services.set_sandbox_enabled(false);
+            terminal::println_above("Switched to YOLO mode (Sandbox disabled).");
+            CommandResult::Continue
+        }
+
+        Command::Undo => {
+            if crate::provider::remove_last_turn(messages) > 0 {
+                terminal::println_above("Removed the most recent turn.");
+            } else {
+                terminal::println_above("No turns to undo.");
+            }
+            CommandResult::Continue
+        }
+
+        Command::Forget => {
+            if crate::provider::remove_first_turn(messages) > 0 {
+                terminal::println_above("Removed the oldest turn.");
+            } else {
+                terminal::println_above("No turns to forget.");
+            }
+            CommandResult::Continue
+        }
+
+        Command::Truncate => {
+            if messages.len() > 1 {
+                let last = messages.pop();
+                messages.clear();
+                if let Some(msg) = last {
+                    messages.push(msg);
+                }
+                // Clear display history and repopulate with the last message
+                history::clear();
+                clear_todos();
+                if let Some(msg) = messages.last() {
+                    history::push_message(msg);
+                }
+                prompt_box.redraw_history().ok();
+            } else {
+                terminal::println_above("Nothing to truncate.");
+            }
+            CommandResult::Continue
+        }
+
+        Command::Custom { name, args } => {
+            if let Some(custom) = custom_commands.iter().find(|c| c.name == name) {
+                let prompt = custom_commands::substitute_variables(&custom.prompt, &args);
+                CommandResult::SendToModel(prompt)
+            } else {
+                terminal::println_above(
+                    &format!("Custom command not found: {}", name)
+                        .red()
+                        .to_string(),
+                );
+                CommandResult::Continue
+            }
+        }
+
+        Command::Model => {
+            // Return to event loop to open the model menu
+            CommandResult::OpenModelMenu
+        }
+
+        Command::Tools => {
+            // Open tools menu for interactive toggling
+            CommandResult::OpenToolsMenu
+        }
+
+        Command::Mcp => {
+            // Open MCP servers menu for interactive toggling
+            CommandResult::OpenMcpMenu
+        }
+
+        Command::Sessions => {
+            // Open sessions menu for interactive selection
+            CommandResult::OpenSessionsMenu
+        }
+
+        Command::BuildAgentsMd => {
+            // Send the build-agents-md prompt to the model
+            let prompt = crate::prompts::BUILD_AGENTS_MD_PROMPT.to_string();
+            CommandResult::SendToModel(prompt)
+        }
+
+        Command::StartTransactionLogging => {
+            let path = crate::provider::transaction_log::start(None);
+            terminal::println_above(&format!("Transaction logging started: {}", path.display()));
+            CommandResult::Continue
+        }
+
+        Command::StopTransactionLogging => {
+            crate::provider::transaction_log::stop();
+            terminal::println_above("Transaction logging stopped.");
+            CommandResult::Continue
+        }
+
+        Command::DumpPrompt => {
+            // Dump the full API request as JSON
+            terminal::println_above("Preparing request...");
+            let msgs = messages.clone();
+            match provider_manager.prepare_request(msgs).await {
+                Ok(json) => {
+                    let pretty =
+                        serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string());
+                    terminal::println_above("");
+                    for line in pretty.lines() {
+                        terminal::println_above(line);
+                    }
+                    terminal::println_above("");
+                }
+                Err(e) => {
+                    terminal::println_above(&format!("Error: {}", e).red().to_string());
+                }
+            }
+            CommandResult::Continue
+        }
+
+        Command::ClaudeCountTokens => {
+            let is_claude = matches!(
+                provider_manager.current_provider(),
+                crate::providers::ModelProvider::Claude
+            );
+
+            if is_claude {
+                terminal::println_above("Counting tokens...");
+                match provider_manager.count_tokens(messages).await {
+                    Ok(json) => {
+                        let pretty = serde_json::to_string_pretty(&json)
+                            .unwrap_or_else(|_| json.to_string());
+                        terminal::println_above("");
+                        for line in pretty.lines() {
+                            terminal::println_above(line);
+                        }
+                        terminal::println_above("");
+                    }
+                    Err(e) => {
+                        terminal::println_above(&format!("Error: {}", e).red().to_string());
+                    }
+                }
+            } else {
+                terminal::println_above(
+                    &"/claude-count-tokens is only available with Claude provider."
+                        .red()
+                        .to_string(),
+                );
+            }
+            CommandResult::Continue
+        }
+
+        Command::Usage => {
+            let has_claude_oauth = crate::commands::has_claude_oauth_provider();
+
+            if has_claude_oauth {
+                // Clear the prompt before the async fetch
+                input_state.clear();
+                prompt_box.draw(input_state, true).ok();
+
+                terminal::println_above("Fetching rate limits...");
+                match crate::usage::fetch_anthropic_rate_limits().await {
+                    Ok(limits) => {
+                        for line in limits.format_lines() {
+                            terminal::println_above(&line);
+                        }
+                    }
+                    Err(e) => {
+                        terminal::println_above(&format!("Error: {}", e).red().to_string());
+                    }
+                }
+            } else {
+                terminal::println_above(
+                    &"/claude-usage requires a Claude provider with OAuth."
+                        .red()
+                        .to_string(),
+                );
+            }
+            CommandResult::Continue
+        }
+
+        Command::Compact => {
+            use crate::compaction;
+
+            if messages.is_empty() {
+                terminal::println_above(&"No messages to compact.".yellow().to_string());
+                return CommandResult::Continue;
+            }
+
+            // Segment messages (preserve last 2 turns)
+            let (to_compact, to_preserve) = compaction::segment_messages(messages, 2);
+
+            if to_compact.is_empty() {
+                terminal::println_above(&"No messages to compact.".yellow().to_string());
+                return CommandResult::Continue;
+            }
+
+            let messages_compacted = to_compact.len();
+            terminal::println_above(
+                &format!("Compacting {} messages...", messages_compacted)
+                    .cyan()
+                    .to_string(),
+            );
+
+            // Build the summarization request
+            let request_text = compaction::build_summarization_request_text(&to_compact);
+
+            CommandResult::StartCompaction(CompactionData {
+                preserved: to_preserve,
+                messages_compacted,
+                original: messages.clone(),
+                request_text,
+            })
+        }
+
+        Command::Settings => {
+            // Open the settings panel on the alternate screen
+            CommandResult::OpenSettings
+        }
+
+        // Internal: redraw is handled separately
+        #[allow(unreachable_patterns)]
+        _ => {
+            prompt_box.redraw_history().ok();
+            CommandResult::Continue
         }
     }
 }
 
-/// Print usage statistics for the current provider
-fn print_usage_for_provider(provider_manager: &ProviderManager) {
-    let provider = provider_manager.current_provider();
-    let model_id = provider_manager.current_model_id();
+/// Show help with available commands.
+fn show_help(_custom_commands: &[CustomCommand]) {
+    let has_claude_oauth = crate::commands::has_claude_oauth_provider();
 
-    match provider {
-        ModelProvider::Antigravity => {
-            let limit = crate::provider::context_limit(provider, model_id);
-            usage::antigravity().print_last_usage(limit);
+    terminal::println_above("");
+    terminal::println_above(&"Available commands:".cyan().bold().to_string());
+    terminal::println_above("");
+
+    for cmd in crate::commands::COMMANDS {
+        // Skip Claude OAuth commands if not configured
+        if cmd.availability == crate::commands::Availability::ClaudeOAuthConfigured
+            && !has_claude_oauth
+        {
+            continue;
         }
-        ModelProvider::Claude => {
-            let limit = crate::provider::context_limit(provider, model_id);
-            usage::anthropic().print_last_usage(limit);
-        }
-        ModelProvider::OpenCodeZen => {
-            let limit = crate::provider::context_limit(provider, model_id);
-            usage::zen().print_last_usage(limit);
-        }
-        ModelProvider::OpenRouter => {
-            usage::openrouter().print_last_usage(None);
-        }
-        ModelProvider::OpenAiCompat => {
-            usage::openai_compat().print_last_usage(None);
-        }
-        ModelProvider::OpenAi => {
-            usage::openai().print_last_usage(None);
-        }
-        ModelProvider::GitHubCopilot => {
-            // Copilot doesn't have usage tracking
-        }
+        let cmd_name = format!("/{:<20}", cmd.name);
+        terminal::println_above(&format!("  {} {}", cmd_name.green(), cmd.description));
+    }
+
+    terminal::println_above("");
+    terminal::println_above(&"Shell commands:".cyan().bold().to_string());
+    let shell_cmd = format!("{:<21}", "!<cmd>");
+    terminal::println_above(&format!(
+        "  {} Run a shell command (e.g., !ls -la)",
+        shell_cmd.green()
+    ));
+
+    terminal::println_above("");
+    terminal::println_above(&"Keyboard shortcuts:".cyan().bold().to_string());
+    let shortcut = format!("{:<21}", "Ctrl+M");
+    terminal::println_above(&format!("  {} Switch model", shortcut.yellow()));
+    let shortcut = format!("{:<21}", "Ctrl+T");
+    terminal::println_above(&format!("  {} Toggle thinking", shortcut.yellow()));
+    let shortcut = format!("{:<21}", "Ctrl+X");
+    terminal::println_above(&format!(
+        "  {} Cycle security mode (Read-Write -> Read-Only -> YOLO)",
+        shortcut.yellow()
+    ));
+    let shortcut = format!("{:<21}", "Ctrl+Y");
+    terminal::println_above(&format!(
+        "  {} Cycle favorite models (Shift+Ctrl+Y reverse)",
+        shortcut.yellow()
+    ));
+    let shortcut = format!("{:<21}", "Shift+Up");
+    terminal::println_above(&format!(
+        "  {} Edit most recent queued message (during response)",
+        shortcut.yellow()
+    ));
+    let shortcut = format!("{:<21}", "Shift+Delete");
+    terminal::println_above(&format!(
+        "  {} Delete most recent queued message (during response)",
+        shortcut.yellow()
+    ));
+    let shortcut = format!("{:<21}", "Ctrl+R");
+    terminal::println_above(&format!("  {} Search history", shortcut.yellow()));
+    let shortcut = format!("{:<21}", "Ctrl+G");
+    terminal::println_above(&format!(
+        "  {} Edit prompt in $VISUAL/$EDITOR",
+        shortcut.yellow()
+    ));
+    terminal::println_above("");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::panic_payload_to_string;
+
+    #[test]
+    fn test_panic_payload_to_string_static_str() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom");
+        assert_eq!(panic_payload_to_string(payload), "boom");
+    }
+
+    #[test]
+    fn test_panic_payload_to_string_string() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom".to_string());
+        assert_eq!(panic_payload_to_string(payload), "boom");
     }
 }

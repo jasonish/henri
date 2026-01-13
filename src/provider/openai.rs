@@ -749,6 +749,8 @@ impl OpenAiProvider {
                     if let Some(usage) = resp.get("usage") {
                         if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                             self.usage_tracker.record_input(input);
+                            let limit = Self::context_limit(&self.model);
+                            output::emit_context_update(output, input, limit);
                         }
                         if let Some(output_tokens) =
                             usage.get("output_tokens").and_then(|v| v.as_u64())
@@ -786,7 +788,10 @@ impl OpenAiProvider {
             }
         }
 
-        output::print_text_end(output);
+        // Only end the text block if we actually streamed any text.
+        if !full_text.is_empty() {
+            output::print_text_end(output);
+        }
 
         if crate::provider::transaction_log::is_active() {
             crate::provider::transaction_log::log(
@@ -860,8 +865,8 @@ impl OpenAiProvider {
 
     /// Get the context limit for a given model name
     pub(crate) fn context_limit(_model: &str) -> Option<u64> {
-        // All these models are 400,000 as of now.
-        Some(400000)
+        // All these models are 272,000 as of now.
+        Some(272000)
     }
 }
 

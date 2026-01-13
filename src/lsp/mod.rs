@@ -577,18 +577,29 @@ impl LspManager {
         clients.iter().any(|c| c.handles_extension(ext))
     }
 
-    /// Get the number of connected LSP servers
+    /// Get the number of active LSP servers
     pub async fn server_count(&self) -> usize {
-        let clients = self.clients.read().await;
-        clients.len()
+        self.clients.read().await.len()
     }
 
-    /// Shutdown all LSP servers
-    pub async fn shutdown_all(&self) {
-        let mut clients = self.clients.write().await;
-        clients.clear();
-        // Dropping the clients will kill the processes
+    /// Get info about connected LSP servers
+    pub async fn server_info(&self) -> Vec<LspServerInfo> {
+        let clients = self.clients.read().await;
+        clients
+            .iter()
+            .map(|c| LspServerInfo {
+                name: c.name.clone(),
+                file_extensions: c.file_extensions.clone(),
+            })
+            .collect()
     }
+}
+
+/// Info about a connected LSP server
+#[derive(Debug, Clone)]
+pub(crate) struct LspServerInfo {
+    pub name: String,
+    pub file_extensions: Vec<String>,
 }
 
 /// Global LSP manager instance
@@ -610,44 +621,6 @@ pub(crate) async fn initialize(servers: Vec<LspServerConfig>) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Reload LSP servers from configuration file
-pub(crate) async fn reload_from_config(working_dir: &std::path::Path) -> Result<usize> {
-    use crate::config::ConfigFile;
-
-    let mgr = manager();
-
-    // Shutdown existing servers
-    mgr.shutdown_all().await;
-
-    // Load config and restart servers
-    let config_file = ConfigFile::load().unwrap_or_default();
-
-    if !config_file.lsp_enabled {
-        return Ok(0);
-    }
-
-    let Some(lsp_config) = &config_file.lsp else {
-        return Ok(0);
-    };
-
-    let servers: Vec<LspServerConfig> = lsp_config
-        .servers
-        .iter()
-        .filter(|s| s.enabled)
-        .map(|s| LspServerConfig {
-            name: s.name.clone(),
-            command: s.command.clone(),
-            args: s.args.clone(),
-            file_extensions: s.file_extensions.clone(),
-            root_path: working_dir.to_path_buf(),
-        })
-        .collect();
-
-    let count = servers.len();
-    initialize(servers).await?;
-    Ok(count)
 }
 
 /// Format diagnostics for inclusion in tool results

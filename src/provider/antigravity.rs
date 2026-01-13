@@ -882,7 +882,13 @@ impl AntigravityProvider {
             stop_reason = StopReason::ToolUse;
         }
 
-        output::print_text_end(output);
+        // Only end the text block if we actually streamed any text.
+        if content_blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { .. }))
+        {
+            output::print_text_end(output);
+        }
 
         if crate::provider::transaction_log::is_active() {
             crate::provider::transaction_log::log(
@@ -925,6 +931,16 @@ impl Provider for AntigravityProvider {
                 }
                 Err(ref e) if e.is_retryable() && attempts < INTERNAL_MAX_RETRIES => {
                     attempts += 1;
+                    output::emit_warning(
+                        output,
+                        &format!(
+                            "{} (retrying in {}ms, attempt {}/{})",
+                            e.display_message(),
+                            delay.as_millis(),
+                            attempts,
+                            INTERNAL_MAX_RETRIES
+                        ),
+                    );
                     tokio::time::sleep(delay).await;
                     delay *= 2;
                 }

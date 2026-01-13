@@ -69,41 +69,46 @@ impl RateLimits {
         }
     }
 
-    pub(crate) fn display(&self) {
-        println!("\n{}", "Anthropic Rate Limits".bold());
-        println!();
+    /// Format rate limit info as lines (for CLI mode which needs terminal coordination)
+    pub(crate) fn format_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+
+        lines.push(String::new());
+        lines.push(format!("{}", "Anthropic Rate Limits".bold()));
+        lines.push(String::new());
 
         if let (Some(util), Some(reset)) = (self.unified_5h_utilization, self.unified_5h_reset) {
-            println!(
+            lines.push(format!(
                 "  5-hour limit:   {} {} (resets in {})",
                 Self::utilization_bar(util),
                 Self::format_utilization(util),
                 Self::format_reset_time(reset)
-            );
+            ));
         }
 
         if let (Some(util), Some(reset)) = (self.unified_7d_utilization, self.unified_7d_reset) {
-            println!(
+            lines.push(format!(
                 "  7-day limit:    {} {} (resets in {})",
                 Self::utilization_bar(util),
                 Self::format_utilization(util),
                 Self::format_reset_time(reset)
-            );
+            ));
         }
 
         if let (Some(util), Some(reset)) = (
             self.unified_7d_sonnet_utilization,
             self.unified_7d_sonnet_reset,
         ) {
-            println!(
+            lines.push(format!(
                 "  7d Sonnet:      {} {} (resets in {})",
                 Self::utilization_bar(util),
                 Self::format_utilization(util),
                 Self::format_reset_time(reset)
-            );
+            ));
         }
 
-        println!();
+        lines.push(String::new());
+        lines
     }
 }
 
@@ -211,11 +216,6 @@ impl NetworkStats {
     pub(crate) fn rx_bytes(&self) -> u64 {
         self.rx_bytes.load(Ordering::Relaxed)
     }
-
-    pub(crate) fn clear(&self) {
-        self.tx_bytes.store(0, Ordering::Relaxed);
-        self.rx_bytes.store(0, Ordering::Relaxed);
-    }
 }
 
 static NETWORK_STATS: std::sync::OnceLock<NetworkStats> = std::sync::OnceLock::new();
@@ -282,57 +282,8 @@ impl Usage {
         self.last_input_tokens.load(Ordering::Relaxed)
     }
 
-    /// Get total context size (input tokens + cache read tokens)
-    pub(crate) fn last_context(&self) -> u64 {
-        self.last_input() + self.last_cache_read_tokens.load(Ordering::Relaxed)
-    }
-
     pub(crate) fn turn_total(&self) -> u64 {
         self.turn_total_tokens.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn turn_cache_read(&self) -> u64 {
-        self.turn_cache_read_tokens.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn total_input(&self) -> u64 {
-        self.total_input_tokens.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn total_output(&self) -> u64 {
-        self.total_output_tokens.load(Ordering::Relaxed)
-    }
-
-    /// Print a summary of the current turn's usage (accumulated across all API calls)
-    pub(crate) fn print_last_usage(&self, context_limit: Option<u64>) {
-        // last_input shows the final request's context size
-        // turn_total shows total tokens consumed (input + output) across all API calls in this turn
-        let input = self.last_input();
-        let total = self.turn_total();
-        let cache_read = self.turn_cache_read();
-
-        // Build a descriptive summary
-        let mut parts = Vec::new();
-
-        if let Some(limit) = context_limit {
-            parts.push(format!("context: {}/{}", input, limit));
-        } else {
-            parts.push(format!("context: {}", input));
-        }
-
-        if total > 0 {
-            parts.push(format!("total: {}", total));
-        }
-
-        if cache_read > 0 {
-            parts.push(format!("cache_read: {}", cache_read));
-        }
-
-        let summary = parts.join(", ");
-
-        // Print in dim style with blank line before
-        println!();
-        println!("{}", format!("[{}]", summary).dimmed());
     }
 }
 

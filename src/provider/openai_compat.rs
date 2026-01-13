@@ -372,7 +372,11 @@ async fn execute_chat_inner(
     }
 
     thinking.end();
-    output::print_text_end(output);
+
+    // Only end the text block if we actually streamed any text.
+    if !full_text.is_empty() {
+        output::print_text_end(output);
+    }
 
     if crate::provider::transaction_log::is_active() {
         crate::provider::transaction_log::log(

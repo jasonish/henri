@@ -6,8 +6,7 @@ after my Golden Retriever after hearing that AI coding agents were
 much like letting a Golden Retriever code.
 
 There is no way this tool can keep up with the progress of Claude Code
-or OpenCode, but sometimes I just prefer its simplicity, especially in
-CLI mode.
+or OpenCode, but sometimes I just prefer its simplicity.
 
 Henri remains simple. It executes one task at a time serially, providing
 verbose output so you can see exactly what's going on. It uses no
@@ -62,16 +61,8 @@ mv ~/.cargo/bin/henri ~/.local/bin/henri
 
 ## Running
 
-Henri defaults to TUI mode (terminal UI with ratatui):
-
 ```
 henri
-```
-
-For a traditional REPL/shell interface:
-
-```
-henri cli
 ```
 
 On first start, a free model will be used; however, connecting to a

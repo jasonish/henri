@@ -23,7 +23,6 @@ mod session;
 mod sse;
 mod syntax;
 mod tools;
-mod tui;
 mod upgrade;
 mod usage;
 mod version;
@@ -41,11 +40,7 @@ const STYLES: Styles = Styles::styled()
 
 /// Check for existing session and restore if requested.
 /// Returns (working_dir, Option<RestoredSession>)
-/// Only replays session history to stdout when `replay` is true (CLI mode).
-fn handle_session_restore(
-    continue_session: bool,
-    replay: bool,
-) -> (PathBuf, Option<session::RestoredSession>) {
+fn handle_session_restore(continue_session: bool) -> (PathBuf, Option<session::RestoredSession>) {
     let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     if !continue_session {
@@ -57,10 +52,8 @@ fn handle_session_restore(
         return (working_dir, None);
     };
 
-    // Replay session history only in CLI mode
-    if replay {
-        session::replay_session(&saved_session);
-    }
+    // Replay session history
+    // Note: rendering is done by the interactive CLI once the prompt is visible.
     (
         working_dir,
         Some(session::RestoredSession::from_state(&saved_session)),
@@ -92,6 +85,13 @@ struct Args {
     read_only: bool,
 
     #[arg(
+        short = 'b',
+        long,
+        help = "Exit after processing the prompt (batch mode)"
+    )]
+    batch: bool,
+
+    #[arg(
         trailing_var_arg = true,
         help = "Prompt to send (non-interactive mode)"
     )]
@@ -100,52 +100,6 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Launch CLI mode (REPL interface)
-    Cli {
-        #[arg(short, long, help = "Model to use (default: claude-sonnet-4)")]
-        model: Option<String>,
-
-        #[arg(short = 'c', long = "continue", help = "Continue previous session")]
-        continue_session: bool,
-
-        #[arg(long, help = "Enable LSP integration", conflicts_with = "no_lsp")]
-        lsp: bool,
-
-        #[arg(long, help = "Disable LSP integration", conflicts_with = "lsp")]
-        no_lsp: bool,
-
-        #[arg(long, help = "Enable read-only mode (disables file editing tools)")]
-        read_only: bool,
-
-        #[arg(
-            trailing_var_arg = true,
-            help = "Prompt to send (non-interactive mode)"
-        )]
-        prompt: Vec<String>,
-    },
-    /// Launch TUI mode (terminal UI)
-    Tui {
-        #[arg(short, long, help = "Model to use (default: claude-sonnet-4)")]
-        model: Option<String>,
-
-        #[arg(short = 'c', long = "continue", help = "Continue previous session")]
-        continue_session: bool,
-
-        #[arg(long, help = "Enable LSP integration", conflicts_with = "no_lsp")]
-        lsp: bool,
-
-        #[arg(long, help = "Disable LSP integration", conflicts_with = "lsp")]
-        no_lsp: bool,
-
-        #[arg(long, help = "Enable read-only mode (disables file editing tools)")]
-        read_only: bool,
-
-        #[arg(
-            trailing_var_arg = true,
-            help = "Prompt to send (non-interactive mode)"
-        )]
-        prompt: Vec<String>,
-    },
     /// Manage providers
     Provider {
         #[command(subcommand)]
@@ -233,7 +187,7 @@ enum ToolCommand {
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
-    // Handle non-interactive subcommands first
+    // Handle subcommands first
     if let Some(command) = &args.command {
         match command {
             Command::Provider { command } => match command {
@@ -285,172 +239,38 @@ async fn main() -> std::io::Result<()> {
             Command::Upgrade => {
                 return handle_upgrade_command().await;
             }
-            _ => {}
         }
     }
 
-    use commands::ExitStatus;
-
-    enum AppMode {
-        Cli,
-        Tui,
-    }
-
-    // Determine initial mode: explicit Cli/Tui subcommand wins, otherwise use config default
-    let mut mode = match &args.command {
-        Some(Command::Cli { .. }) => AppMode::Cli,
-        Some(Command::Tui { .. }) => AppMode::Tui,
-        _ => {
-            // Load config to get default UI mode (falls back to TUI if config fails or invalid)
-            let config_file = config::ConfigFile::load().unwrap_or_default();
-            match config_file.ui.default {
-                config::UiDefault::Cli => AppMode::Cli,
-                config::UiDefault::Tui => AppMode::Tui,
-            }
-        }
+    // Determine LSP override from args
+    let lsp_override: Option<bool> = if args.lsp {
+        Some(true)
+    } else if args.no_lsp {
+        Some(false)
+    } else {
+        None
     };
 
-    let mut continue_session = args.continue_session;
-    // Check if Cli/Tui subcommand also has continue_session flag set
-    match &args.command {
-        Some(Command::Cli {
-            continue_session: c,
-            ..
-        })
-        | Some(Command::Tui {
-            continue_session: c,
-            ..
-        }) => {
-            continue_session = continue_session || *c;
-        }
-        _ => {}
-    }
-
-    // Determine LSP override: subcommand takes precedence over global args
-    let lsp_override: Option<bool> = match &args.command {
-        Some(Command::Cli { lsp, no_lsp, .. }) | Some(Command::Tui { lsp, no_lsp, .. }) => {
-            if *lsp {
-                Some(true)
-            } else if *no_lsp {
-                Some(false)
-            } else if args.lsp {
-                Some(true)
-            } else if args.no_lsp {
-                Some(false)
-            } else {
-                None
-            }
-        }
-        _ => {
-            if args.lsp {
-                Some(true)
-            } else if args.no_lsp {
-                Some(false)
-            } else {
-                None
-            }
-        }
+    // Handle session restoration
+    let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let restored_session = if args.prompt.is_empty() && args.continue_session {
+        let (_, session) = handle_session_restore(args.continue_session);
+        session
+    } else {
+        None
     };
 
-    // Determine read-only mode: subcommand takes precedence over global args
-    let read_only = match &args.command {
-        Some(Command::Cli { read_only, .. }) | Some(Command::Tui { read_only, .. }) => {
-            *read_only || args.read_only
-        }
-        _ => args.read_only,
-    };
-
-    let mut first_run = true;
-    let mut transferred_session: Option<commands::ModeTransferSession> = None;
-
-    loop {
-        // Determine effective prompt for this run (only relevant if first_run)
-        let prompt_args = if first_run {
-            match &args.command {
-                Some(Command::Cli { prompt, .. }) | Some(Command::Tui { prompt, .. }) => {
-                    prompt.clone()
-                }
-                _ => args.prompt.clone(),
-            }
-        } else {
-            Vec::new()
-        };
-
-        // Determine session: use transferred session from mode switch, or load from disk
-        let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let restored_session = if let Some(transfer) = transferred_session.take() {
-            // Use session transferred from mode switch (don't load from disk)
-            let restored = transfer.into_restored_session(&working_dir);
-            // Replay session history when switching to CLI mode
-            if matches!(mode, AppMode::Cli) {
-                session::replay_session(&restored.state);
-            }
-            Some(restored)
-        } else if prompt_args.is_empty() && continue_session {
-            // Load from disk only on first run with --continue flag
-            // Only replay session history in CLI mode (TUI has its own display)
-            let replay = matches!(mode, AppMode::Cli);
-            let (_, session) = handle_session_restore(continue_session, replay);
-            session
-        } else {
-            None
-        };
-
-        // Extract model from subcommand args if present, else global args
-        let model = match &args.command {
-            Some(Command::Cli { model, .. }) | Some(Command::Tui { model, .. }) => {
-                model.clone().or_else(|| args.model.clone())
-            }
-            _ => args.model.clone(),
-        };
-
-        let status = match mode {
-            AppMode::Cli => {
-                cli::run(cli::CliArgs {
-                    model,
-                    prompt: prompt_args,
-                    working_dir,
-                    restored_session,
-                    lsp_override,
-                    read_only,
-                })
-                .await?
-            }
-            AppMode::Tui => {
-                let initial_prompt = if !prompt_args.is_empty() {
-                    Some(prompt_args.join(" "))
-                } else {
-                    None
-                };
-
-                tui::run(
-                    working_dir,
-                    restored_session,
-                    initial_prompt,
-                    model,
-                    lsp_override,
-                    read_only,
-                )
-                .await?
-            }
-        };
-
-        first_run = false;
-
-        match status {
-            ExitStatus::Quit => break,
-            ExitStatus::SwitchToCli(session) => {
-                mode = AppMode::Cli;
-                transferred_session = session;
-                // Don't set continue_session - we use transferred_session instead
-            }
-            ExitStatus::SwitchToTui(session) => {
-                mode = AppMode::Tui;
-                transferred_session = session;
-                // Don't set continue_session - we use transferred_session instead
-            }
-        }
-    }
+    // Run CLI
+    cli::run(cli::CliArgs {
+        model: args.model,
+        prompt: args.prompt,
+        working_dir,
+        restored_session,
+        lsp_override,
+        read_only: args.read_only,
+        batch: args.batch,
+    })
+    .await?;
 
     Ok(())
 }
@@ -531,7 +351,7 @@ async fn handle_add_command() -> std::io::Result<()> {
         }
         Err(e) => {
             eprintln!("Connection failed: {}", e);
-            std::process::exit(1);
+            std::process::exit(1)
         }
     }
 }

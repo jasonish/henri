@@ -9,6 +9,7 @@ Then lets test some tool calls:
 
 * Use bash to list the directory
 * Read Cargo.toml
+* Read a file that doesn't exist, I want to see the tool's error message
 * Use the built-in grep tool to search for a pattern
 * Find all files in this project ending in .md
 * Edit a Rust file, adding lines, removing lines and changing a line

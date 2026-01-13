@@ -1,725 +1,192 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
-use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+//! Output listener for CLI mode - prints output above the prompt.
 
-use colored::Colorize;
-use terminal_size::terminal_size;
+use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+use colored::{Color, ColoredString, Colorize};
+use tokio::sync::watch;
+use unicode_width::UnicodeWidthChar;
 
 use crate::output::{OutputEvent, OutputListener};
-use crate::tools::TodoStatus;
+use crate::syntax;
+use crate::usage;
 
-const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+use super::history::{self, HistoryEvent, TodoItem, TodoStatus};
+use super::markdown::{
+    render_markdown_inlines, render_markdown_inlines_with_style, render_markdown_line,
+};
+use super::render::{BG_DARK_GREEN, BG_DARK_RED};
+use super::terminal;
 
-#[derive(Clone, Copy, PartialEq)]
-enum MarkdownStyle {
-    Normal,
-    Bold,
+static ACTIVE_LISTENER: OnceLock<&'static CliListener> = OnceLock::new();
+
+// Global spinner state - completely decoupled from mutex-protected state
+static SPINNER_STATE: AtomicU8 = AtomicU8::new(0); // 0=Ready, 1=Working, 2=Thinking
+static SPINNER_TX: OnceLock<watch::Sender<u8>> = OnceLock::new();
+
+// Bandwidth display state - smoothly animated towards actual values
+static BANDWIDTH_RX_DISPLAY: AtomicU64 = AtomicU64::new(0);
+static BANDWIDTH_TX_DISPLAY: AtomicU64 = AtomicU64::new(0);
+
+// Whether to show network stats (loaded from config)
+static SHOW_NETWORK_STATS: AtomicBool = AtomicBool::new(false);
+
+// Context/token tracking state for status line display
+static CONTEXT_TOKENS: AtomicU64 = AtomicU64::new(0);
+static CONTEXT_LIMIT: AtomicU64 = AtomicU64::new(0); // 0 = unknown
+static TOTAL_TOKENS: AtomicU64 = AtomicU64::new(0);
+static TOTAL_TOKENS_DISPLAY: AtomicU64 = AtomicU64::new(0);
+static STREAMING_START: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+// Accumulated duration from previous API calls in this turn (in milliseconds)
+static ACCUMULATED_DURATION_MS: AtomicU64 = AtomicU64::new(0);
+// Stores the final duration in milliseconds when streaming completes (0 = still streaming or no data)
+static FINAL_DURATION_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Reload the show_network_stats setting from config
+pub(crate) fn reload_show_network_stats() {
+    let enabled = crate::config::ConfigFile::load()
+        .map(|c| c.show_network_stats)
+        .unwrap_or(false);
+    SHOW_NETWORK_STATS.store(enabled, Ordering::Relaxed);
 }
 
-struct ThinkingState {
-    column: usize,
-    word_buffer: String,
-    pending_newlines: usize,
-    has_content: bool,
-    style: MarkdownStyle,
-    asterisk_count: usize,
-    in_code_block: bool,
-    line_buffer: String,
-}
+/// Render a single diff line with syntax highlighting.
+/// Applies diff colors (green for +, red for -, cyan for @@) and overlays syntax highlighting
+/// on the code content portion of the line.
+fn render_diff_line(
+    line: &str,
+    language: Option<&str>,
+    old_line_num: &mut usize,
+    new_line_num: &mut usize,
+) -> Option<String> {
+    // Skip --- and +++ header lines
+    if line.starts_with("+++") || line.starts_with("---") {
+        return None;
+    }
 
-impl ThinkingState {
-    const fn new() -> Self {
-        Self {
-            column: 0,
-            word_buffer: String::new(),
-            pending_newlines: 0,
-            has_content: false,
-            style: MarkdownStyle::Normal,
-            asterisk_count: 0,
-            in_code_block: false,
-            line_buffer: String::new(),
+    // Parse hunk headers to update line numbers, but don't render them
+    if line.starts_with("@@") {
+        if let Some((old_start, new_start)) = parse_hunk_header(line) {
+            *old_line_num = old_start;
+            *new_line_num = new_start;
+        }
+        return None;
+    }
+
+    // Determine line type and update line numbers
+    let (line_num, prefix, prefix_color, bg_color, code_content): (
+        Option<usize>,
+        &str,
+        Option<Color>,
+        Option<Color>,
+        &str,
+    ) = if let Some(stripped) = line.strip_prefix('+') {
+        let num = *new_line_num;
+        *new_line_num += 1;
+        (
+            Some(num),
+            "+",
+            Some(Color::Green),
+            Some(BG_DARK_GREEN),
+            stripped,
+        )
+    } else if let Some(stripped) = line.strip_prefix('-') {
+        let num = *old_line_num;
+        *old_line_num += 1;
+        (
+            Some(num),
+            "-",
+            Some(Color::Red),
+            Some(BG_DARK_RED),
+            stripped,
+        )
+    } else if let Some(stripped) = line.strip_prefix(' ') {
+        let num = *new_line_num;
+        *old_line_num += 1;
+        *new_line_num += 1;
+        (Some(num), " ", None, None, stripped)
+    } else {
+        // Unknown line format
+        return Some(line.to_string());
+    };
+
+    // Build the gutter: "  3 + " (3-digit right-aligned number + space + prefix + space)
+    let line_num_str = line_num
+        .map(|n| format!("{:>3}", n))
+        .unwrap_or_else(|| "   ".to_string());
+
+    let mut result = String::new();
+
+    // Helper to apply optional background color to text
+    fn with_bg(text: &str, bg: Option<Color>) -> String {
+        match bg {
+            Some(color) => text.on_color(color).to_string(),
+            None => text.to_string(),
         }
     }
 
-    fn reset(&mut self) {
-        self.column = 0;
-        self.word_buffer.clear();
-        self.pending_newlines = 0;
-        self.has_content = false;
-        self.style = MarkdownStyle::Normal;
-        self.asterisk_count = 0;
-        self.in_code_block = false;
-        self.line_buffer.clear();
-    }
-}
-
-struct TextState {
-    column: usize,
-    word_buffer: String,
-    has_content: bool,
-    style: MarkdownStyle,
-    asterisk_count: usize,
-    in_code_block: bool,
-    line_buffer: String,
-    code_block_buffer: String,
-    code_block_language: Option<String>,
-}
-
-impl TextState {
-    const fn new() -> Self {
-        Self {
-            column: 0,
-            word_buffer: String::new(),
-            has_content: false,
-            style: MarkdownStyle::Normal,
-            asterisk_count: 0,
-            in_code_block: false,
-            line_buffer: String::new(),
-            code_block_buffer: String::new(),
-            code_block_language: None,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.column = 0;
-        self.word_buffer.clear();
-        self.has_content = false;
-        self.style = MarkdownStyle::Normal;
-        self.asterisk_count = 0;
-        self.in_code_block = false;
-        self.line_buffer.clear();
-        self.code_block_buffer.clear();
-        self.code_block_language = None;
-    }
-}
-
-pub(crate) struct QuietListener;
-
-impl QuietListener {
-    pub(crate) fn new() -> Self {
-        Self
-    }
-}
-
-impl OutputListener for QuietListener {
-    fn on_event(&self, event: &OutputEvent) {
-        // Only print errors to stderr, suppress everything else
-        if let OutputEvent::Error(msg) = event {
-            eprintln!("{}", msg);
-        }
-    }
-}
-
-pub(crate) struct CliListener {
-    thinking: Mutex<ThinkingState>,
-    text: Mutex<TextState>,
-    spinner_running: Arc<AtomicBool>,
-    spinner_message: Arc<Mutex<String>>,
-    spinner_generation: Arc<AtomicU64>,
-    diff_shown: AtomicBool,
-}
-
-impl CliListener {
-    pub(crate) fn new() -> Self {
-        Self {
-            thinking: Mutex::new(ThinkingState::new()),
-            text: Mutex::new(TextState::new()),
-            spinner_running: Arc::new(AtomicBool::new(false)),
-            spinner_message: Arc::new(Mutex::new(String::new())),
-            spinner_generation: Arc::new(AtomicU64::new(0)),
-            diff_shown: AtomicBool::new(false),
-        }
-    }
-
-    fn terminal_width() -> usize {
-        terminal_size().map(|(w, _)| w.0 as usize).unwrap_or(80)
-    }
-
-    fn flush_thinking_word(&self, state: &mut ThinkingState, width: usize) {
-        if state.word_buffer.is_empty() {
-            return;
-        }
-
-        let word_len = state.word_buffer.len();
-
-        // Only word wrap if not in a code block
-        if !state.in_code_block && state.column + word_len >= width && state.column > 0 {
-            println!();
-            state.column = 0;
-        }
-
-        let styled = match state.style {
-            MarkdownStyle::Bold => state.word_buffer.bright_black().bold(),
-            MarkdownStyle::Normal => state.word_buffer.bright_black(),
-        };
-        print!("{}", styled);
-
-        state.column += word_len;
-        state.word_buffer.clear();
-    }
-
-    fn flush_text_word(&self, state: &mut TextState, width: usize) {
-        if state.word_buffer.is_empty() {
-            return;
-        }
-
-        let word_len = state.word_buffer.len();
-
-        // Only word wrap if not in a code block
-        if !state.in_code_block && state.column + word_len >= width && state.column > 0 {
-            println!();
-            state.column = 0;
-        }
-
-        match state.style {
-            MarkdownStyle::Bold => print!("{}", state.word_buffer.bold()),
-            MarkdownStyle::Normal => print!("{}", state.word_buffer),
-        }
-        state.column += word_len;
-        state.word_buffer.clear();
-    }
-
-    fn stop_spinner(&self) {
-        if self.spinner_running.swap(false, Ordering::SeqCst) {
-            let msg_len = self
-                .spinner_message
-                .lock()
-                .expect("spinner mutex poisoned")
-                .len();
-            let clear_len = msg_len + 3;
-            let mut stdout = io::stdout();
-            print!("\r{}\r", " ".repeat(clear_len));
-            let _ = stdout.flush();
-        }
-    }
-}
-
-impl OutputListener for CliListener {
-    fn on_event(&self, event: &OutputEvent) {
-        match event {
-            OutputEvent::ThinkingStart => {
-                self.stop_spinner();
-                if let Ok(mut state) = self.thinking.lock() {
-                    state.reset();
-                }
-            }
-
-            OutputEvent::Thinking(text) => {
-                let width = Self::terminal_width();
-                let Ok(mut state) = self.thinking.lock() else {
-                    print!("{}", text.bright_black());
-                    io::stdout().flush().ok();
-                    return;
-                };
-
-                for ch in text.chars() {
-                    if ch == '*' {
-                        if !state.word_buffer.is_empty() {
-                            self.flush_thinking_word(&mut state, width);
-                        }
-                        state.asterisk_count += 1;
-                        continue;
-                    }
-
-                    if state.asterisk_count > 0 {
-                        if state.asterisk_count >= 2 {
-                            state.style = if state.style == MarkdownStyle::Bold {
-                                MarkdownStyle::Normal
-                            } else {
-                                MarkdownStyle::Bold
-                            };
-                        } else {
-                            state.word_buffer.push('*');
-                        }
-                        state.asterisk_count = 0;
-                    }
-
-                    if ch == '\r' {
-                        continue;
-                    } else if ch == ' ' || ch == '\t' {
-                        // Skip leading whitespace at start of line - but NOT in code blocks
-                        if state.column == 0 && state.word_buffer.is_empty() && !state.in_code_block
-                        {
-                            continue;
-                        }
-                        state.line_buffer.push(ch);
-                        self.flush_thinking_word(&mut state, width);
-                        // In code blocks, always print spaces (even at start of line)
-                        // Outside code blocks, only print if not at start of line
-                        if state.in_code_block || state.column > 0 {
-                            print!(" ");
-                            state.column += 1;
-                        }
-                    } else if ch == '\n' {
-                        // Check if this line was a code fence
-                        let trimmed = state.line_buffer.trim();
-                        if trimmed.starts_with("```") {
-                            state.in_code_block = !state.in_code_block;
-                        }
-                        state.line_buffer.clear();
-
-                        if !state.has_content {
-                            continue;
-                        }
-                        self.flush_thinking_word(&mut state, width);
-
-                        if state.in_code_block {
-                            println!();
-                            state.column = 0;
-                        } else if state.pending_newlines < 2 {
-                            state.pending_newlines += 1;
-                        }
-                    } else {
-                        if !state.has_content {
-                            state.column = 0;
-                        }
-                        if !state.in_code_block {
-                            for _ in 0..state.pending_newlines {
-                                println!();
-                                state.column = 0;
-                            }
-                        }
-                        state.pending_newlines = 0;
-                        state.has_content = true;
-                        state.line_buffer.push(ch);
-                        state.word_buffer.push(ch);
-                    }
-                }
-
-                io::stdout().flush().ok();
-            }
-
-            OutputEvent::ThinkingEnd => {
-                let needs_newline = if let Ok(mut state) = self.thinking.lock() {
-                    let width = Self::terminal_width();
-                    self.flush_thinking_word(&mut state, width);
-                    let needs = state.has_content && state.column > 0;
-                    state.reset();
-                    needs
-                } else {
-                    false
-                };
-                if needs_newline {
-                    println!();
-                }
-            }
-
-            OutputEvent::Text(text) => {
-                self.stop_spinner();
-                let width = Self::terminal_width();
-
-                let Ok(mut state) = self.text.lock() else {
-                    print!("{}", text);
-                    io::stdout().flush().ok();
-                    return;
-                };
-
-                for ch in text.chars() {
-                    // If we're inside a code block (after the opening fence),
-                    // buffer content instead of printing
-                    if state.in_code_block {
-                        if ch == '\r' {
-                            continue;
-                        } else if ch == '\n' {
-                            // Check if this line is the closing fence
-                            let is_closing_fence = state.line_buffer.trim() == "```";
-                            if is_closing_fence {
-                                // Exiting code block - highlight and print buffered content
-                                print_highlighted_code(
-                                    &state.code_block_buffer,
-                                    state.code_block_language.as_deref(),
-                                );
-                                // Print closing fence
-                                println!("{}", "```".dimmed());
-                                state.in_code_block = false;
-                                state.code_block_buffer.clear();
-                                state.code_block_language = None;
-                                state.column = 0;
-                            } else {
-                                // Add to buffer
-                                let line = state.line_buffer.clone();
-                                state.code_block_buffer.push_str(&line);
-                                state.code_block_buffer.push('\n');
-                            }
-                            state.line_buffer.clear();
-                        } else {
-                            state.line_buffer.push(ch);
-                        }
-                        continue;
-                    }
-
-                    // Normal text processing (outside code blocks)
-                    if ch == '*' {
-                        if !state.word_buffer.is_empty() {
-                            self.flush_text_word(&mut state, width);
-                        }
-                        state.asterisk_count += 1;
-                        continue;
-                    }
-
-                    if state.asterisk_count > 0 {
-                        if state.asterisk_count >= 2 {
-                            state.style = if state.style == MarkdownStyle::Bold {
-                                MarkdownStyle::Normal
-                            } else {
-                                MarkdownStyle::Bold
-                            };
-                        } else {
-                            state.word_buffer.push('*');
-                        }
-                        state.asterisk_count = 0;
-                    }
-
-                    if ch == '\r' {
-                        continue;
-                    } else if ch == ' ' || ch == '\t' {
-                        // Skip leading whitespace at start of line
-                        if state.column == 0 && state.word_buffer.is_empty() {
-                            state.line_buffer.push(ch);
-                            continue;
-                        }
-                        state.line_buffer.push(ch);
-                        self.flush_text_word(&mut state, width);
-                        if state.column > 0 {
-                            print!(" ");
-                            state.column += 1;
-                        }
-                    } else if ch == '\n' {
-                        // Check if this line is a code fence (opening)
-                        let trimmed = state.line_buffer.trim().to_string();
-                        if trimmed.starts_with("```") {
-                            // Entering code block
-                            state.in_code_block = true;
-                            // Extract language (everything after ```)
-                            let lang = trimmed.strip_prefix("```").unwrap_or("").trim();
-                            state.code_block_language = if lang.is_empty() {
-                                None
-                            } else {
-                                Some(lang.to_string())
-                            };
-                            // Print the opening fence dimmed (clear word_buffer, don't flush it)
-                            state.word_buffer.clear();
-                            if state.has_content {
-                                println!();
-                            }
-                            println!("{}", trimmed.dimmed());
-                            state.column = 0;
-                        } else {
-                            if !state.has_content {
-                                state.line_buffer.clear();
-                                continue;
-                            }
-                            self.flush_text_word(&mut state, width);
-                            println!();
-                            state.column = 0;
-                        }
-                        state.line_buffer.clear();
-                    } else {
-                        state.has_content = true;
-                        state.line_buffer.push(ch);
-                        state.word_buffer.push(ch);
-                    }
-                }
-
-                io::stdout().flush().ok();
-            }
-
-            OutputEvent::TextEnd => {
-                let needs_newline = if let Ok(mut state) = self.text.lock() {
-                    let width = Self::terminal_width();
-                    self.flush_text_word(&mut state, width);
-                    let needs = state.has_content && state.column > 0;
-                    state.reset();
-                    needs
-                } else {
-                    false
-                };
-                if needs_newline {
-                    println!();
-                }
-            }
-
-            OutputEvent::ToolCall { description, .. } => {
-                self.stop_spinner();
-
-                print!("{}", format!("▶ {}", description).dimmed());
-                io::stdout().flush().ok();
-            }
-
-            OutputEvent::ToolResult {
-                is_error,
-                error_preview,
-            } => {
-                // If a diff was just shown, it already displayed the checkmark
-                if self.diff_shown.swap(false, Ordering::SeqCst) && !*is_error {
-                    return;
-                }
-
-                let indicator = if *is_error { "✗" } else { "✓" };
-
-                // Only show error details if there's actually a non-empty preview
-                if *is_error
-                    && let Some(preview) = error_preview
-                    && !preview.trim().is_empty()
-                {
-                    println!(
-                        "\n{} {}",
-                        indicator.red().dimmed(),
-                        format!("Error: {}", preview).dimmed()
-                    );
-                } else {
-                    let colored_indicator = if *is_error {
-                        indicator.red().dimmed()
-                    } else {
-                        indicator.green().dimmed()
-                    };
-                    println!(" {}", colored_indicator);
-                }
-            }
-
-            OutputEvent::SpinnerStart(message) => {
-                let generation = self.spinner_generation.fetch_add(1, Ordering::SeqCst) + 1;
-                self.spinner_running.store(true, Ordering::SeqCst);
-                *self.spinner_message.lock().expect("spinner mutex poisoned") = message.clone();
-
-                let spinner_running = self.spinner_running.clone();
-                let spinner_generation = self.spinner_generation.clone();
-                let spinner_message = self.spinner_message.clone();
-
-                tokio::spawn(async move {
-                    let mut frame = 0;
-                    let mut stdout = io::stdout();
-
-                    while spinner_running.load(Ordering::SeqCst)
-                        && spinner_generation.load(Ordering::SeqCst) == generation
-                    {
-                        let spinner_char = SPINNER_FRAMES[frame % SPINNER_FRAMES.len()];
-                        print!(
-                            "\r{} {}",
-                            spinner_char.to_string().cyan(),
-                            spinner_message
-                                .lock()
-                                .expect("spinner mutex poisoned")
-                                .bright_black()
-                        );
-                        let _ = stdout.flush();
-                        frame += 1;
-                        tokio::time::sleep(tokio::time::Duration::from_millis(80)).await;
-                    }
-                });
-            }
-
-            OutputEvent::SpinnerStop => {
-                self.stop_spinner();
-            }
-
-            OutputEvent::Info(msg) => {
-                println!("{}", msg);
-            }
-
-            OutputEvent::Error(msg) => {
-                eprintln!("{}", msg);
-            }
-
-            OutputEvent::Warning(msg) => {
-                eprintln!("{}", msg.yellow());
-            }
-
-            OutputEvent::TodoList { todos } => {
-                self.stop_spinner();
-                if todos.is_empty() {
-                    println!("{}", "Todo list cleared.".bright_black());
-                } else {
-                    println!("{}", "Todo List:".bold().cyan());
-                    for item in todos {
-                        let (indicator, text) = match item.status {
-                            TodoStatus::Pending => ("[ ]", item.content.bright_black()),
-                            TodoStatus::InProgress => ("[-]", item.active_form.yellow()),
-                            TodoStatus::Completed => ("[✓]", item.content.bright_black()),
-                        };
-                        println!("  {} {}", indicator, text);
-                    }
-                }
-            }
-
-            OutputEvent::FileDiff {
-                path: _,
-                diff,
-                lines_added: _,
-                lines_removed: _,
-                language,
-            } => {
-                self.stop_spinner();
-                // Print checkmark on same line as tool call, then diff on new line
-                println!(" {}", "✓".green().dimmed());
-                self.diff_shown.store(true, Ordering::SeqCst);
-                render_diff_with_syntax(diff, language.as_deref());
-            }
-
-            // These events are used by the TUI but not needed for CLI output
-            OutputEvent::Waiting
-            | OutputEvent::Done
-            | OutputEvent::Interrupted
-            | OutputEvent::WorkingProgress { .. }
-            | OutputEvent::ContextUpdate { .. } => {}
-
-            OutputEvent::AutoCompactStarting {
-                current_usage,
-                limit,
-            } => {
-                let pct = (*current_usage as f64 / *limit as f64) * 100.0;
-                println!(
-                    "\n{}",
-                    format!(
-                        "Context at {:.0}% ({}/{}) - auto-compacting...",
-                        pct, current_usage, limit
-                    )
-                    .yellow()
-                );
-            }
-
-            OutputEvent::AutoCompactCompleted { messages_compacted } => {
-                println!(
-                    "{}",
-                    format!("Compacted {} messages into summary.", messages_compacted).green()
-                );
-            }
-        }
-    }
-}
-
-/// Render a diff with syntax highlighting and line numbers.
-fn render_diff_with_syntax(diff: &str, language: Option<&str>) {
-    use crate::syntax::highlight_code;
-    use colored::Colorize;
-
-    // Background colors for diff lines (subtle, not too bright)
-    const ADD_BG: (u8, u8, u8) = (0, 50, 0); // dark green
-    const DEL_BG: (u8, u8, u8) = (50, 0, 0); // dark red
-
-    // Default foreground for code without syntax highlighting
-    const DEFAULT_FG: (u8, u8, u8) = (200, 200, 200); // light gray
-
-    // First pass: collect line info and parse hunk headers
-    struct LineInfo<'a> {
-        line_type: DiffLineType,
-        code: &'a str,
-        line_num: Option<usize>,
-    }
-
-    let mut line_infos: Vec<LineInfo> = Vec::new();
-    let mut old_line_num = 0usize;
-    let mut new_line_num = 0usize;
-
-    for line in diff.lines() {
-        if line.starts_with("@@") {
-            // Parse hunk header to get starting line numbers
-            if let Some((old_start, new_start)) = parse_hunk_header(line) {
-                old_line_num = old_start;
-                new_line_num = new_start;
-            }
-            // Skip rendering hunk headers
-            continue;
-        } else if line.starts_with("+++") || line.starts_with("---") {
-            // Skip file headers
-            continue;
-        } else if line.starts_with('+') {
-            let ln = new_line_num;
-            new_line_num += 1;
-            line_infos.push(LineInfo {
-                line_type: DiffLineType::Add,
-                code: line.get(1..).unwrap_or(""),
-                line_num: Some(ln),
-            });
-        } else if line.starts_with('-') {
-            let ln = old_line_num;
-            old_line_num += 1;
-            line_infos.push(LineInfo {
-                line_type: DiffLineType::Del,
-                code: line.get(1..).unwrap_or(""),
-                line_num: Some(ln),
-            });
-        } else if line.starts_with(' ') {
-            let ln = new_line_num; // Use new line number for context
-            old_line_num += 1;
-            new_line_num += 1;
-            line_infos.push(LineInfo {
-                line_type: DiffLineType::Context,
-                code: line.get(1..).unwrap_or(""),
-                line_num: Some(ln),
-            });
-        } else {
-            // Other lines (shouldn't happen in unified diff)
-            line_infos.push(LineInfo {
-                line_type: DiffLineType::Context,
-                code: line,
-                line_num: None,
-            });
-        }
-    }
-
-    // Get syntax highlights if language is available
-    let highlights: Option<Vec<Vec<(usize, usize, crate::syntax::Rgb)>>> = language.map(|lang| {
-        line_infos
-            .iter()
-            .map(|info| {
-                let spans = highlight_code(info.code, Some(lang));
-                spans
-                    .into_iter()
-                    .map(|s| (s.start, s.end, s.color))
-                    .collect()
-            })
-            .collect()
+    // Line number in dim gray with optional background
+    let line_num_display = format!("{} ", line_num_str);
+    let styled_num = line_num_display.bright_black();
+    result.push_str(&match bg_color {
+        Some(bg) => styled_num.on_color(bg).to_string(),
+        None => styled_num.to_string(),
     });
 
-    // Render each line with gutter
-    for (i, info) in line_infos.iter().enumerate() {
-        let line_highlights = highlights.as_ref().and_then(|h| h.get(i));
-
-        // Print gutter: "  3 + " or "  3 - " or "  3   "
-        let line_num_str = info
-            .line_num
-            .map(|n| format!("{:3}", n))
-            .unwrap_or_else(|| "   ".to_string());
-        let prefix = match info.line_type {
-            DiffLineType::Add => "+",
-            DiffLineType::Del => "-",
-            _ => " ",
-        };
-        print!("{} {} ", line_num_str.bright_black(), prefix.bright_black());
-
-        // Print code with syntax highlighting and diff background
-        if let Some(spans) = line_highlights
-            && !spans.is_empty()
-        {
-            render_highlighted_code(info.code, spans, info.line_type, ADD_BG, DEL_BG, DEFAULT_FG);
-        } else {
-            // No syntax highlighting - just apply diff color
-            match info.line_type {
-                DiffLineType::Add => print!(
-                    "{}",
-                    info.code
-                        .truecolor(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2)
-                        .on_truecolor(ADD_BG.0, ADD_BG.1, ADD_BG.2)
-                ),
-                DiffLineType::Del => print!(
-                    "{}",
-                    info.code
-                        .truecolor(DEFAULT_FG.0, DEFAULT_FG.1, DEFAULT_FG.2)
-                        .on_truecolor(DEL_BG.0, DEL_BG.1, DEL_BG.2)
-                ),
-                _ => print!("{}", info.code.dimmed()),
-            }
-        }
-        println!();
+    // Prefix with diff color
+    if let Some(color) = prefix_color {
+        let styled_prefix = prefix.color(color);
+        result.push_str(&match bg_color {
+            Some(bg) => styled_prefix.on_color(bg).to_string(),
+            None => styled_prefix.to_string(),
+        });
+    } else {
+        result.push_str(&with_bg(prefix, bg_color));
     }
+
+    // Space after prefix
+    result.push_str(&with_bg(" ", bg_color));
+
+    // Code content with syntax highlighting
+    if let Some(lang) = language {
+        let spans = syntax::highlight_code(code_content, Some(lang));
+        let mut last_end = 0;
+
+        for span in &spans {
+            // Add any gap between spans
+            if span.start > last_end {
+                let gap_text = &code_content[last_end..span.start];
+                result.push_str(&with_bg(gap_text, bg_color));
+            }
+            // Add the highlighted span with RGB color
+            let syntax::Rgb { r, g, b } = span.color;
+            let span_text = &code_content[span.start..span.end];
+            let colored_span = span_text.truecolor(r, g, b);
+            result.push_str(&match bg_color {
+                Some(bg) => colored_span.on_color(bg).to_string(),
+                None => colored_span.to_string(),
+            });
+            last_end = span.end;
+        }
+
+        // Add any remaining text
+        if last_end < code_content.len() {
+            let remaining = &code_content[last_end..];
+            result.push_str(&with_bg(remaining, bg_color));
+        }
+    } else {
+        // No language - just output the code content with optional background
+        result.push_str(&with_bg(code_content, bg_color));
+    }
+
+    Some(result)
 }
 
-/// Parse a unified diff hunk header to extract starting line numbers
-/// Format: @@ -old_start[,old_count] +new_start[,new_count] @@
+/// Parse hunk header like "@@ -1,3 +1,5 @@" to extract starting line numbers
 fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
     let line = line.trim();
     if !line.starts_with("@@") {
@@ -739,122 +206,1651 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
     Some((old_start, new_start))
 }
 
-#[derive(Clone, Copy)]
-enum DiffLineType {
-    Add,
-    Del,
-    Context,
-}
-
-/// Render code with syntax highlighting and diff background
-fn render_highlighted_code(
-    code: &str,
-    spans: &[(usize, usize, crate::syntax::Rgb)],
-    line_type: DiffLineType,
-    add_bg: (u8, u8, u8),
-    del_bg: (u8, u8, u8),
-    default_fg: (u8, u8, u8),
-) {
-    use colored::Colorize;
-
-    let bg = match line_type {
-        DiffLineType::Add => Some(add_bg),
-        DiffLineType::Del => Some(del_bg),
-        _ => None,
-    };
-
-    let mut pos = 0;
-    for (start, end, color) in spans {
-        // Print any gap before this span
-        if pos < *start {
-            let gap = &code[pos..*start];
-            if let Some((br, bg, bb)) = bg {
-                print!(
-                    "{}",
-                    gap.truecolor(default_fg.0, default_fg.1, default_fg.2)
-                        .on_truecolor(br, bg, bb)
-                );
-            } else {
-                print!("{}", gap.dimmed());
-            }
-        }
-
-        // Print the highlighted span
-        let text = &code[*start..*end];
-        if let Some((br, bg, bb)) = bg {
-            print!(
-                "{}",
-                text.truecolor(color.r, color.g, color.b)
-                    .on_truecolor(br, bg, bb)
-            );
-        } else {
-            print!("{}", text.truecolor(color.r, color.g, color.b));
-        }
-        pos = *end;
+/// Initialize the global spinner task. Call once at startup.
+pub(crate) fn init_spinner() {
+    if SPINNER_TX.get().is_some() {
+        return;
     }
-
-    // Print any remaining text after the last span
-    if pos < code.len() {
-        let remaining = &code[pos..];
-        if let Some((br, bg, bb)) = bg {
-            print!(
-                "{}",
-                remaining
-                    .truecolor(default_fg.0, default_fg.1, default_fg.2)
-                    .on_truecolor(br, bg, bb)
-            );
-        } else {
-            print!("{}", remaining.dimmed());
-        }
+    let (tx, rx) = watch::channel(0u8);
+    if SPINNER_TX.set(tx).is_ok() {
+        tokio::spawn(spinner_task(rx));
     }
 }
 
-/// Print code with syntax highlighting (for code blocks in markdown)
-fn print_highlighted_code(code: &str, language: Option<&str>) {
-    use colored::Colorize;
+/// Set spinner to "Ready" state
+pub(crate) fn spinner_ready() {
+    SPINNER_STATE.store(0, Ordering::Release);
+    if let Some(tx) = SPINNER_TX.get() {
+        let _ = tx.send(0);
+    }
+}
 
-    // Get syntax highlights
-    let highlights: Vec<Vec<(usize, usize, crate::syntax::Rgb)>> = code
-        .lines()
-        .map(|line| {
-            if let Some(lang) = language {
-                crate::syntax::highlight_code(line, Some(lang))
-                    .into_iter()
-                    .map(|s| (s.start, s.end, s.color))
-                    .collect()
-            } else {
-                Vec::new()
-            }
-        })
-        .collect();
+/// Set spinner to "Working" state
+pub(crate) fn spinner_working() {
+    let prev = SPINNER_STATE.swap(1, Ordering::AcqRel);
+    if prev != 1
+        && let Some(tx) = SPINNER_TX.get()
+    {
+        // Activate the status line row lazily so we don't reserve a blank line at startup.
+        terminal::set_streaming_status_line_active(true);
 
-    // Print each line with highlighting
-    for (i, line) in code.lines().enumerate() {
-        let line_highlights = highlights.get(i);
+        let _ = tx.send(1);
+    }
+}
 
-        if let Some(spans) = line_highlights
-            && !spans.is_empty()
-        {
-            // Print with syntax highlighting
-            let mut pos = 0;
-            for (start, end, color) in spans {
-                // Print any gap before this span
-                if pos < *start {
-                    print!("{}", &line[pos..*start]);
+/// Set spinner to "Thinking" state
+pub(crate) fn spinner_thinking() {
+    let prev = SPINNER_STATE.swap(2, Ordering::AcqRel);
+    if prev != 2
+        && let Some(tx) = SPINNER_TX.get()
+    {
+        // Activate the status line row lazily so we don't reserve a blank line at startup.
+        terminal::set_streaming_status_line_active(true);
+
+        let _ = tx.send(2);
+    }
+}
+
+/// Start streaming - record start time and reset counters
+fn start_streaming() {
+    if let Ok(mut start) = STREAMING_START.lock()
+        && start.is_none()
+    {
+        *start = Some(std::time::Instant::now());
+    }
+}
+
+/// Latch current streaming stats into accumulated values (called on Waiting during agent loop)
+fn latch_streaming_stats() {
+    // Latch the current duration into accumulated
+    if let Ok(mut start) = STREAMING_START.lock()
+        && let Some(s) = start.take()
+    {
+        let elapsed_ms = s.elapsed().as_millis() as u64;
+        let accumulated = ACCUMULATED_DURATION_MS.load(Ordering::Relaxed);
+        ACCUMULATED_DURATION_MS.store(accumulated + elapsed_ms, Ordering::Relaxed);
+    }
+    // Clear the final duration marker since we're starting a new API call
+    FINAL_DURATION_MS.store(0, Ordering::Relaxed);
+}
+
+/// Update context information during streaming
+fn update_context(input_tokens: u64, context_limit: Option<u64>) {
+    CONTEXT_TOKENS.store(input_tokens, Ordering::Relaxed);
+    if let Some(limit) = context_limit {
+        CONTEXT_LIMIT.store(limit, Ordering::Relaxed);
+    }
+}
+
+/// Update total tokens during streaming
+fn update_total_tokens(total: u64) {
+    TOTAL_TOKENS.store(total, Ordering::Relaxed);
+}
+
+/// Reset streaming state completely - call at the start of a new turn
+pub(crate) fn reset_turn_stats() {
+    if let Ok(mut start) = STREAMING_START.lock() {
+        *start = None;
+    }
+    CONTEXT_TOKENS.store(0, Ordering::Relaxed);
+    CONTEXT_LIMIT.store(0, Ordering::Relaxed);
+    TOTAL_TOKENS.store(0, Ordering::Relaxed);
+    TOTAL_TOKENS_DISPLAY.store(0, Ordering::Relaxed);
+    ACCUMULATED_DURATION_MS.store(0, Ordering::Relaxed);
+    FINAL_DURATION_MS.store(0, Ordering::Relaxed);
+}
+
+/// Finalize streaming - capture the final duration and clear the start time
+fn finalize_streaming() {
+    if let Ok(mut start) = STREAMING_START.lock()
+        && let Some(s) = start.take()
+    {
+        let elapsed_ms = s.elapsed().as_millis() as u64;
+        let accumulated = ACCUMULATED_DURATION_MS.load(Ordering::Relaxed);
+        let total_ms = accumulated + elapsed_ms;
+        FINAL_DURATION_MS.store(total_ms, Ordering::Relaxed);
+    } else {
+        // No active streaming, use accumulated duration as final
+        let accumulated = ACCUMULATED_DURATION_MS.load(Ordering::Relaxed);
+        if accumulated > 0 {
+            FINAL_DURATION_MS.store(accumulated, Ordering::Relaxed);
+        }
+    }
+    // Force total tokens display to catch up to actual value
+    let total = TOTAL_TOKENS.load(Ordering::Relaxed);
+    TOTAL_TOKENS_DISPLAY.store(total, Ordering::Relaxed);
+}
+
+/// Get the current streaming duration in seconds (includes accumulated time from previous API calls)
+fn get_streaming_duration() -> Option<f64> {
+    // First check if we have a finalized duration
+    let final_ms = FINAL_DURATION_MS.load(Ordering::Relaxed);
+    if final_ms > 0 {
+        return Some(final_ms as f64 / 1000.0);
+    }
+    // Otherwise compute accumulated + current elapsed
+    let accumulated_ms = ACCUMULATED_DURATION_MS.load(Ordering::Relaxed);
+    if let Ok(start) = STREAMING_START.lock()
+        && let Some(s) = *start
+    {
+        let elapsed_ms = s.elapsed().as_millis() as u64;
+        return Some((accumulated_ms + elapsed_ms) as f64 / 1000.0);
+    }
+    // No active streaming, but we might have accumulated time
+    if accumulated_ms > 0 {
+        Some(accumulated_ms as f64 / 1000.0)
+    } else {
+        None
+    }
+}
+
+/// Build the stats string for the status line (right side)
+fn build_stats_string() -> Option<String> {
+    let duration = get_streaming_duration()?;
+
+    let mut stats = format!("[{:.1}s", duration);
+
+    let ctx_tokens = CONTEXT_TOKENS.load(Ordering::Relaxed);
+    let ctx_limit = CONTEXT_LIMIT.load(Ordering::Relaxed);
+
+    if ctx_tokens > 0 && ctx_limit > 0 {
+        let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
+        let limit_k = ctx_limit / 1000;
+        let pct = (ctx_tokens as f64 / ctx_limit as f64) * 100.0;
+        stats.push_str(&format!(" • ctx: {}k/{}k ({:.0}%)", ctx_k, limit_k, pct));
+    } else if ctx_tokens > 0 {
+        let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
+        stats.push_str(&format!(" • ctx: {}k", ctx_k));
+    }
+
+    let total_display = TOTAL_TOKENS_DISPLAY.load(Ordering::Relaxed);
+    if total_display > 0 {
+        stats.push_str(&format!(" • total: {}", total_display));
+    }
+
+    stats.push(']');
+
+    Some(stats)
+}
+
+/// Format bytes as human-readable string (B, KB, MB)
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+
+    let bytes_f = bytes as f64;
+    if bytes_f >= MB {
+        format!("{:.1} MB", bytes_f / MB)
+    } else if bytes_f >= KB {
+        format!("{:.1} KB", bytes_f / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+/// Smoothly animate a display value towards a target value.
+/// Returns the new display value.
+fn animate_value(current_display: u64, target: u64) -> u64 {
+    if current_display >= target {
+        return target;
+    }
+
+    let diff = target - current_display;
+    // For small gaps, increment by 1 or by a fraction of the gap
+    // For larger gaps, increment faster to catch up within ~3-5 ticks
+    let increment = if diff < 100 {
+        // Small: increment by at least 1, up to 10% of diff
+        (diff / 10).max(1)
+    } else if diff < 1024 {
+        // Medium: catch up in ~5 ticks
+        diff / 5
+    } else {
+        // Large: catch up in ~3 ticks
+        diff / 3
+    }
+    .max(1);
+
+    (current_display + increment).min(target)
+}
+
+/// Update the bandwidth display on the provider/model status line.
+/// Smoothly animates the display values towards the actual network stats.
+fn update_bandwidth() {
+    // Skip if network stats are disabled
+    if !SHOW_NETWORK_STATS.load(Ordering::Relaxed) {
+        terminal::update_bandwidth_display("");
+        return;
+    }
+
+    let stats = usage::network_stats();
+    let target_tx = stats.tx_bytes();
+    let target_rx = stats.rx_bytes();
+
+    // Animate display values towards targets
+    let current_rx = BANDWIDTH_RX_DISPLAY.load(Ordering::Relaxed);
+    let current_tx = BANDWIDTH_TX_DISPLAY.load(Ordering::Relaxed);
+
+    let new_rx = animate_value(current_rx, target_rx);
+    let new_tx = animate_value(current_tx, target_tx);
+
+    BANDWIDTH_RX_DISPLAY.store(new_rx, Ordering::Relaxed);
+    BANDWIDTH_TX_DISPLAY.store(new_tx, Ordering::Relaxed);
+
+    let text = format!("↓{} ↑{}", format_bytes(new_rx), format_bytes(new_tx));
+    terminal::update_bandwidth_display(&text);
+}
+
+/// Animate total tokens display towards target value
+fn update_total_tokens_display() {
+    let target = TOTAL_TOKENS.load(Ordering::Relaxed);
+    let current = TOTAL_TOKENS_DISPLAY.load(Ordering::Relaxed);
+    let new_val = animate_value(current, target);
+    TOTAL_TOKENS_DISPLAY.store(new_val, Ordering::Relaxed);
+}
+
+/// Build a status line with left text and optional right-aligned stats
+fn format_status_line(left: &str, stats: Option<&str>) -> String {
+    if let Some(stats_text) = stats {
+        let width = terminal::term_width() as usize;
+        // Calculate visible lengths (excluding ANSI escape codes)
+        let left_visible = visible_length(left);
+        let stats_visible = stats_text.len(); // stats has no ANSI codes
+
+        let padding = width.saturating_sub(left_visible + stats_visible);
+        if padding > 0 {
+            format!(
+                "{}{:>width$}",
+                left,
+                stats_text,
+                width = padding + stats_visible
+            )
+        } else {
+            // Not enough room for stats, just show left text
+            left.to_string()
+        }
+    } else {
+        left.to_string()
+    }
+}
+
+/// Calculate the visible length of a string (excluding ANSI escape codes)
+fn visible_length(s: &str) -> usize {
+    let mut len = 0;
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            // Skip ANSI escape sequence
+            if matches!(chars.peek(), Some('[')) {
+                chars.next();
+                for code in chars.by_ref() {
+                    if ('@'..='~').contains(&code) {
+                        break;
+                    }
                 }
-                // Print the highlighted span
-                let text = &line[*start..*end];
-                print!("{}", text.truecolor(color.r, color.g, color.b));
-                pos = *end;
             }
-            // Print any remaining text
-            if pos < line.len() {
-                print!("{}", &line[pos..]);
-            }
-            println!();
         } else {
-            // No highlighting - print plain
-            println!("{}", line);
+            len += 1;
         }
+    }
+    len
+}
+
+/// Async spinner task that runs independently
+async fn spinner_task(mut rx: watch::Receiver<u8>) {
+    const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let mut frame_idx = 0usize;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
+
+    loop {
+        tokio::select! {
+            result = rx.changed() => {
+                if result.is_err() {
+                    break;
+                }
+                // State changed - immediately update display
+                let state = *rx.borrow_and_update();
+                update_total_tokens_display();
+                let stats = build_stats_string();
+                match state {
+                    0 => {
+                        let line = format_status_line(&"✓ Done".green().to_string(), stats.as_deref());
+                        terminal::write_status_line(&line);
+                    }
+                    1 => {
+                        let frame = FRAMES[frame_idx % FRAMES.len()];
+                        let left = format!("{} Working...", frame.cyan());
+                        let line = format_status_line(&left, stats.as_deref());
+                        terminal::write_status_line(&line);
+                    }
+                    2 => {
+                        let frame = FRAMES[frame_idx % FRAMES.len()];
+                        let left = format!("{} {}", frame.cyan(), "Thinking...".bright_black());
+                        let line = format_status_line(&left, stats.as_deref());
+                        terminal::write_status_line(&line);
+                    }
+                    _ => {}
+                }
+                update_bandwidth();
+            }
+            _ = interval.tick() => {
+                // Periodic update for animation and bandwidth
+                let state = SPINNER_STATE.load(Ordering::Acquire);
+                if state != 0 {
+                    frame_idx = frame_idx.wrapping_add(1);
+                    update_total_tokens_display();
+                    let stats = build_stats_string();
+                    let frame = FRAMES[frame_idx % FRAMES.len()];
+                    match state {
+                        1 => {
+                            let left = format!("{} Working...", frame.cyan());
+                            let line = format_status_line(&left, stats.as_deref());
+                            terminal::write_status_line(&line);
+                        }
+                        2 => {
+                            let left = format!("{} {}", frame.cyan(), "Thinking...".bright_black());
+                            let line = format_status_line(&left, stats.as_deref());
+                            terminal::write_status_line(&line);
+                        }
+                        _ => {}
+                    }
+                }
+                // Always update bandwidth on tick
+                update_bandwidth();
+            }
+        }
+    }
+}
+
+/// Word wrapper for streaming text output
+struct WordWrapper {
+    /// Current column position (0-indexed)
+    column: usize,
+    /// Buffer for current word being accumulated
+    word_buffer: String,
+    /// Whether we've output any content yet
+    has_content: bool,
+    /// Optional style to apply (e.g., dim gray for thinking)
+    style: Option<&'static str>,
+    /// Indentation for wrapped lines (0 for none, 2 for response text)
+    indent: usize,
+    /// Current line buffer for detecting code fences
+    line_buffer: String,
+    /// Whether we're inside a code block
+    in_code_block: bool,
+    /// Language for current code block (for syntax highlighting)
+    code_language: Option<String>,
+    /// Whether we're inside an inline code span
+    in_inline_code: bool,
+    /// Current bold delimiter if inside a bold span ('*' or '_')
+    in_bold_span: Option<char>,
+    /// Pending bold marker to detect ** or __
+    pending_bold_marker: Option<char>,
+    /// Buffered table rows for formatting
+    table_buffer: Vec<String>,
+    /// Whether we're currently buffering a table
+    in_table: bool,
+    /// Terminal width for table formatting
+    table_width: usize,
+    /// Whether the current line might be a table row (starts with |)
+    /// We buffer the line and don't print until we know for sure
+    maybe_table_row: bool,
+    /// Whether the current line might be a markdown heading
+    maybe_heading: bool,
+    /// Count of consecutive blank lines seen (for normalization)
+    consecutive_blank_lines: usize,
+}
+
+impl WordWrapper {
+    fn new(style: Option<&'static str>, indent: usize) -> Self {
+        Self {
+            column: 0,
+            word_buffer: String::new(),
+            has_content: false,
+            style,
+            indent,
+            line_buffer: String::new(),
+            in_code_block: false,
+            code_language: None,
+            in_inline_code: false,
+            in_bold_span: None,
+            pending_bold_marker: None,
+            table_buffer: Vec::new(),
+            in_table: false,
+            table_width: 0,
+            maybe_table_row: false,
+            maybe_heading: false,
+            consecutive_blank_lines: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.column = 0;
+        self.word_buffer.clear();
+        self.has_content = false;
+        self.line_buffer.clear();
+        self.in_code_block = false;
+        self.code_language = None;
+        self.in_inline_code = false;
+        self.in_bold_span = None;
+        self.pending_bold_marker = None;
+        self.flush_table(); // Flush any pending table
+        self.table_buffer.clear();
+        self.in_table = false;
+        self.maybe_table_row = false;
+        self.maybe_heading = false;
+        self.consecutive_blank_lines = 0;
+    }
+
+    fn needs_line_break(&self) -> bool {
+        self.column > 0
+            || !self.word_buffer.is_empty()
+            || !self.line_buffer.is_empty()
+            || self.in_table
+    }
+
+    fn finish_line(&mut self, width: usize) {
+        if self.in_table {
+            self.flush_table();
+        }
+
+        if self.in_code_block && !self.line_buffer.is_empty() {
+            let highlighted = self.highlight_line(&self.line_buffer.clone());
+            terminal::println_above(&highlighted);
+            self.line_buffer.clear();
+            self.word_buffer.clear();
+            self.column = 0;
+            self.maybe_table_row = false;
+            self.maybe_heading = false;
+            self.in_inline_code = false;
+            self.in_bold_span = None;
+            self.pending_bold_marker = None;
+            return;
+        }
+
+        self.flush_word(width);
+        if self.column > 0 || !self.line_buffer.is_empty() {
+            terminal::print_above("\n");
+        }
+        self.column = 0;
+        self.word_buffer.clear();
+        self.line_buffer.clear();
+        self.maybe_table_row = false;
+        self.maybe_heading = false;
+        self.in_inline_code = false;
+        self.in_bold_span = None;
+        self.pending_bold_marker = None;
+    }
+
+    /// Flush the word buffer, wrapping to new line if needed
+    fn flush_word(&mut self, width: usize) {
+        if self.word_buffer.is_empty() {
+            return;
+        }
+
+        let word_width = display_width(&self.word_buffer);
+
+        // If word doesn't fit on current line and we're not at the start, wrap first
+        if self.column + word_width > width && self.column > self.indent {
+            terminal::print_above("\n");
+            // Start new line with indent (with style if set)
+            if self.indent > 0 {
+                let indent_str = " ".repeat(self.indent);
+                if let Some(style) = self.style {
+                    terminal::print_above(&format!("{}{}", style, indent_str));
+                } else {
+                    terminal::print_above(&indent_str);
+                }
+            } else if let Some(style) = self.style {
+                terminal::print_above(style);
+            }
+            self.column = self.indent;
+        }
+
+        // Print the word (with style if set)
+        if let Some(style) = self.style {
+            let rendered = render_markdown_inlines_with_style(&self.word_buffer, Some(style));
+            terminal::print_above(&format!("{}{}\x1b[0m", style, rendered));
+        } else {
+            terminal::print_above(&render_markdown_inlines(&self.word_buffer));
+        }
+        self.column += word_width;
+        self.word_buffer.clear();
+    }
+
+    /// Flush the table buffer, formatting and outputting the table
+    fn flush_table(&mut self) {
+        if self.table_buffer.is_empty() {
+            return;
+        }
+
+        use super::markdown::align_markdown_tables;
+
+        // Join the buffered lines and align the table
+        let table_text = self.table_buffer.join("\n");
+        let aligned = align_markdown_tables(&table_text, Some(self.table_width));
+
+        // Output each line
+        for line in aligned.lines() {
+            terminal::println_above(line);
+        }
+
+        self.table_buffer.clear();
+        self.in_table = false;
+        self.column = 0;
+    }
+
+    /// Check if a line looks like a table row (starts and ends with |)
+    fn is_table_row(line: &str) -> bool {
+        let trimmed = line.trim();
+        trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() >= 3
+    }
+
+    /// Process a chunk of text with word wrapping.
+    /// Code blocks are printed with syntax highlighting as each line completes.
+    /// Table rows are buffered and only printed when the table is complete.
+    fn process_text(&mut self, text: &str, width: usize) {
+        for ch in text.chars() {
+            if ch == '\r' {
+                continue;
+            }
+
+            // Accumulate into line buffer to detect code fences and table rows
+            if ch != '\n' {
+                self.line_buffer.push(ch);
+            }
+
+            if !self.in_code_block {
+                if ch == '`' {
+                    self.in_inline_code = !self.in_inline_code;
+                    self.pending_bold_marker = None;
+                } else if !self.in_inline_code && (ch == '*' || ch == '_') {
+                    if self.pending_bold_marker == Some(ch) {
+                        if self.in_bold_span == Some(ch) {
+                            self.in_bold_span = None;
+                        } else {
+                            self.in_bold_span = Some(ch);
+                        }
+                        self.pending_bold_marker = None;
+                    } else {
+                        self.pending_bold_marker = Some(ch);
+                    }
+                } else if !self.in_inline_code {
+                    self.pending_bold_marker = None;
+                }
+            }
+
+            // Check if this line might be a table row (starts with |)
+            // We need to detect this early to avoid printing content prematurely
+            if !self.in_code_block
+                && !self.maybe_table_row
+                && self.column == self.indent
+                && self.line_buffer.trim_start().starts_with('|')
+            {
+                self.maybe_table_row = true;
+            }
+            if !self.in_code_block
+                && self.style.is_none()
+                && !self.maybe_table_row
+                && !self.maybe_heading
+                && self.column == self.indent
+                && self.line_buffer.trim_start().starts_with('#')
+            {
+                self.maybe_heading = true;
+            }
+
+            if ch == '\n' {
+                // Check if the line is a code fence
+                let is_fence = self.line_buffer.trim().starts_with("```");
+
+                if is_fence {
+                    if self.in_code_block {
+                        // Closing fence - just print it and reset state
+                        self.in_code_block = false;
+                        self.code_language = None;
+                        terminal::println_above("```");
+                        self.column = 0;
+                    } else {
+                        // Opening fence - extract language and enter code block mode
+                        self.word_buffer.clear();
+                        self.in_code_block = true;
+                        let lang = self
+                            .line_buffer
+                            .trim()
+                            .strip_prefix("```")
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        self.code_language = if lang.is_empty() { None } else { Some(lang) };
+                        terminal::println_above(&self.line_buffer);
+                        self.column = 0;
+                    }
+                    self.line_buffer.clear();
+                    self.maybe_table_row = false;
+                    self.maybe_heading = false;
+                    self.in_inline_code = false;
+                    self.in_bold_span = None;
+                    self.pending_bold_marker = None;
+                    continue;
+                }
+
+                if self.in_code_block {
+                    // Inside code block - print line with syntax highlighting
+                    let highlighted = self.highlight_line(&self.line_buffer.clone());
+                    terminal::println_above(&highlighted);
+                    self.line_buffer.clear();
+                } else if self.maybe_heading {
+                    if self.in_table {
+                        self.flush_table();
+                    }
+                    let line = self.line_buffer.clone();
+                    if super::markdown::is_heading_line(&line) {
+                        self.flush_word(width);
+                        if self.column > self.indent {
+                            terminal::print_above("\n");
+                        }
+                        terminal::print_above(&render_markdown_line(&line));
+                        terminal::print_above("\n");
+                        if self.indent > 0 {
+                            let indent_str = " ".repeat(self.indent);
+                            terminal::print_above(&indent_str);
+                        }
+                        self.column = self.indent;
+                    } else {
+                        self.output_line_content(&line, width);
+                        terminal::print_above("\n");
+                        if self.indent > 0 {
+                            let indent_str = " ".repeat(self.indent);
+                            terminal::print_above(&indent_str);
+                        }
+                        self.column = self.indent;
+                    }
+                    self.line_buffer.clear();
+                    self.word_buffer.clear();
+                } else {
+                    // Check if this line is a table row
+                    let is_table_row = Self::is_table_row(&self.line_buffer);
+
+                    if is_table_row {
+                        // Confirmed table row - add to buffer
+                        if !self.in_table {
+                            // First table row - flush any pending content
+                            self.flush_word(width);
+                            if self.column > self.indent {
+                                terminal::print_above("\n");
+                            }
+                            self.table_width = width;
+                        }
+                        self.in_table = true;
+                        self.table_buffer.push(self.line_buffer.clone());
+                        self.line_buffer.clear();
+                        self.word_buffer.clear();
+                        self.column = 0;
+                    } else if self.maybe_table_row {
+                        // Line started with | but doesn't end with | - not a table row
+                        // Need to output the buffered line content normally
+                        if self.in_table {
+                            // We were in a table, flush it first
+                            self.flush_table();
+                        }
+                        // Print the line that turned out not to be a table row
+                        self.output_line_content(&self.line_buffer.clone(), width);
+                        terminal::print_above("\n");
+                        self.line_buffer.clear();
+                        self.word_buffer.clear();
+                        // Start new line with indent
+                        if self.indent > 0 {
+                            let indent_str = " ".repeat(self.indent);
+                            if let Some(style) = self.style {
+                                terminal::print_above(&format!("{}{}", style, indent_str));
+                            } else {
+                                terminal::print_above(&indent_str);
+                            }
+                        } else if let Some(style) = self.style {
+                            terminal::print_above(style);
+                        }
+                        self.column = self.indent;
+                    } else if self.in_table {
+                        // Non-table line while in table mode - flush table first
+                        self.flush_table();
+                        // Then process this line normally
+                        self.flush_word(width);
+                        terminal::print_above("\n");
+                        // Start new line with indent (with style if set)
+                        if self.indent > 0 {
+                            let indent_str = " ".repeat(self.indent);
+                            if let Some(style) = self.style {
+                                terminal::print_above(&format!("{}{}", style, indent_str));
+                            } else {
+                                terminal::print_above(&indent_str);
+                            }
+                        } else if let Some(style) = self.style {
+                            terminal::print_above(style);
+                        }
+                        self.column = self.indent;
+                        self.line_buffer.clear();
+                    } else {
+                        // Normal text - flush word and handle newline
+                        self.flush_word(width);
+
+                        // Check if this is a blank line (empty or whitespace-only)
+                        let is_blank_line = self.line_buffer.trim().is_empty();
+
+                        if is_blank_line {
+                            self.consecutive_blank_lines += 1;
+                            // Only output one blank line - skip additional consecutive ones
+                            if self.consecutive_blank_lines <= 1 {
+                                terminal::print_above("\n");
+                                // Start new line with indent (with style if set)
+                                if self.indent > 0 {
+                                    let indent_str = " ".repeat(self.indent);
+                                    if let Some(style) = self.style {
+                                        terminal::print_above(&format!("{}{}", style, indent_str));
+                                    } else {
+                                        terminal::print_above(&indent_str);
+                                    }
+                                } else if let Some(style) = self.style {
+                                    terminal::print_above(style);
+                                }
+                                self.column = self.indent;
+                            }
+                        } else {
+                            // Non-blank line - reset counter and output
+                            self.consecutive_blank_lines = 0;
+                            terminal::print_above("\n");
+                            // Start new line with indent (with style if set)
+                            if self.indent > 0 {
+                                let indent_str = " ".repeat(self.indent);
+                                if let Some(style) = self.style {
+                                    terminal::print_above(&format!("{}{}", style, indent_str));
+                                } else {
+                                    terminal::print_above(&indent_str);
+                                }
+                            } else if let Some(style) = self.style {
+                                terminal::print_above(style);
+                            }
+                            self.column = self.indent;
+                        }
+                        self.line_buffer.clear();
+                    }
+                }
+                self.maybe_table_row = false;
+                self.maybe_heading = false;
+                self.in_inline_code = false;
+                self.in_bold_span = None;
+                self.pending_bold_marker = None;
+            } else if self.in_code_block {
+                // Inside code block - just accumulate in line_buffer (already done above)
+            } else if self.maybe_table_row {
+                // Potentially a table row - just accumulate in line_buffer, don't print yet
+                // Content is already in line_buffer from above
+            } else if self.maybe_heading {
+                // Potential heading line - buffer until newline
+            } else if ch == ' ' || ch == '\t' {
+                // Normal whitespace handling
+                if self.in_inline_code || self.in_bold_span.is_some() {
+                    self.word_buffer.push(ch);
+                } else {
+                    self.flush_word(width);
+                    if self.column > self.indent {
+                        if let Some(style) = self.style {
+                            terminal::print_above(&format!("{} \x1b[0m", style));
+                        } else {
+                            terminal::print_above(" ");
+                        }
+                        self.column += 1;
+                    }
+                }
+            } else {
+                // Regular character - accumulate in word buffer
+                self.word_buffer.push(ch);
+            }
+        }
+    }
+
+    /// Output a line's content with word wrapping (used when a maybe-table-row turns out not to be)
+    fn output_line_content(&mut self, line: &str, width: usize) {
+        for ch in line.chars() {
+            if ch == ' ' || ch == '\t' {
+                self.flush_word(width);
+                if self.column > self.indent {
+                    if let Some(style) = self.style {
+                        terminal::print_above(&format!("{} \x1b[0m", style));
+                    } else {
+                        terminal::print_above(" ");
+                    }
+                    self.column += 1;
+                }
+            } else {
+                self.word_buffer.push(ch);
+            }
+        }
+        self.flush_word(width);
+    }
+
+    /// Highlight a single line of code using the current code block language
+    fn highlight_line(&self, line: &str) -> String {
+        let lang = self.code_language.as_deref();
+        let spans = syntax::highlight_code(line, lang);
+
+        if spans.is_empty() {
+            return line.to_string();
+        }
+
+        let mut result = String::new();
+        let mut last_end = 0;
+
+        for span in spans {
+            // Add any gap
+            if span.start > last_end {
+                result.push_str(&line[last_end..span.start]);
+            }
+
+            // Add the colored span using truecolor
+            let text = &line[span.start..span.end];
+            result.push_str(
+                &text
+                    .truecolor(span.color.r, span.color.g, span.color.b)
+                    .to_string(),
+            );
+
+            last_end = span.end;
+        }
+
+        // Add any remaining text
+        if last_end < line.len() {
+            result.push_str(&line[last_end..]);
+        }
+
+        result
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputState {
+    Idle,
+    Thinking { has_output: bool },
+    Text { has_output: bool },
+    ToolBlock,
+    AfterTodoList,
+}
+
+impl OutputState {
+    fn start_thinking(&mut self) {
+        if matches!(
+            self,
+            OutputState::Idle | OutputState::Thinking { .. } | OutputState::AfterTodoList
+        ) {
+            *self = OutputState::Thinking { has_output: false };
+        }
+    }
+
+    fn mark_thinking_output(&mut self) {
+        match self {
+            OutputState::Thinking { has_output } => *has_output = true,
+            OutputState::Idle => *self = OutputState::Thinking { has_output: true },
+            _ => {}
+        }
+    }
+
+    fn end_thinking(&mut self) -> bool {
+        match *self {
+            OutputState::Thinking { has_output } => {
+                *self = OutputState::Idle;
+                has_output
+            }
+            _ => false,
+        }
+    }
+
+    fn start_text(&mut self) {
+        if matches!(
+            self,
+            OutputState::Idle
+                | OutputState::Thinking { .. }
+                | OutputState::Text { .. }
+                | OutputState::AfterTodoList
+        ) {
+            *self = OutputState::Text { has_output: false };
+        }
+    }
+
+    fn mark_text_output(&mut self) {
+        match self {
+            OutputState::Text { has_output } => *has_output = true,
+            OutputState::Idle => *self = OutputState::Text { has_output: true },
+            OutputState::Thinking { .. } => *self = OutputState::Text { has_output: true },
+            _ => {}
+        }
+    }
+
+    fn end_text(&mut self) -> bool {
+        match *self {
+            OutputState::Text { has_output } => {
+                *self = OutputState::Idle;
+                has_output
+            }
+            _ => false,
+        }
+    }
+
+    fn start_tool_block(&mut self) -> bool {
+        let needs_spacing = matches!(
+            *self,
+            OutputState::Thinking { has_output: true }
+                | OutputState::Text { has_output: true }
+                | OutputState::AfterTodoList
+        );
+        *self = OutputState::ToolBlock;
+        needs_spacing
+    }
+
+    fn end_tool_block(&mut self) {
+        if matches!(*self, OutputState::ToolBlock) {
+            *self = OutputState::Idle;
+        }
+    }
+
+    fn take_after_todo_list(&mut self) -> bool {
+        if matches!(*self, OutputState::AfterTodoList) {
+            *self = OutputState::Idle;
+            return true;
+        }
+        false
+    }
+}
+
+/// State for streaming output
+struct StreamState {
+    /// Word wrapper for thinking text (dim style)
+    thinking: WordWrapper,
+    /// Word wrapper for response text (no style)
+    response: WordWrapper,
+    /// Whether any assistant text output was printed since the last reset.
+    text_output_written: bool,
+    /// Current output state for spacing/blocks
+    output_state: OutputState,
+    /// Buffered output events during resize redraws
+    buffered_events: Vec<OutputEvent>,
+    /// Whether a diff was just shown (to skip redundant checkmark in ToolResult)
+    diff_shown: bool,
+    /// Whether the last output line is a tool call awaiting its checkmark
+    last_tool_call_open: bool,
+    /// Whether we're inside a <Tool>...</Tool> block
+    in_tool_block: bool,
+}
+
+impl StreamState {
+    fn new() -> Self {
+        Self {
+            thinking: WordWrapper::new(Some("\x1b[90m"), 0),
+            response: WordWrapper::new(None, 0),
+            text_output_written: false,
+            output_state: OutputState::Idle,
+            buffered_events: Vec::new(),
+            diff_shown: false,
+            last_tool_call_open: false,
+            in_tool_block: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.thinking.reset();
+        self.response.reset();
+        self.text_output_written = false;
+        self.output_state = OutputState::Idle;
+        self.buffered_events.clear();
+        self.diff_shown = false;
+        self.last_tool_call_open = false;
+        self.in_tool_block = false;
+    }
+}
+
+/// Get display width of a string (accounting for Unicode width)
+fn display_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum()
+}
+
+/// Output listener for CLI mode
+pub(crate) struct CliListener {
+    state: Mutex<StreamState>,
+}
+
+impl CliListener {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: Mutex::new(StreamState::new()),
+        }
+    }
+
+    pub(crate) fn register_active(&'static self) {
+        let _ = ACTIVE_LISTENER.set(self);
+    }
+
+    pub(crate) fn buffer_event(event: &OutputEvent) {
+        if let Some(listener) = ACTIVE_LISTENER.get()
+            && let Ok(mut state) = listener.state.lock()
+        {
+            state.buffered_events.push(event.clone());
+        }
+    }
+
+    pub(crate) fn flush_buffered() {
+        if let Some(listener) = ACTIVE_LISTENER.get() {
+            listener.flush_buffered_events();
+        }
+    }
+
+    fn flush_buffered_events(&self) {
+        let events = if let Ok(mut state) = self.state.lock() {
+            if state.buffered_events.is_empty() {
+                return;
+            }
+            std::mem::take(&mut state.buffered_events)
+        } else {
+            return;
+        };
+
+        for event in events {
+            self.handle_event(&event);
+        }
+    }
+
+    /// Terminal width for content rendering, reduced by 2 to prevent wrapping artifacts.
+    fn terminal_width() -> usize {
+        terminal::term_width().saturating_sub(2).max(1) as usize
+    }
+
+    /// Close an open tool block if one exists.
+    fn close_tool_block(&self) {
+        let was_in_block = self
+            .state
+            .lock()
+            .map(|mut s| {
+                let was = s.in_tool_block;
+                if was {
+                    s.in_tool_block = false;
+                    s.output_state.end_tool_block();
+                }
+                was
+            })
+            .unwrap_or(false);
+        if was_in_block {
+            terminal::println_above("");
+            history::push(HistoryEvent::ToolEnd);
+        }
+    }
+
+    fn maybe_space_after_todo(&self) {
+        let needs_spacing = self
+            .state
+            .lock()
+            .map(|mut s| s.output_state.take_after_todo_list())
+            .unwrap_or(false);
+        if needs_spacing {
+            terminal::println_above("");
+        }
+    }
+
+    fn handle_event(&self, event: &OutputEvent) {
+        if matches!(
+            event,
+            OutputEvent::ThinkingStart
+                | OutputEvent::Thinking(_)
+                | OutputEvent::ThinkingEnd
+                | OutputEvent::Text(_)
+                | OutputEvent::TextEnd
+                | OutputEvent::ToolCall { .. }
+                | OutputEvent::ToolResult { .. }
+                | OutputEvent::Info(_)
+                | OutputEvent::Error(_)
+                | OutputEvent::Warning(_)
+                | OutputEvent::TodoList { .. }
+                | OutputEvent::FileDiff { .. }
+                | OutputEvent::AutoCompactStarting { .. }
+                | OutputEvent::AutoCompactCompleted { .. }
+        ) {
+            self.maybe_space_after_todo();
+        }
+
+        match event {
+            OutputEvent::ThinkingStart => {
+                self.close_tool_block();
+                let Ok(mut state) = self.state.lock() else {
+                    return;
+                };
+                if matches!(
+                    state.output_state,
+                    OutputState::Idle | OutputState::AfterTodoList
+                ) {
+                    state.output_state.start_thinking();
+                }
+                spinner_thinking();
+                // Spaced mode: no tag printed
+            }
+
+            OutputEvent::Thinking(text) => {
+                // Skip empty thinking events
+                if text.is_empty() {
+                    return;
+                }
+
+                let width = Self::terminal_width();
+                let Ok(mut state) = self.state.lock() else {
+                    // Fallback: print without word wrap
+                    terminal::print_above(&text.bright_black().to_string());
+                    return;
+                };
+
+                // Accumulate for history
+                history::append_thinking(text);
+
+                // Start with style on first content
+                // Note: We use raw escape here because we're streaming character-by-character
+                // and colored requires complete strings
+                if !state.thinking.has_content {
+                    terminal::print_above("\x1b[90m");
+                    state.thinking.has_content = true;
+                }
+                state.thinking.process_text(text, width);
+
+                if matches!(
+                    state.output_state,
+                    OutputState::Idle | OutputState::Thinking { .. } | OutputState::AfterTodoList
+                ) {
+                    state.output_state.start_thinking();
+                    state.output_state.mark_thinking_output();
+                }
+            }
+
+            OutputEvent::ThinkingEnd => {
+                let Ok(mut state) = self.state.lock() else {
+                    return;
+                };
+
+                let width = Self::terminal_width();
+                state.thinking.flush_word(width);
+
+                // If a thinking block started but never received any text, render a
+                // visible placeholder so the user can see it existed.
+                if matches!(
+                    state.output_state,
+                    OutputState::Thinking { has_output: false }
+                ) && !state.thinking.has_content
+                {
+                    terminal::print_above("\x1b[90m[thinking with no data]\x1b[0m\n\n");
+                    history::append_thinking("[thinking with no data]\n\n");
+                    state.output_state.mark_thinking_output();
+                }
+
+                history::finish_thinking();
+
+                // End style reset (if content was printed)
+                if state.thinking.has_content {
+                    terminal::print_above("\x1b[0m");
+                }
+
+                if state.output_state.end_thinking() {
+                    terminal::normalize_block_spacing_min(2);
+                    history::push(HistoryEvent::ThinkingEnd);
+                }
+
+                state.thinking.reset();
+                // Switch to working state after thinking ends
+                spinner_working();
+            }
+
+            OutputEvent::Text(text) => {
+                // Skip empty text events
+                if text.is_empty() {
+                    return;
+                }
+
+                self.close_tool_block();
+
+                let width = Self::terminal_width();
+                let Ok(mut state) = self.state.lock() else {
+                    // Fallback: print directly
+                    print!("{}", text);
+                    let _ = io::stdout().flush();
+                    return;
+                };
+
+                state.text_output_written = true;
+                state.response.process_text(text, width);
+                history::append_assistant_text(text);
+                state.output_state.start_text();
+                state.output_state.mark_text_output();
+            }
+
+            OutputEvent::TextEnd => {
+                // If the model ended its response without emitting any text events,
+                // we still want to treat this as a transition away from any open
+                // tool output so the placeholder renders as its own block.
+                self.close_tool_block();
+
+                let Ok(mut state) = self.state.lock() else {
+                    return;
+                };
+
+                // If a text block ended without writing any output, render a visible
+                // placeholder so we can see it existed.
+                if !state.text_output_written {
+                    terminal::print_above("[text with no data]\n\n");
+                    history::append_assistant_text("[text with no data]\n\n");
+                }
+
+                // Flush any remaining word buffer
+                let width = Self::terminal_width();
+                state.response.flush_word(width);
+
+                // Handle incomplete code block: just print closing fence
+                if state.response.in_code_block {
+                    terminal::println_above("```");
+                    state.response.in_code_block = false;
+                }
+
+                if state.output_state.end_text() {
+                    if terminal::is_streaming_status_line_active() {
+                        // Avoid double spacing; status line already has a spacer row.
+                        terminal::normalize_block_spacing_min(0);
+                    } else {
+                        terminal::normalize_block_spacing_min(1);
+                    }
+                    history::push(HistoryEvent::ResponseEnd);
+                }
+                history::finish_assistant_text();
+                state.reset();
+            }
+
+            OutputEvent::ToolCall { description } => {
+                spinner_working();
+                let starting_block = if let Ok(mut state) = self.state.lock() {
+                    let width = Self::terminal_width();
+                    if state.thinking.needs_line_break() {
+                        state.thinking.finish_line(width);
+                    }
+                    if state.response.needs_line_break() {
+                        state.response.finish_line(width);
+                    }
+                    if terminal::output_cursor_col() != 0 {
+                        terminal::print_above("\n");
+                    }
+                    let starting = !state.in_tool_block;
+                    if starting {
+                        terminal::normalize_block_spacing();
+                        // After normalizing, re-check in case we were mid-line.
+                        if terminal::output_cursor_col() != 0 {
+                            terminal::print_above("\n");
+                        }
+                        if state.output_state.start_tool_block() {
+                            terminal::println_above("");
+                        }
+                        state.in_tool_block = true;
+                    }
+                    let text = format!("▶ {}", description);
+                    terminal::print_above(&text);
+                    state.last_tool_call_open = true;
+                    starting
+                } else {
+                    false
+                };
+                if starting_block {
+                    history::push(HistoryEvent::ToolStart);
+                }
+                history::push(HistoryEvent::ToolUse {
+                    description: description.clone(),
+                });
+            }
+
+            OutputEvent::ToolResult {
+                is_error,
+                error_preview,
+            } => {
+                let pending_tool_line = self
+                    .state
+                    .lock()
+                    .map(|mut s| {
+                        let pending = s.last_tool_call_open;
+                        s.last_tool_call_open = false;
+                        pending
+                    })
+                    .unwrap_or(false);
+
+                if !pending_tool_line
+                    && let Ok(mut state) = self.state.lock()
+                    && !state.in_tool_block
+                {
+                    let width = Self::terminal_width();
+                    if state.thinking.needs_line_break() {
+                        state.thinking.finish_line(width);
+                    }
+                    if state.response.needs_line_break() {
+                        state.response.finish_line(width);
+                    }
+                    if terminal::output_cursor_col() != 0 {
+                        terminal::print_above("\n");
+                    }
+                }
+
+                // Check if a diff was just shown (skip redundant success indicator)
+                let diff_shown = self
+                    .state
+                    .lock()
+                    .map(|mut s| {
+                        let shown = s.diff_shown;
+                        s.diff_shown = false;
+                        shown
+                    })
+                    .unwrap_or(false);
+
+                let text = if *is_error {
+                    if pending_tool_line {
+                        format!(" {}\n", "✗".red())
+                    } else {
+                        format!("{}\n", "✗".red())
+                    }
+                } else if diff_shown {
+                    // Diff already showed checkmark, just need newline
+                    "".to_string()
+                } else if pending_tool_line {
+                    format!(" {}\n", "✓".green())
+                } else {
+                    format!("{}\n", "✓".green())
+                };
+                if !text.is_empty() {
+                    terminal::print_above(&text);
+                }
+                history::push(HistoryEvent::ToolResult {
+                    output: error_preview.clone().unwrap_or_default(),
+                    is_error: *is_error,
+                });
+            }
+
+            OutputEvent::Info(msg) => {
+                terminal::normalize_block_spacing();
+                terminal::println_above(msg);
+                history::push(HistoryEvent::Info(msg.clone()));
+            }
+
+            OutputEvent::Error(msg) => {
+                self.close_tool_block();
+                // Finalize current duration so the stats are displayed
+                finalize_streaming();
+                spinner_ready();
+                // Reset turn-level state for next turn
+                if let Ok(mut state) = self.state.lock() {
+                    state.output_state = OutputState::Idle;
+                }
+                terminal::normalize_block_spacing();
+                terminal::println_above(&msg.red().to_string());
+                history::push(HistoryEvent::Error(msg.clone()));
+            }
+
+            OutputEvent::Warning(msg) => {
+                terminal::normalize_block_spacing();
+                terminal::println_above(&msg.yellow().to_string());
+                history::push(HistoryEvent::Warning(msg.clone()));
+            }
+
+            OutputEvent::TodoList { todos } => {
+                self.close_tool_block();
+
+                // Ensure we're on a new line before printing todo list
+                if let Ok(mut state) = self.state.lock() {
+                    let width = Self::terminal_width();
+                    if state.thinking.needs_line_break() {
+                        state.thinking.finish_line(width);
+                    }
+                    if state.response.needs_line_break() {
+                        state.response.finish_line(width);
+                    }
+                    terminal::normalize_block_spacing();
+                }
+
+                if let Ok(mut state) = self.state.lock() {
+                    state.output_state.end_tool_block();
+                }
+
+                // Spaced mode: no opening tag
+                terminal::println_above(&"Todo:".cyan().bold().to_string());
+
+                if todos.is_empty() {
+                    terminal::println_above(&"  (empty)".bright_black().to_string());
+                } else {
+                    for item in todos {
+                        let (indicator, styled_text): (&str, ColoredString) = match item.status {
+                            crate::tools::TodoStatus::Pending => ("[ ]", item.content.white()),
+                            crate::tools::TodoStatus::InProgress => {
+                                ("[-]", item.active_form.cyan().bold())
+                            }
+                            crate::tools::TodoStatus::Completed => {
+                                ("[✓]", item.content.bright_black())
+                            }
+                        };
+                        let line = format!("  {} {}", indicator, styled_text);
+                        terminal::println_above(&line);
+                    }
+                }
+
+                // Convert to history format
+                let history_items: Vec<TodoItem> = todos
+                    .iter()
+                    .map(|t| TodoItem {
+                        content: t.content.clone(),
+                        status: match t.status {
+                            crate::tools::TodoStatus::Pending => TodoStatus::Pending,
+                            crate::tools::TodoStatus::InProgress => TodoStatus::InProgress,
+                            crate::tools::TodoStatus::Completed => TodoStatus::Completed,
+                        },
+                    })
+                    .collect();
+                history::push(HistoryEvent::TodoList {
+                    items: history_items,
+                });
+
+                if let Ok(mut state) = self.state.lock() {
+                    state.output_state = OutputState::AfterTodoList;
+                }
+            }
+
+            OutputEvent::FileDiff { diff, language, .. } => {
+                let pending_tool_line = self
+                    .state
+                    .lock()
+                    .map(|mut s| {
+                        let pending = s.last_tool_call_open;
+                        s.last_tool_call_open = false;
+                        pending
+                    })
+                    .unwrap_or(false);
+
+                // If the tool-use line is still open ("▶ ..."), append ✓ inline; otherwise
+                // print it on its own line.
+                if pending_tool_line {
+                    terminal::print_above(&format!(" {}\n", "✓".green()));
+                } else {
+                    terminal::normalize_block_spacing();
+                    terminal::println_above(&format!(" {}", "✓".green()));
+                }
+
+                // Track line numbers across the diff
+                let mut old_line_num = 0usize;
+                let mut new_line_num = 0usize;
+
+                for line in diff.lines() {
+                    if let Some(styled) = render_diff_line(
+                        line,
+                        language.as_deref(),
+                        &mut old_line_num,
+                        &mut new_line_num,
+                    ) {
+                        terminal::println_above(&styled);
+                    }
+                }
+                history::push(HistoryEvent::FileDiff {
+                    diff: diff.clone(),
+                    language: language.clone(),
+                });
+                // Mark that diff was shown so ToolResult skips its checkmark
+                if let Ok(mut state) = self.state.lock() {
+                    state.diff_shown = true;
+                }
+            }
+
+            OutputEvent::AutoCompactStarting {
+                current_usage,
+                limit,
+            } => {
+                let pct = (*current_usage as f64 / *limit as f64) * 100.0;
+                let msg = format!(
+                    "Context at {:.0}% ({}/{}) - auto-compacting...",
+                    pct, current_usage, limit
+                );
+                terminal::normalize_block_spacing();
+                terminal::println_above(&msg.yellow().to_string());
+                history::push(HistoryEvent::AutoCompact { message: msg });
+            }
+
+            OutputEvent::AutoCompactCompleted { messages_compacted } => {
+                let msg = format!("Compacted {} messages into summary.", messages_compacted);
+                terminal::normalize_block_spacing();
+                terminal::println_above(&msg.green().to_string());
+                history::push(HistoryEvent::AutoCompact { message: msg });
+            }
+
+            OutputEvent::Waiting => {
+                // Latch current stats into accumulated values (for multi-API-call turns)
+                latch_streaming_stats();
+                start_streaming();
+                spinner_working();
+            }
+
+            OutputEvent::WorkingProgress { total_tokens } => {
+                update_total_tokens(*total_tokens);
+                spinner_working();
+            }
+
+            OutputEvent::Done => {
+                self.close_tool_block();
+                // Capture final duration and update display
+                finalize_streaming();
+                spinner_ready();
+                // Leave a single blank line before the next prompt/status line.
+                if terminal::is_streaming_status_line_active() {
+                    // The status line already reserves a spacer row above it.
+                    terminal::normalize_block_spacing_min(0);
+                } else {
+                    terminal::normalize_block_spacing_min(1);
+                }
+                // Reset turn-level state for next turn
+                if let Ok(mut state) = self.state.lock() {
+                    state.output_state = OutputState::Idle;
+                }
+            }
+
+            OutputEvent::Interrupted => {
+                self.close_tool_block();
+                // Finalize current duration so the stats are displayed on "Cancelled"
+                finalize_streaming();
+                spinner_ready();
+                // Reset turn-level state for next turn
+                if let Ok(mut state) = self.state.lock() {
+                    state.output_state = OutputState::Idle;
+                }
+            }
+
+            OutputEvent::ContextUpdate {
+                input_tokens,
+                context_limit,
+            } => {
+                update_context(*input_tokens, *context_limit);
+            }
+        }
+    }
+}
+
+impl OutputListener for CliListener {
+    fn on_event(&self, event: &OutputEvent) {
+        if terminal::is_output_buffering() {
+            Self::buffer_event(event);
+            return;
+        }
+        self.handle_event(event);
+    }
+}
+
+pub(crate) struct CliListenerProxy {
+    inner: &'static CliListener,
+}
+
+impl CliListenerProxy {
+    pub(crate) fn new(inner: &'static CliListener) -> Self {
+        Self { inner }
+    }
+}
+
+impl OutputListener for CliListenerProxy {
+    fn on_event(&self, event: &OutputEvent) {
+        self.inner.on_event(event);
+    }
+}
+
+/// A quiet listener that only prints errors
+pub(crate) struct QuietListener;
+
+impl QuietListener {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
+
+impl OutputListener for QuietListener {
+    fn on_event(&self, event: &OutputEvent) {
+        if let OutputEvent::Error(e) = event {
+            let _ = writeln!(io::stderr(), "Error: {}", e);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutputState;
+
+    #[test]
+    fn output_state_thinking_spacing() {
+        let mut state = OutputState::Idle;
+        state.start_thinking();
+        assert!(!state.end_thinking());
+
+        state.start_thinking();
+        state.mark_thinking_output();
+        assert!(state.end_thinking());
+    }
+
+    #[test]
+    fn output_state_text_spacing() {
+        let mut state = OutputState::Idle;
+        state.start_text();
+        assert!(!state.end_text());
+
+        state.start_text();
+        state.mark_text_output();
+        assert!(state.end_text());
+    }
+
+    #[test]
+    fn output_state_tool_spacing_only_after_content() {
+        let mut state = OutputState::Idle;
+        assert!(!state.start_tool_block());
+        state.end_tool_block();
+
+        state.start_text();
+        state.mark_text_output();
+        assert!(state.start_tool_block());
+        state.end_tool_block();
+
+        assert!(!state.start_tool_block());
     }
 }

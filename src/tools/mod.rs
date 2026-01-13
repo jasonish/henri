@@ -22,7 +22,6 @@ pub(crate) use file_write::FileWrite;
 pub(crate) use glob::Glob;
 pub(crate) use grep::Grep;
 pub(crate) use list_dir::ListDir;
-pub(crate) use sandbox::is_available as sandbox_available;
 pub(crate) use todo::{TodoItem, TodoRead, TodoStatus, TodoWrite};
 
 use serde::{Deserialize, Serialize};
@@ -194,17 +193,32 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
             let command = input
                 .get("command")
                 .and_then(|v| v.as_str())
-                .unwrap_or("command");
-            // Indent subsequent lines for better readability with vertical line
-            let lines: Vec<&str> = command.lines().collect();
-            if lines.len() > 1 {
-                let mut result = format!("Running: {}", lines[0]);
-                for line in &lines[1..] {
-                    result.push_str(&format!("\n  │ {}", line));
+                .unwrap_or("command")
+                .trim();
+
+            // Tool-call banners render best as a single line. If the model provides a multi-line
+            // script, summarize it to avoid newlines breaking the UI layout.
+            if command.contains('\n') {
+                let mut lines = command.lines().map(str::trim).filter(|l| !l.is_empty());
+                let first_line = lines.next().unwrap_or("command");
+                let line_count = command.lines().count();
+
+                let mut preview = first_line.to_string();
+                const MAX_PREVIEW: usize = 120;
+                if preview.len() > MAX_PREVIEW {
+                    preview.truncate(MAX_PREVIEW);
+                    preview.push('…');
                 }
-                result
+
+                format!("Running bash ({} lines): {}", line_count, preview)
             } else {
-                format!("Running: {}", command)
+                let mut preview = command.to_string();
+                const MAX_PREVIEW: usize = 160;
+                if preview.len() > MAX_PREVIEW {
+                    preview.truncate(MAX_PREVIEW);
+                    preview.push('…');
+                }
+                format!("Running: {}", preview)
             }
         }
         "file_read" => {

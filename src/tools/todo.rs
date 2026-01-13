@@ -274,56 +274,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_todo_write_execute() {
-        let tool = TodoWrite;
-        let input = serde_json::json!({
-            "todos": [
-                {
-                    "content": "Write code",
-                    "status": "in_progress",
-                    "active_form": "Writing code"
-                }
-            ]
-        });
+    async fn test_todo_workflow() {
+        // Test Read first (setup state manually)
+        {
+            set_todos(vec![TodoItem {
+                content: "Read test".to_string(),
+                status: TodoStatus::Pending,
+                active_form: "Reading test".to_string(),
+            }]);
 
-        let result = tool
-            .execute(
-                "test-id",
-                input,
-                &crate::output::OutputContext::null(),
-                &crate::services::Services::null(),
-            )
-            .await;
-        assert!(!result.is_error);
-        assert!(result.content.contains("Todo list updated"));
-        assert!(result.content.contains("Writing code"));
+            let tool = TodoRead;
+            let result = tool
+                .execute(
+                    "test-id",
+                    serde_json::json!({}),
+                    &crate::output::OutputContext::null(),
+                    &crate::services::Services::null(),
+                )
+                .await;
+            assert!(!result.is_error);
+            assert!(result.content.contains("[ ] Read test"));
+        }
 
-        // Verify state was updated
-        let todos = get_todos();
-        assert_eq!(todos.len(), 1);
-        assert_eq!(todos[0].content, "Write code");
-    }
+        // Test Write (should overwrite)
+        {
+            let tool = TodoWrite;
+            let input = serde_json::json!({
+                "todos": [
+                    {
+                        "content": "Write code",
+                        "status": "in_progress",
+                        "active_form": "Writing code"
+                    }
+                ]
+            });
 
-    #[tokio::test]
-    async fn test_todo_read_execute() {
-        // Set up some state first
-        set_todos(vec![TodoItem {
-            content: "Read test".to_string(),
-            status: TodoStatus::Pending,
-            active_form: "Reading test".to_string(),
-        }]);
+            let result = tool
+                .execute(
+                    "test-id",
+                    input,
+                    &crate::output::OutputContext::null(),
+                    &crate::services::Services::null(),
+                )
+                .await;
+            assert!(!result.is_error);
+            assert!(result.content.contains("Todo list updated"));
+            assert!(result.content.contains("Writing code"));
 
-        let tool = TodoRead;
-        let result = tool
-            .execute(
-                "test-id",
-                serde_json::json!({}),
-                &crate::output::OutputContext::null(),
-                &crate::services::Services::null(),
-            )
-            .await;
-        assert!(!result.is_error);
-        assert!(result.content.contains("[ ] Read test"));
+            // Verify state was updated
+            let todos = get_todos();
+            assert_eq!(todos.len(), 1);
+            assert_eq!(todos[0].content, "Write code");
+        }
     }
 
     #[tokio::test]

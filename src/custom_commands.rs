@@ -19,7 +19,7 @@ pub(crate) struct CustomCommand {
     pub name: String,
     pub description: String,
     pub prompt: String,
-    pub model: Option<String>,
+    pub _model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +107,7 @@ pub(crate) fn load_custom_commands() -> io::Result<Vec<CustomCommand>> {
                     name,
                     description: format!("{} {}", description, label),
                     prompt,
-                    model,
+                    _model: model,
                 });
             }
         }
@@ -371,7 +371,7 @@ mod tests {
                 name,
                 description,
                 prompt,
-                model,
+                _model: model,
             });
         }
 

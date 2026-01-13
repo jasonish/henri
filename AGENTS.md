@@ -4,14 +4,13 @@ This file provides guidance to AI coding agents when working with code in this r
 
 ## Project Overview
 
-Henri is a terminal-based AI chat application written in Rust. It supports multiple AI providers (Anthropic, GitHub Copilot, OpenAI, etc.) and provides both a shell REPL interface and a TUI (ratatui-based) interface. The application includes built-in tools for file operations and bash command execution.
+Henri is a terminal-based AI chat application written in Rust. It supports multiple AI providers (Anthropic, GitHub Copilot, OpenAI, etc.) and provides a CLI interface. The application includes built-in tools for file operations and bash command execution.
 
 ## Build Commands
 
 - `cargo build` - Build the project in debug mode
 - `cargo build --release` - Build the project in release mode
-- `cargo run` - Run the application (shell mode)
-- `cargo run -- --tui` - Run the application (TUI mode)
+- `cargo run` - Run the application
 - `cargo test` - Run all tests
 - `cargo test <test_name>` - Run a specific test
 - `cargo fmt` - Format code
@@ -64,9 +63,7 @@ use crate::provider::Message;
 - Match on specific error types when needed for user-facing messages
 
 ### Output and Logging
-- **Avoid direct stdout/stderr writes** (`println!`, `eprintln!`, `write!` to stdout/stderr)
-- The TUI mode requires all output to go through proper channels
-- Use output functions instead:
+- Use output functions for consistent output:
   - `output::emit_error()` - for error messages
   - `output::print_text()` - for streaming text output
   - `provider::debug::debug_print()` - for debug information (when debug mode is enabled)

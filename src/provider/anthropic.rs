@@ -980,7 +980,15 @@ impl AnthropicProvider {
             }
         }
 
-        output::print_text_end(output);
+        if !content_blocks.is_empty() {
+            // Only end the text block if we actually streamed any text.
+            if content_blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { .. }))
+            {
+                output::print_text_end(output);
+            }
+        }
 
         if crate::provider::transaction_log::is_active() {
             crate::provider::transaction_log::log(

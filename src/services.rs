@@ -82,6 +82,28 @@ impl Services {
     pub(crate) fn set_read_only(&self, enabled: bool) {
         self.read_only.store(enabled, Ordering::SeqCst);
     }
+
+    /// Cycle through sandbox modes: RW -> RO -> YOLO -> RW
+    /// Returns a string describing the new mode.
+    pub(crate) fn cycle_sandbox_mode(&self) -> &'static str {
+        let is_read_only = self.is_read_only();
+        let is_sandbox = self.is_sandbox_enabled();
+
+        if is_read_only {
+            // RO -> YOLO
+            self.set_read_only(false);
+            self.set_sandbox_enabled(false);
+            "YOLO (no restrictions)"
+        } else if is_sandbox {
+            // RW -> RO
+            self.set_read_only(true);
+            "Read-Only"
+        } else {
+            // YOLO -> RW
+            self.set_sandbox_enabled(true);
+            "Read-Write (sandboxed)"
+        }
+    }
 }
 
 impl Default for Services {

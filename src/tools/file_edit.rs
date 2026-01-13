@@ -140,10 +140,7 @@ impl Tool for FileEdit {
         let diff = crate::diff::unified_diff(path, &old_contents, &new_contents, 3);
         if diff.has_changes {
             _output.emit(crate::output::OutputEvent::FileDiff {
-                path: input.file_path.clone(),
                 diff: diff.unified_diff,
-                lines_added: diff.lines_added,
-                lines_removed: diff.lines_removed,
                 language: crate::syntax::language_from_path(&input.file_path),
             });
         }
