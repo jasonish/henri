@@ -41,6 +41,8 @@
 
 ### Fixed
 
+- Custom commands: Fixed parsing of empty YAML (`---\n---`) and TOML
+  (`+++\n+++`) front-matter blocks which previously failed to match
 - Anthropic OAuth: Updated API request headers and scopes to match Claude Code
   CLI, including `org:create_api_key` scope, `fine-grained-tool-streaming`
   beta feature, and `anthropic-dangerous-direct-browser-access` header

@@ -152,25 +152,43 @@ fn parse_frontmatter(content: &str) -> Option<(CommandFrontmatter, &str)> {
     let content = content.trim_start();
 
     // YAML front-matter (---...---)
-    if content.starts_with("---\n")
-        && let Some(end_pos) = content[4..].find("\n---\n")
-    {
-        let frontmatter = &content[4..4 + end_pos];
-        let body = content[4 + end_pos + 5..].trim_start();
+    if let Some(after_open) = content.strip_prefix("---\n") {
+        // Handle empty front-matter (---\n---\n)
+        if let Some(body) = after_open.strip_prefix("---\n") {
+            let frontmatter = CommandFrontmatter {
+                description: None,
+                model: None,
+            };
+            return Some((frontmatter, body.trim_start()));
+        }
+        // Handle non-empty front-matter
+        if let Some(end_pos) = after_open.find("\n---\n") {
+            let frontmatter_str = &after_open[..end_pos];
+            let body = after_open[end_pos + 5..].trim_start();
 
-        let frontmatter = extract_frontmatter_from_yaml(frontmatter);
-        return Some((frontmatter, body));
+            let frontmatter = extract_frontmatter_from_yaml(frontmatter_str);
+            return Some((frontmatter, body));
+        }
     }
 
     // TOML front-matter (+++...+++)
-    if content.starts_with("+++\n")
-        && let Some(end_pos) = content[4..].find("\n+++\n")
-    {
-        let frontmatter = &content[4..4 + end_pos];
-        let body = content[4 + end_pos + 5..].trim_start();
+    if let Some(after_open) = content.strip_prefix("+++\n") {
+        // Handle empty front-matter (+++\n+++\n)
+        if let Some(body) = after_open.strip_prefix("+++\n") {
+            let frontmatter = CommandFrontmatter {
+                description: None,
+                model: None,
+            };
+            return Some((frontmatter, body.trim_start()));
+        }
+        // Handle non-empty front-matter
+        if let Some(end_pos) = after_open.find("\n+++\n") {
+            let frontmatter_str = &after_open[..end_pos];
+            let body = after_open[end_pos + 5..].trim_start();
 
-        let frontmatter = extract_frontmatter_from_toml(frontmatter);
-        return Some((frontmatter, body));
+            let frontmatter = extract_frontmatter_from_toml(frontmatter_str);
+            return Some((frontmatter, body));
+        }
     }
 
     None
@@ -469,6 +487,28 @@ This is the actual command content."#;
         let (description, prompt, model) = parse_command_file(content);
         assert_eq!(description, "Simple description");
         assert_eq!(prompt, content);
+        assert!(model.is_none());
+    }
+
+    #[test]
+    fn test_parse_empty_yaml_frontmatter() {
+        let content = "---\n---\n\nActual prompt content.\nMore content here.";
+
+        let (description, prompt, model) = parse_command_file(content);
+        assert_eq!(description, "Actual prompt content.");
+        assert!(prompt.starts_with("Actual prompt content."));
+        assert!(!prompt.contains("---"));
+        assert!(model.is_none());
+    }
+
+    #[test]
+    fn test_parse_empty_toml_frontmatter() {
+        let content = "+++\n+++\n\nActual prompt content.\nMore content here.";
+
+        let (description, prompt, model) = parse_command_file(content);
+        assert_eq!(description, "Actual prompt content.");
+        assert!(prompt.starts_with("Actual prompt content."));
+        assert!(!prompt.contains("+++"));
         assert!(model.is_none());
     }
 
