@@ -23,9 +23,8 @@ use crate::usage;
 
 // API endpoints
 const ANTIGRAVITY_ENDPOINTS: &[&str] = &[
-    "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent",
-    "https://autopush-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent",
-    "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent",
+    "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+    "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 ];
 
 // Available models
@@ -431,8 +430,8 @@ impl AntigravityProvider {
             system_parts.push(serde_json::json!({"text": part}));
         }
 
-        // Generate session ID: -{random_number}
-        let session_id = format!("-{}", rand::random::<u64>());
+        // Generate session ID: 32-char hex string (UUID without hyphens)
+        let session_id = uuid::Uuid::new_v4().simple().to_string();
 
         let mut request = serde_json::json!({
             "contents": self.build_messages(messages),
@@ -489,8 +488,22 @@ impl AntigravityProvider {
         inner_request: serde_json::Value,
         project_id: &str,
     ) -> serde_json::Value {
-        // Generate request ID: agent-{uuid}
-        let request_id = format!("agent-{}", uuid::Uuid::new_v4());
+        // Generate request ID: agent-{timestamp_millis}-{random_suffix}
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let suffix: String = (0..9)
+            .map(|_| {
+                let idx = (rand::random::<u32>() % 36) as usize;
+                if idx < 10 {
+                    (b'0' + idx as u8) as char
+                } else {
+                    (b'a' + (idx - 10) as u8) as char
+                }
+            })
+            .collect();
+        let request_id = format!("agent-{}-{}", timestamp, suffix);
 
         serde_json::json!({
             "project": project_id,
@@ -510,7 +523,12 @@ impl AntigravityProvider {
         let access_token = self.ensure_access_token().await?;
         let project_id = {
             let state = self.state.lock().await;
-            state.project_id.clone().unwrap_or_default()
+            state.project_id.clone().ok_or_else(|| {
+                Error::Config(
+                    "antigravity project_id not set. Run `henri provider add` to re-authenticate."
+                        .to_string(),
+                )
+            })?
         };
 
         // Build the inner Gemini request
@@ -545,16 +563,17 @@ impl AntigravityProvider {
             "google-cloud-sdk vscode_cloudshelleditor/0.1".to_string(),
         );
         headers.insert("Client-Metadata".to_string(), client_metadata.to_string());
-        if !project_id.is_empty() {
-            headers.insert("X-Goog-User-Project".to_string(), project_id.clone());
-        }
+        headers.insert(
+            "anthropic-beta".to_string(),
+            "interleaved-thinking-2025-05-14".to_string(),
+        );
 
         let mut last_error = None;
         let mut final_response = None;
 
         for base_url in ANTIGRAVITY_ENDPOINTS {
             // Build URL - model is in request body, not URL path
-            let url = format!("{}?alt=sse", base_url);
+            let url = base_url.to_string();
 
             let mut request_builder = self.client.post(&url);
             for (key, value) in &headers {
@@ -887,7 +906,12 @@ impl Provider for AntigravityProvider {
     async fn prepare_request(&self, messages: Vec<Message>) -> Result<serde_json::Value> {
         let project_id = {
             let state = self.state.lock().await;
-            state.project_id.clone().unwrap_or_default()
+            state.project_id.clone().ok_or_else(|| {
+                Error::Config(
+                    "antigravity project_id not set. Run `henri provider add` to re-authenticate."
+                        .to_string(),
+                )
+            })?
         };
         let inner_request = self.build_inner_request(&messages).await;
         let request = self.build_antigravity_envelope(inner_request, &project_id);

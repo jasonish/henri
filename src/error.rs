@@ -8,7 +8,9 @@ pub(crate) enum Error {
     #[error("Authentication error: {0}")]
     Auth(String),
 
-    #[error("Refresh token expired or revoked. Please run `henri connect` to re-authenticate.")]
+    #[error(
+        "Refresh token expired or revoked. Please run `henri provider add` to re-authenticate."
+    )]
     RefreshTokenExpired,
 
     #[error("Unauthorized: {0}")]

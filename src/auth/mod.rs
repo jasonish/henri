@@ -1194,9 +1194,17 @@ struct GoogleUserInfo {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct TierInfo {
+    id: String,
+    #[serde(default)]
+    _name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LoadCodeAssistResponse {
     #[serde(default)]
-    current_tier: Option<String>,
+    current_tier: Option<TierInfo>,
     #[serde(default)]
     cloudaicompanion_project: Option<String>,
 }
@@ -1488,12 +1496,16 @@ async fn discover_antigravity_config(
 
     match response {
         Ok(resp) if resp.status().is_success() => {
+            let body = resp.text().await.unwrap_or_default();
             let data: LoadCodeAssistResponse =
-                resp.json().await.unwrap_or(LoadCodeAssistResponse {
+                serde_json::from_str(&body).unwrap_or(LoadCodeAssistResponse {
                     current_tier: None,
                     cloudaicompanion_project: None,
                 });
-            Ok((data.current_tier, data.cloudaicompanion_project))
+            Ok((
+                data.current_tier.map(|t| t.id),
+                data.cloudaicompanion_project,
+            ))
         }
         Ok(resp) if resp.status() == 404 => {
             // User not onboarded, try to onboard them
@@ -1590,7 +1602,9 @@ async fn onboard_antigravity_user(
                     cloudaicompanion_project: None,
                 });
             Ok((
-                data.current_tier.or(Some("free-tier".to_string())),
+                data.current_tier
+                    .map(|t| t.id)
+                    .or(Some("free-tier".to_string())),
                 data.cloudaicompanion_project,
             ))
         }
