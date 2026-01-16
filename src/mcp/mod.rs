@@ -203,6 +203,7 @@ impl McpManager {
                 let params = CallToolRequestParam {
                     name: actual_name.to_string().into(),
                     arguments: input.as_object().cloned(),
+                    task: None,
                 };
 
                 match client.service.call_tool(params).await {
