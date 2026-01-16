@@ -27,24 +27,20 @@ const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const OPENAI_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_DEFAULT_MODEL: &str = "gpt-5.2-codex#medium";
 const OPENAI_MODELS: &[&str] = &[
-    "gpt-5.1#none",
-    "gpt-5.1#low",
-    "gpt-5.1#medium",
-    "gpt-5.1#high",
+    "gpt-5.2-codex#xhigh",
+    "gpt-5.2-codex#high",
+    "gpt-5.2-codex#medium",
+    "gpt-5.2-codex#low",
+    "gpt-5.2#xhigh",
+    "gpt-5.2#high",
+    "gpt-5.2#medium",
+    "gpt-5.2#low",
+    "gpt-5.1-codex-max#xhigh",
+    "gpt-5.1-codex-max#high",
+    "gpt-5.1-codex-max#medium",
+    "gpt-5.1-codex-max#low",
     "gpt-5.1-codex-mini#medium",
     "gpt-5.1-codex-mini#high",
-    "gpt-5.1-codex-max#low",
-    "gpt-5.1-codex-max#medium",
-    "gpt-5.1-codex-max#high",
-    "gpt-5.1-codex-max#xhigh",
-    "gpt-5.2#low",
-    "gpt-5.2#medium",
-    "gpt-5.2#high",
-    "gpt-5.2#xhigh",
-    "gpt-5.2-codex#low",
-    "gpt-5.2-codex#medium",
-    "gpt-5.2-codex#high",
-    "gpt-5.2-codex#xhigh",
 ];
 const CODEX_PROMPT_GPT_5_1: &str = include_str!("openai/gpt_5_1_prompt.md");
 const CODEX_PROMPT_GPT_5_CODEX: &str = include_str!("openai/gpt_5_codex_prompt.md");
