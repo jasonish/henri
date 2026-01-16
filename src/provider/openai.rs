@@ -233,9 +233,12 @@ impl OpenAiProvider {
                             ContentBlock::Image { mime_type, data } => {
                                 let encoded = STANDARD.encode(data);
                                 content_parts.push(serde_json::json!({
-                            "type": "input_image",
-                            "image_url": { "url": format!("data:{};base64,{}", mime_type, encoded) }
-                        }));
+                                    "type": "input_image",
+                                    "image_url": format!(
+                                        "data:{};base64,{}",
+                                        mime_type, encoded
+                                    )
+                                }));
                             }
                             ContentBlock::Thinking {
                                 thinking,

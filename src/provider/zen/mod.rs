@@ -72,6 +72,8 @@ const ZEN_MODELS: &[ZenModelSpec] = &[
     ZenModelSpec::new("glm-4.6", ApiType::OpenAiCompatible, true, true),
     ZenModelSpec::new("glm-4.7-free", ApiType::OpenAiCompatible, true, true),
     ZenModelSpec::new("gpt-5.1", ApiType::OpenAiResponses, true, true),
+    ZenModelSpec::new("gpt-5.2", ApiType::OpenAiResponses, true, true),
+    ZenModelSpec::new("gpt-5.2-codex", ApiType::OpenAiResponses, true, true),
     ZenModelSpec::new("gpt-5.1-codex", ApiType::OpenAiResponses, true, true),
     ZenModelSpec::new("gpt-5.1-codex-max", ApiType::OpenAiResponses, true, true),
     ZenModelSpec::new("grok-code", ApiType::OpenAiCompatible, true, false),
