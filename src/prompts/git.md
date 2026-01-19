@@ -48,23 +48,6 @@
 - Wrap lines at 80 characters, respecting word boundaries and whitespace.
 - Use a blank line to separate the title from the body.
 
-Unless asked not to include extra attributions, end the commit message with:
-
-```
-Co-authored-by: Henri 🐕 <henri@codemonkey.net>
-```
-
-Example:
-```
-Fix session restore dropping tool_result messages
-
-- Add #[serde(default)] to is_error field in SerializableContentBlock
-- Field was skipped during serialization when false, causing parse failures
-- Add tests for tool_result round-trip serialization
-
-Co-authored-by: Henri 🐕 <henri@codemonkey.net>
-```
-
 3. **Stage and commit:**
    - Add relevant untracked files to staging
    - Create the commit with the drafted message

@@ -15,3 +15,7 @@ Respect any of the users custom instructions: $ARGUMENTS
   update can be skipped.
 
 The commit should follow any other commit guidelines you may have been given.
+
+Unless asked not to include extra attributions, end the commit message with:
+
+Co-authored-by: Henri 🐕 <henri@codemonkey.net>

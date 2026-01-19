@@ -99,9 +99,8 @@
 
 ### Internal
 
-- Refactored Antigravity system instruction into separate prompt file
-  (`src/prompts/antigravity.md`) for improved maintainability and consistency
-  with other provider prompts
+- Commit workflow: Move `Co-authored-by: Henri` footer requirement to the repo-local
+  `.henri/commands/commit.md` command, so it only applies to this project.
 
 ## [0.3.0] - 2025-01-03
 
