@@ -176,7 +176,7 @@ impl OpenAiProvider {
     fn build_codex_input(&self, messages: &[Message]) -> Vec<CodexInputItem> {
         let mut input_items = Vec::new();
 
-        let mut system = prompts::system_prompt();
+        let mut system = prompts::system_prompt_with_services(Some(&self.services));
         system.push(
             "You do not have an `apply_patch` tool, instead use the `file_edit` tool.".to_string(),
         );

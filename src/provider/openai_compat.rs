@@ -455,7 +455,9 @@ pub(crate) async fn build_request(
     messages: &[Message],
     reasoning_effort_override: Option<&str>,
 ) -> Result<OpenAiRequest> {
-    let mut all_messages = vec![Message::system(prompts::system_prompt().join("\n\n"))];
+    let mut all_messages = vec![Message::system(
+        prompts::system_prompt_with_services(Some(&config.services)).join("\n\n"),
+    )];
     all_messages.extend(messages.iter().cloned());
 
     let tools: Vec<OpenAiTool> = tools::all_definitions(&config.services)

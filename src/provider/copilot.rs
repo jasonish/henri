@@ -264,7 +264,7 @@ impl CopilotProvider {
     fn build_messages(&self, messages: Vec<Message>) -> Vec<CopilotMessage> {
         let mut payload = vec![CopilotMessage {
             role: "system".to_string(),
-            content: Some(prompts::system_prompt().join("\n\n")),
+            content: Some(prompts::system_prompt_with_services(Some(&self.services)).join("\n\n")),
             tool_calls: None,
             tool_call_id: None,
         }];
@@ -385,7 +385,7 @@ impl CopilotProvider {
             role: "system".to_string(),
             content: vec![CopilotResponseContent {
                 kind: "input_text".to_string(),
-                text: prompts::system_prompt().join("\n\n"),
+                text: prompts::system_prompt_with_services(Some(&self.services)).join("\n\n"),
             }],
         })];
 

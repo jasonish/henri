@@ -12,7 +12,6 @@ use tokio::sync::Mutex;
 use crate::config::{ClaudeAuth, ClaudeProviderConfig, ConfigFile, ProviderConfig, ProviderType};
 use crate::error::{Error, Result};
 use crate::output;
-use crate::prompts::system_prompt;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
 };
@@ -603,7 +602,7 @@ impl AnthropicProvider {
         })];
 
         // Add Henri-specific system prompts
-        for part in system_prompt() {
+        for part in crate::prompts::system_prompt_with_services(Some(&self.services)) {
             system.push(serde_json::json!({"type": "text", "text": part}));
         }
 

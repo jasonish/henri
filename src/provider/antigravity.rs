@@ -12,7 +12,6 @@ use crate::auth::{GOOGLE_TOKEN_URL, get_antigravity_client_id, get_antigravity_c
 use crate::config::{AntigravityProviderConfig, ConfigFile, ProviderConfig};
 use crate::error::{Error, Result};
 use crate::output;
-use crate::prompts::system_prompt;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
 };
@@ -426,7 +425,7 @@ impl AntigravityProvider {
             serde_json::json!({"text": "Your name is Henri."}),
         ];
 
-        for part in system_prompt() {
+        for part in crate::prompts::system_prompt_with_services(Some(&self.services)) {
             system_parts.push(serde_json::json!({"text": part}));
         }
 

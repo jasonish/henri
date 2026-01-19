@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 use chrono::Local;
 
+use crate::services::Services;
+
 /// Git guidelines embedded at compile time.
 const GIT_GUIDELINES: &str = include_str!("git.md");
 
@@ -21,6 +23,8 @@ const MAX_DEPTH: usize = 2;
 
 /// Maximum number of entries in project structure.
 const MAX_ENTRIES: usize = 500;
+
+const READ_ONLY_NOTICE: &str = "Read-only mode is enabled. Do not attempt to modify files; write-capable tools are disabled and filesystem writes are blocked.";
 
 /// Directories to skip in project structure.
 const SKIP_DIRS: &[&str] = &[
@@ -71,7 +75,7 @@ fn is_git_directory() -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn system_prompt() -> Vec<String> {
+pub(crate) fn system_prompt_with_services(services: Option<&Services>) -> Vec<String> {
     let mut prompt = vec![];
 
     prompt.push(default_system_prompt().to_string());
@@ -95,6 +99,11 @@ pub(crate) fn system_prompt() -> Vec<String> {
             agent_file.contents
         );
         prompt.push(instruction);
+    }
+
+    // If provided, append read-only mode notice.
+    if services.is_some_and(|s| s.is_read_only()) {
+        prompt.push(READ_ONLY_NOTICE.to_string());
     }
 
     // Timestamp goes last so it doesn't invalidate prompt caching.

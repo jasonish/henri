@@ -29,6 +29,8 @@
   using `git ls-tree` for git repos or filesystem traversal otherwise.
   Smart trimming prioritizes shallower entries over deeper ones, ensuring
   top-level directories are always visible even in large projects.
+- System prompt: When running in read-only mode, include an explicit notice
+  instructing the assistant not to attempt file modifications.
 - Tilde expansion (`~`) support in all file tools (file_read, file_write,
   file_edit, file_delete, list_dir, glob, grep)
 - Line length truncation in file_read tool: lines exceeding 2048 characters

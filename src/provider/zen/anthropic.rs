@@ -226,7 +226,7 @@ pub(super) async fn build_request(
 
     AnthropicRequest {
         model: model.to_string(),
-        system: Some(prompts::system_prompt().join("\n\n")),
+        system: Some(prompts::system_prompt_with_services(Some(services)).join("\n\n")),
         messages: build_messages(messages),
         max_tokens: 16000,
         stream: true,
