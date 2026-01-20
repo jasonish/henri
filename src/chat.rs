@@ -15,8 +15,9 @@ use crate::provider::{
 use crate::services::Services;
 use crate::tools;
 
-/// Maximum number of retries for transient errors (timeouts, overloaded, etc.)
-const MAX_RETRIES: u32 = 3;
+/// Maximum number of retries for the session-level "slow" retry loop.
+/// This handles persistent failures after internal provider retries are exhausted.
+const MAX_RETRIES: u32 = 5;
 
 /// Initial delay between retries (doubles with each attempt)
 const INITIAL_RETRY_DELAY: Duration = Duration::from_secs(2);

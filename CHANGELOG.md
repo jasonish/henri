@@ -42,6 +42,12 @@
 - file_read tool: Added defensive limits (2000 lines or 50KB) with pagination
   hints, preventing unbounded responses when reading large files
 
+### Changed
+
+- Antigravity provider: Internal retry loop with stable request ID for transient
+  errors (429s, 5xx, network drops), enabling idempotent retries before falling
+  back to the session-level retry loop
+
 ### Fixed
 
 - Custom commands: Fixed parsing of empty YAML (`---\n---`) and TOML

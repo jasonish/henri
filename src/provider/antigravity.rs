@@ -34,6 +34,13 @@ const ANTIGRAVITY_MODELS: &[&str] = &[
     "claude-opus-4-5-thinking",
 ];
 
+/// Maximum number of retries for the internal "fast" retry loop.
+/// This handles transient errors (network drops, 429s, 5xx) with the same request ID.
+const INTERNAL_MAX_RETRIES: u32 = 3;
+
+/// Initial retry delay for internal loop (exponential: 1s, 2s, 4s)
+const INTERNAL_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
 struct AuthState {
     local_id: String,
     access_token: String,
@@ -481,13 +488,7 @@ impl AntigravityProvider {
         request
     }
 
-    /// Build the full Antigravity envelope wrapping the inner request
-    fn build_antigravity_envelope(
-        &self,
-        inner_request: serde_json::Value,
-        project_id: &str,
-    ) -> serde_json::Value {
-        // Generate request ID: agent-{timestamp_millis}-{random_suffix}
+    fn generate_request_id() -> String {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -502,8 +503,16 @@ impl AntigravityProvider {
                 }
             })
             .collect();
-        let request_id = format!("agent-{}-{}", timestamp, suffix);
+        format!("agent-{}-{}", timestamp, suffix)
+    }
 
+    /// Build the full Antigravity envelope wrapping the inner request
+    fn build_antigravity_envelope(
+        &self,
+        inner_request: serde_json::Value,
+        project_id: &str,
+        request_id: String,
+    ) -> serde_json::Value {
         serde_json::json!({
             "project": project_id,
             "userAgent": "antigravity",
@@ -518,6 +527,7 @@ impl AntigravityProvider {
         &self,
         messages: Vec<Message>,
         output: &crate::output::OutputContext,
+        request_id: String,
     ) -> Result<ChatResponse> {
         let access_token = self.ensure_access_token().await?;
         let project_id = {
@@ -534,7 +544,7 @@ impl AntigravityProvider {
         let inner_request = self.build_inner_request(&messages).await;
 
         // Wrap in Antigravity envelope
-        let request = self.build_antigravity_envelope(inner_request, &project_id);
+        let request = self.build_antigravity_envelope(inner_request, &project_id, request_id);
 
         // Record TX bytes
         let body_bytes = serde_json::to_vec(&request)?;
@@ -892,13 +902,28 @@ impl Provider for AntigravityProvider {
         messages: Vec<Message>,
         output: &crate::output::OutputContext,
     ) -> Result<ChatResponse> {
-        match self.send_chat_request(messages.clone(), output).await {
-            Ok(response) => Ok(response),
-            Err(Error::Unauthorized(_)) => {
-                self.force_refresh().await?;
-                self.send_chat_request(messages, output).await
+        let mut attempts = 0;
+        let mut delay = INTERNAL_INITIAL_DELAY;
+        let request_id = Self::generate_request_id();
+
+        loop {
+            let result = self
+                .send_chat_request(messages.clone(), output, request_id.clone())
+                .await;
+
+            match result {
+                Ok(response) => return Ok(response),
+                Err(Error::Unauthorized(_)) => {
+                    self.force_refresh().await?;
+                    return self.send_chat_request(messages, output, request_id).await;
+                }
+                Err(ref e) if e.is_retryable() && attempts < INTERNAL_MAX_RETRIES => {
+                    attempts += 1;
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => Err(e),
         }
     }
 
@@ -913,7 +938,8 @@ impl Provider for AntigravityProvider {
             })?
         };
         let inner_request = self.build_inner_request(&messages).await;
-        let request = self.build_antigravity_envelope(inner_request, &project_id);
+        let request_id = Self::generate_request_id();
+        let request = self.build_antigravity_envelope(inner_request, &project_id, request_id);
         Ok(request)
     }
 
