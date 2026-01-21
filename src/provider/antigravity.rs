@@ -137,8 +137,14 @@ impl AntigravityProvider {
             )));
         }
 
+        // Disable connection pooling so retries get fresh connections.
+        let client = Client::builder()
+            .pool_max_idle_per_host(0)
+            .build()
+            .map_err(|e| Error::Other(format!("Failed to build HTTP client: {e}")))?;
+
         Ok(Self {
-            client: Client::new(),
+            client,
             state: Mutex::new(AuthState {
                 local_id: provider_name.to_string(),
                 access_token: antigravity.access_token.clone(),

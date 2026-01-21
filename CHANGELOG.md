@@ -46,7 +46,8 @@
 
 - Antigravity provider: Internal retry loop with stable request ID for transient
   errors (429s, 5xx, network drops), enabling idempotent retries before falling
-  back to the session-level retry loop
+  back to the session-level retry loop. Connection pooling disabled to ensure
+  retries use fresh connections.
 
 ### Fixed
 
