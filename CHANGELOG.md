@@ -5,6 +5,10 @@
 ### Changed
 
 - Session files now use `.json` extension instead of `.jsonl`
+- OpenAI provider: Added `prompt_cache_key` to Codex API requests using session
+  ID, enabling prompt caching across requests within the same session
+- Session IDs now use UUIDv7 format for time-sortable uniqueness instead of
+  timestamp-based format
 
 ## [0.4.0] - 2026-01-20
 

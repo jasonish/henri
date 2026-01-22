@@ -317,6 +317,8 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
     let provider_manager = ProviderManager::new(&config, services.clone());
     let mut messages: Vec<Message> = Vec::new();
     let mut thinking_state = provider_manager.default_thinking();
+    // NOTE: When modifying current_session_id, also call services.set_session_id()
+    // to keep the provider's cache key in sync.
     let mut current_session_id: Option<String> = None;
     let read_only = args.read_only;
     let working_dir = args.working_dir;
@@ -329,6 +331,11 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
     } else {
         clear_todos();
     }
+
+    if current_session_id.is_none() {
+        current_session_id = Some(session::generate_session_id());
+    }
+    services.set_session_id(current_session_id.clone());
 
     // Convert prompt args to initial prompt for interactive mode
     let initial_prompt = if args.prompt.is_empty() {
@@ -1137,6 +1144,7 @@ async fn run_event_loop(
                                     services.set_read_only(restored.read_only);
                                     // Use the ID we loaded by
                                     *current_session_id = Some(selected_session.id.clone());
+                                    services.set_session_id(current_session_id.clone());
 
                                     // Clear history and replay session
                                     session::replay_session_into_output(&state);
@@ -1563,7 +1571,8 @@ async fn run_event_loop(
                             }
                             // Start a new session id, but keep prior sessions for /sessions restore.
                             messages.clear();
-                            *current_session_id = None;
+                            *current_session_id = Some(session::generate_session_id());
+                            services.set_session_id(current_session_id.clone());
                             history::clear();
                             clear_todos();
                             terminal::redraw_from_history(prompt_box.height());
@@ -2582,7 +2591,8 @@ async fn handle_command(
             // Start a new session by dropping the current session id, but keep the
             // previous session on disk so it can be restored via /sessions.
             messages.clear();
-            *current_session_id = None;
+            *current_session_id = Some(session::generate_session_id());
+            services.set_session_id(current_session_id.clone());
             history::clear();
             clear_todos();
             terminal::redraw_from_history(prompt_box.height());

@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
 use crate::providers::ModelProvider;
@@ -352,10 +353,11 @@ fn get_session_path(dir: &Path, session_id: &str) -> PathBuf {
     sessions_dir_for_path(dir).join(format!("{}.json", session_id))
 }
 
-/// Generate a new session ID based on current timestamp.
-/// Format: YYYYMMDDTHHMMSS (compact ISO-8601 for natural sorting)
+/// Generate a new session ID.
+///
+/// Uses UUIDv7 for time-sortable uniqueness.
 pub(crate) fn generate_session_id() -> String {
-    Utc::now().format("%Y%m%dT%H%M%S").to_string()
+    Uuid::now_v7().to_string()
 }
 
 /// Save session state to disk in JSONL format.

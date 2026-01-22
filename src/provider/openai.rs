@@ -110,6 +110,8 @@ struct CodexInputItem {
 #[derive(Serialize)]
 struct CodexRequest {
     model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
     store: bool,
     stream: bool,
     input: Vec<CodexInputItem>,
@@ -452,6 +454,7 @@ impl OpenAiProvider {
     async fn build_request(&self, messages: &[Message]) -> CodexRequest {
         let instructions = self.codex_instructions().await;
         let input = self.build_codex_input(messages);
+        let prompt_cache_key = self.services.session_id();
 
         let tools: Vec<OpenAiTool> = tools::all_definitions(&self.services)
             .await
@@ -475,6 +478,7 @@ impl OpenAiProvider {
 
         CodexRequest {
             model: model.to_string(),
+            prompt_cache_key,
             store: false,
             stream: true,
             input,

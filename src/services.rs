@@ -4,6 +4,7 @@
 //! Service container for dependency injection.
 
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::lsp::LspManager;
@@ -16,6 +17,8 @@ pub(crate) struct Services {
     pub lsp: Arc<LspManager>,
     /// Interrupt flag for cancellable operations (e.g., bash commands).
     interrupted: Option<Arc<AtomicBool>>,
+    /// Current chat session identifier (used for provider request metadata).
+    session_id: Arc<RwLock<Option<String>>>,
     /// Sandbox enabled flag (true by default, can be disabled via /yolo command).
     sandbox_enabled: Arc<AtomicBool>,
     /// Read-only flag (false by default, can be toggled via /read-only or /ro).
@@ -28,6 +31,7 @@ impl Services {
             mcp: crate::mcp::manager(),
             lsp: crate::lsp::manager(),
             interrupted: None,
+            session_id: Arc::new(RwLock::new(None)),
             sandbox_enabled: Arc::new(AtomicBool::new(true)),
             read_only: Arc::new(AtomicBool::new(false)),
         }
@@ -40,6 +44,7 @@ impl Services {
             mcp: Arc::new(McpManager::new()),
             lsp: Arc::new(LspManager::new()),
             interrupted: None,
+            session_id: Arc::new(RwLock::new(None)),
             sandbox_enabled: Arc::new(AtomicBool::new(true)),
             read_only: Arc::new(AtomicBool::new(false)),
         }
@@ -51,9 +56,20 @@ impl Services {
             mcp: self.mcp.clone(),
             lsp: self.lsp.clone(),
             interrupted: Some(flag),
+            session_id: self.session_id.clone(),
             sandbox_enabled: self.sandbox_enabled.clone(),
             read_only: self.read_only.clone(),
         }
+    }
+
+    pub(crate) fn set_session_id(&self, session_id: Option<String>) {
+        if let Ok(mut guard) = self.session_id.write() {
+            *guard = session_id;
+        }
+    }
+
+    pub(crate) fn session_id(&self) -> Option<String> {
+        self.session_id.read().ok().and_then(|guard| guard.clone())
     }
 
     /// Check if the interrupt flag is set.
