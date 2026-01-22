@@ -35,7 +35,7 @@ const ANTIGRAVITY_MODELS: &[&str] = &[
 ];
 
 /// Maximum number of retries for the internal "fast" retry loop.
-/// This handles transient errors (network drops, 429s, 5xx) with the same request ID.
+/// This handles transient errors (network drops, 429s, 5xx).
 const INTERNAL_MAX_RETRIES: u32 = 3;
 
 /// Initial retry delay for internal loop (exponential: 1s, 2s, 4s)
@@ -108,7 +108,6 @@ impl ProgressTracker {
 }
 
 pub(crate) struct AntigravityProvider {
-    client: Client,
     state: Mutex<AuthState>,
     model: String,
     thinking_enabled: bool,
@@ -137,14 +136,7 @@ impl AntigravityProvider {
             )));
         }
 
-        // Disable connection pooling so retries get fresh connections.
-        let client = Client::builder()
-            .pool_max_idle_per_host(0)
-            .build()
-            .map_err(|e| Error::Other(format!("Failed to build HTTP client: {e}")))?;
-
         Ok(Self {
-            client,
             state: Mutex::new(AuthState {
                 local_id: provider_name.to_string(),
                 access_token: antigravity.access_token.clone(),
@@ -239,8 +231,8 @@ impl AntigravityProvider {
         }
 
         // Refresh the token
-        let response = self
-            .client
+        let client = Client::new();
+        let response = client
             .post(GOOGLE_TOKEN_URL)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .form(&[
@@ -590,7 +582,9 @@ impl AntigravityProvider {
             // Build URL - model is in request body, not URL path
             let url = base_url.to_string();
 
-            let mut request_builder = self.client.post(&url);
+            // Create a fresh client for each request attempt
+            let client = Client::new();
+            let mut request_builder = client.post(&url);
             for (key, value) in &headers {
                 request_builder = request_builder.header(key, value);
             }
@@ -916,17 +910,18 @@ impl Provider for AntigravityProvider {
     ) -> Result<ChatResponse> {
         let mut attempts = 0;
         let mut delay = INTERNAL_INITIAL_DELAY;
-        let request_id = Self::generate_request_id();
 
         loop {
+            let request_id = Self::generate_request_id();
             let result = self
-                .send_chat_request(messages.clone(), output, request_id.clone())
+                .send_chat_request(messages.clone(), output, request_id)
                 .await;
 
             match result {
                 Ok(response) => return Ok(response),
                 Err(Error::Unauthorized(_)) => {
                     self.force_refresh().await?;
+                    let request_id = Self::generate_request_id();
                     return self.send_chat_request(messages, output, request_id).await;
                 }
                 Err(ref e) if e.is_retryable() && attempts < INTERNAL_MAX_RETRIES => {
