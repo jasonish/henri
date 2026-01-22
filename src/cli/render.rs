@@ -143,9 +143,13 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
 ///
 /// The text may contain inline image markers like `Image#1` which are colorized.
 fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String {
-    let arrow = if text.starts_with('!') { "! " } else { "> " };
+    let arrow = if text.starts_with('!') {
+        super::input::SHELL_PROMPT
+    } else {
+        super::input::PROMPT
+    };
     let text = text.strip_prefix('!').unwrap_or(text);
-    let continuation = "  ";
+    let continuation = super::input::CONTINUATION;
 
     // Use a slightly reduced width to avoid terminals auto-wrapping when the last column
     // is filled. We still paint the rest of the line using `\x1b[K`.
@@ -153,6 +157,11 @@ fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String
     let content_width = safe_width.saturating_sub(2); // arrow/continuation is 2 chars
 
     let mut output = String::new();
+
+    // Padding row above the prompt block. Include a single space so the output cursor is mid-line
+    // (mirrors the interactive prompt rendering path).
+    output.push_str(BG_GREY_ANSI);
+    output.push_str(" \x1b[K\x1b[0m\n");
 
     for (i, line) in text.lines().enumerate() {
         let prefix = if i == 0 { arrow } else { continuation };
@@ -174,6 +183,10 @@ fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String
             output.push_str("\x1b[K\x1b[0m\n");
         }
     }
+
+    // Padding row below the prompt block.
+    output.push_str(BG_GREY_ANSI);
+    output.push_str(" \x1b[K\x1b[0m\n");
 
     output
 }

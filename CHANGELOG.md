@@ -12,6 +12,9 @@
 - Session IDs now use UUIDv7 format for time-sortable uniqueness instead of
   timestamp-based format
 
+- CLI: User prompts now render with vertical padding (grey background rows above
+  and below) for better visual separation from model responses
+
 ## [0.4.0] - 2026-01-20
 
 ### Added
