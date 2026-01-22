@@ -14,17 +14,19 @@ use super::markdown::{align_markdown_tables, render_markdown_line};
 use crate::syntax;
 
 // Shared color constants for consistent styling
-pub(super) const BG_GREY: Color = Color::TrueColor {
-    r: 48,
-    g: 48,
-    b: 48,
-};
+
+// ANSI background for user prompt lines (dark grey) using truecolor.
+//
+// We use this to fill the remainder of a prompt line using `\x1b[K`
+// (erase-to-end-of-line) without printing trailing spaces. This avoids terminals
+// auto-wrapping when the last column is filled.
+pub(super) const BG_GREY_ANSI: &str = "\x1b[48;2;48;48;48m";
 pub(super) const BG_DARK_GREEN: Color = Color::TrueColor { r: 0, g: 20, b: 0 };
 pub(super) const BG_DARK_RED: Color = Color::TrueColor { r: 20, g: 0, b: 0 };
 
 /// Render a single history event to styled text.
 ///
-/// Uses spaced layout: no tags, one empty line between blocks.
+/// This renderer intentionally avoids inserting blank lines between events.
 pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
     match event {
         HistoryEvent::UserPrompt { text, images } => render_user_prompt(text, images, width),
@@ -34,10 +36,9 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
         HistoryEvent::Thinking { text, is_streaming } => {
             render_thinking(text, *is_streaming, width)
         }
-        // Spaced mode: no output for block boundaries
+        // No output for block boundaries.
         HistoryEvent::ThinkingEnd | HistoryEvent::ResponseEnd => String::new(),
-        // Spaced mode: blank line around tool blocks
-        HistoryEvent::ToolStart | HistoryEvent::ToolEnd => "\n".to_string(),
+        HistoryEvent::ToolStart | HistoryEvent::ToolEnd => String::new(),
         HistoryEvent::ToolUse { description } => render_tool_use(description),
         HistoryEvent::ToolResult { is_error, output } => render_tool_result(*is_error, output),
         HistoryEvent::Error(msg) => render_error(msg),
@@ -46,6 +47,42 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
         HistoryEvent::FileDiff { diff, language } => render_file_diff(diff, language.as_deref()),
         HistoryEvent::TodoList { items } => render_todo_list(items),
         HistoryEvent::AutoCompact { message } => render_auto_compact(message),
+    }
+}
+
+/// Determine if a blank line should be inserted before this event based on the previous event.
+///
+/// This mirrors the spacing logic in `listener.rs` for streaming output.
+fn needs_blank_line_before(prev: Option<&HistoryEvent>, current: &HistoryEvent) -> bool {
+    let Some(prev) = prev else {
+        return false;
+    };
+
+    match (prev, current) {
+        // UserPrompt -> Thinking: blank line
+        (HistoryEvent::UserPrompt { .. }, HistoryEvent::Thinking { .. }) => true,
+        // UserPrompt -> Text: blank line (prompt ends with newline in render)
+        (HistoryEvent::UserPrompt { .. }, HistoryEvent::AssistantText { .. }) => true,
+        // Thinking -> Text: blank line
+        (HistoryEvent::Thinking { .. }, HistoryEvent::AssistantText { .. }) => true,
+        (HistoryEvent::ThinkingEnd, HistoryEvent::AssistantText { .. }) => true,
+        // Tool -> Text: blank line
+        (HistoryEvent::ToolResult { .. }, HistoryEvent::AssistantText { .. }) => true,
+        (HistoryEvent::ToolEnd, HistoryEvent::AssistantText { .. }) => true,
+        // Tool -> Thinking: blank line
+        (HistoryEvent::ToolResult { .. }, HistoryEvent::Thinking { .. }) => true,
+        (HistoryEvent::ToolEnd, HistoryEvent::Thinking { .. }) => true,
+        // Thinking/Text -> ToolStart: blank line
+        (HistoryEvent::Thinking { .. }, HistoryEvent::ToolStart) => true,
+        (HistoryEvent::ThinkingEnd, HistoryEvent::ToolStart) => true,
+        (HistoryEvent::AssistantText { .. }, HistoryEvent::ToolStart) => true,
+        (HistoryEvent::ResponseEnd, HistoryEvent::ToolStart) => true,
+        // ResponseEnd -> Text/Thinking: blank line (for session replay across message boundaries)
+        (HistoryEvent::ResponseEnd, HistoryEvent::AssistantText { .. }) => true,
+        (HistoryEvent::ResponseEnd, HistoryEvent::Thinking { .. }) => true,
+        // ResponseEnd -> UserPrompt: blank line (new turn from user)
+        (HistoryEvent::ResponseEnd, HistoryEvent::UserPrompt { .. }) => true,
+        _ => false,
     }
 }
 
@@ -59,29 +96,23 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
         } else {
             None
         };
+
+        // Insert blank line between blocks where appropriate
+        if needs_blank_line_before(prev, event) {
+            output.push('\n');
+        }
+
         let next = events.get(idx + 1);
 
         let rendered = match event {
-            HistoryEvent::ThinkingEnd => {
-                if matches!(next, Some(HistoryEvent::AssistantText { .. })) {
-                    "\n".to_string()
-                } else {
-                    String::new()
+            HistoryEvent::ToolUse { description } => {
+                let mut s = render_tool_use(description);
+                // If next event is not a ToolResult, add newline to terminate the line.
+                // This handles batched tool calls where results come later.
+                if !matches!(next, Some(HistoryEvent::ToolResult { .. })) {
+                    s.push('\n');
                 }
-            }
-            HistoryEvent::ToolStart => {
-                if matches!(prev, Some(HistoryEvent::ToolEnd)) {
-                    String::new()
-                } else {
-                    "\n".to_string()
-                }
-            }
-            HistoryEvent::ToolEnd => {
-                if matches!(next, Some(HistoryEvent::ToolStart)) {
-                    String::new()
-                } else {
-                    "\n".to_string()
-                }
+                s
             }
             HistoryEvent::ToolResult { is_error, output } => {
                 // If the previous event was a FileDiff, it already displayed a checkmark,
@@ -89,13 +120,20 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
                 if !*is_error && matches!(prev, Some(HistoryEvent::FileDiff { .. })) {
                     String::new()
                 } else {
-                    render_tool_result(*is_error, output)
+                    // Only add leading space if previous was ToolUse (inline display).
+                    let inline = matches!(prev, Some(HistoryEvent::ToolUse { .. }));
+                    render_tool_result_with_context(*is_error, output, inline)
                 }
             }
             _ => render_event(event, width),
         };
 
         output.push_str(&rendered);
+    }
+
+    // Avoid leaving the output cursor on an empty trailing line above the prompt/status line.
+    while output.ends_with(['\n', '\r']) {
+        output.pop();
     }
 
     output
@@ -108,7 +146,11 @@ fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String
     let arrow = if text.starts_with('!') { "! " } else { "> " };
     let text = text.strip_prefix('!').unwrap_or(text);
     let continuation = "  ";
-    let content_width = width.saturating_sub(2); // arrow/continuation is 2 chars
+
+    // Use a slightly reduced width to avoid terminals auto-wrapping when the last column
+    // is filled. We still paint the rest of the line using `\x1b[K`.
+    let safe_width = width.saturating_sub(1).max(1);
+    let content_width = safe_width.saturating_sub(2); // arrow/continuation is 2 chars
 
     let mut output = String::new();
 
@@ -117,21 +159,19 @@ fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String
         let wrapped = wrap_text(line, content_width);
         for (j, wrapped_line) in wrapped.iter().enumerate() {
             let p = if j == 0 { prefix } else { continuation };
-            // Calculate display width of the line content
-            let line_display_width = display_width(p) + display_width(wrapped_line);
-            let padding_needed = width.saturating_sub(line_display_width);
 
-            // Colorize image markers in the line
+            // Colorize image markers in the line.
             let styled_line = colorize_image_markers(wrapped_line);
 
-            // Build the full line with padding, then apply background color
-            let mut line_content = String::new();
-            line_content.push_str(p);
-            line_content.push_str(&styled_line);
-            for _ in 0..padding_needed {
-                line_content.push(' ');
-            }
-            output.push_str(&format!("{}\n", line_content.on_color(BG_GREY)));
+            // Full-width grey background without printing trailing spaces.
+            //
+            // Important: `colorize_image_markers()` may emit ANSI reset codes; re-assert
+            // the prompt background before `\x1b[K` so the erase uses the grey background.
+            output.push_str(BG_GREY_ANSI);
+            output.push_str(p);
+            output.push_str(&styled_line);
+            output.push_str(BG_GREY_ANSI);
+            output.push_str("\x1b[K\x1b[0m\n");
         }
     }
 
@@ -352,6 +392,20 @@ fn render_tool_result(is_error: bool, _output: &str) -> String {
         format!(" {}\n", "✗".red())
     } else {
         format!(" {}\n", "✓".green())
+    }
+}
+
+/// Render tool result with context about whether it follows a ToolUse inline.
+fn render_tool_result_with_context(is_error: bool, _output: &str, inline: bool) -> String {
+    let symbol = if is_error {
+        "✗".red().to_string()
+    } else {
+        "✓".green().to_string()
+    };
+    if inline {
+        format!(" {}\n", symbol)
+    } else {
+        format!("{}\n", symbol)
     }
 }
 

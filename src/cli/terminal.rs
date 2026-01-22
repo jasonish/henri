@@ -17,6 +17,8 @@ use crossterm::terminal::{self, Clear, ClearType, ScrollDown, ScrollUp};
 /// Global state: whether prompt box is visible and where it is
 static PROMPT_STATE: Mutex<PromptState> = Mutex::new(PromptState::new());
 
+const STREAMING_STATUS_LINE_ROWS: u16 = 2;
+
 struct PromptState {
     visible: bool,
     height: u16,
@@ -25,7 +27,7 @@ struct PromptState {
     status_row_offset: u16,
     /// Cursor position relative to prompt (row_offset, col)
     cursor_pos: Option<(u16, u16)>,
-    /// Whether the streaming status line (above prompt) is active/reserved
+    /// Whether the streaming status line area (above prompt) is active/reserved
     status_line_active: bool,
     /// Whether bandwidth stats are currently allowed to render
     bandwidth_allowed: bool,
@@ -61,24 +63,22 @@ impl PromptState {
 
 struct OutputCursor {
     col: u16,
+    /// Number of consecutive trailing `\n` characters in the *visible* output stream.
+    ///
+    /// This ignores ANSI escape sequences, and is used for spacing decisions (e.g., ensuring a
+    /// single blank row between logical blocks without adding extra blank lines).
+    trailing_newlines: u8,
     /// Whether we've ever printed output above the prompt.
     /// Used to scroll the terminal on first output to avoid overwriting previous content.
     has_output: bool,
-    /// Number of trailing newlines emitted by output functions.
-    ///
-    /// This lets the CLI renderer normalize spacing between blocks:
-    /// - If previous output ended without a newline, next block can force `\n\n`.
-    /// - If previous output ended with `\n\n`, nothing to do.
-    /// - If more than 2 newlines were emitted, trim to 2.
-    trailing_newlines: u8,
 }
 
 impl OutputCursor {
     const fn new() -> Self {
         Self {
             col: 0,
-            has_output: false,
             trailing_newlines: 0,
+            has_output: false,
         }
     }
 }
@@ -115,19 +115,74 @@ pub(crate) fn is_output_buffering() -> bool {
 fn reset_output_cursor() {
     if let Ok(mut state) = OUTPUT_CURSOR.lock() {
         state.col = 0;
-        state.has_output = false;
         state.trailing_newlines = 0;
+        state.has_output = false;
     }
 }
 
-fn set_output_cursor(col: u16) {
+fn set_output_cursor(col: u16, trailing_newlines: u8) {
     if let Ok(mut state) = OUTPUT_CURSOR.lock() {
         state.col = col;
+        state.trailing_newlines = trailing_newlines;
+        state.has_output = true;
     }
 }
 
 pub(crate) fn output_cursor_col() -> u16 {
     OUTPUT_CURSOR.lock().map(|state| state.col).unwrap_or(0)
+}
+
+pub(crate) fn output_trailing_newlines() -> u8 {
+    OUTPUT_CURSOR
+        .lock()
+        .map(|state| state.trailing_newlines)
+        .unwrap_or(0)
+}
+
+pub(crate) fn output_has_output() -> bool {
+    OUTPUT_CURSOR
+        .lock()
+        .map(|state| state.has_output)
+        .unwrap_or(false)
+}
+
+fn trailing_newlines_with_implicit_wrap(col: u16, trailing_newlines: u8, has_output: bool) -> u8 {
+    if trailing_newlines == 0 && col == 0 && has_output {
+        // If the cursor is already at the start of a line but the last chunk did not end with an
+        // explicit newline, we may have landed here due to terminal auto-wrapping (exact-width
+        // output). Treat that as an implicit line break so we don't add an extra blank line.
+        1
+    } else {
+        trailing_newlines
+    }
+}
+
+fn newlines_needed(min: u8, col: u16, trailing_newlines: u8, has_output: bool) -> u8 {
+    let current = trailing_newlines_with_implicit_wrap(col, trailing_newlines, has_output);
+    min.saturating_sub(current)
+}
+
+/// Ensure output ends with at least `min` trailing newlines.
+///
+/// This is used to insert spacing *reactively* when starting a new logical block.
+pub(crate) fn ensure_trailing_newlines(min: u8) {
+    let _guard = lock_output();
+
+    let needed = newlines_needed(
+        min,
+        output_cursor_col(),
+        output_trailing_newlines(),
+        output_has_output(),
+    );
+    match needed {
+        0 => {}
+        1 => print_above_locked("\n"),
+        2 => print_above_locked("\n\n"),
+        _ => {
+            let s = "\n".repeat(needed as usize);
+            print_above_locked(&s);
+        }
+    }
 }
 
 /// Notify the terminal manager that the prompt box is now visible.
@@ -183,7 +238,15 @@ pub(super) fn set_prompt_hidden() {
     reset_output_cursor();
 }
 
-/// Set whether the status line (row above prompt) is active/reserved.
+/// Set whether the streaming status line area (above prompt) is active/reserved.
+///
+/// This area is drawn on the rows immediately above the prompt:
+/// - (top) a blank spacer row
+/// - (bottom) the actual status line
+///
+/// If enabling the status line while the prompt is visible, we try to make room
+/// for it without overwriting existing output by shifting the prompt down when
+/// possible.
 pub(super) fn set_streaming_status_line_active(active: bool) {
     let _guard = lock_output();
 
@@ -198,37 +261,42 @@ pub(super) fn set_streaming_status_line_active(active: bool) {
         )
     };
 
-    if active && !was_active && visible && start_row > 0 {
+    if active && !was_active && visible {
+        let reserve_rows = STREAMING_STATUS_LINE_ROWS;
+
         let mut stdout = io::stdout();
         let _ = execute!(stdout, crossterm::cursor::SavePosition, Hide);
 
         let term_height = term_height();
 
-        // Prefer to shift the prompt DOWN by two lines (if there is room) to make space
-        // for the status line and a blank spacer row above it. This avoids wiping out
-        // existing terminal output when the prompt is near the top.
-        // Layout: <output> / <blank spacer> / <status line> / <prompt>
-        let can_shift_down = start_row.saturating_add(height).saturating_add(1) < term_height;
+        // Prefer to shift the prompt DOWN by `reserve_rows` lines (if there is room) to make space
+        // for the status lines. This avoids wiping out existing terminal output when the
+        // prompt is near the top.
+        // Layout: <output> / <spacer> / <status line> / <prompt>
+        let can_shift_down = start_row
+            .saturating_add(height)
+            .saturating_add(reserve_rows)
+            <= term_height;
         if can_shift_down {
             let _ = execute!(stdout, MoveTo(0, start_row));
-            // Insert two blank lines at the prompt start, pushing the prompt down.
-            print!("\x1b[2L");
+            // Insert blank lines at the prompt start, pushing the prompt down.
+            print!("\x1b[{}L", reserve_rows);
             let _ = stdout.flush();
 
             if let Ok(mut state) = PROMPT_STATE.lock() {
-                state.start_row = state.start_row.saturating_add(2);
+                state.start_row = state.start_row.saturating_add(reserve_rows);
             }
-        } else {
-            // Fallback: scroll the output area up by two lines to clear the status + spacer rows.
+        } else if start_row > 0 {
+            // Fallback: scroll the output area up to clear the status line rows.
             // This is used when the prompt is already at the bottom and cannot move down.
             print!("\x1b[{};{}r", 1, start_row);
             let _ = execute!(stdout, MoveTo(0, start_row.saturating_sub(1)));
-            let _ = execute!(stdout, ScrollUp(2));
+            let _ = execute!(stdout, ScrollUp(reserve_rows));
             print!("\x1b[r");
             let _ = stdout.flush();
         }
 
-        // Restore cursor to prompt
+        // Restore cursor to prompt.
         let new_start_row = PROMPT_STATE
             .lock()
             .map(|s| s.start_row)
@@ -245,11 +313,17 @@ pub(super) fn set_streaming_status_line_active(active: bool) {
     }
 }
 
-pub(super) fn is_streaming_status_line_active() -> bool {
+pub(super) fn streaming_status_line_reserved_rows() -> u16 {
     PROMPT_STATE
         .lock()
-        .map(|s| s.status_line_active)
-        .unwrap_or(false)
+        .map(|s| {
+            if s.status_line_active {
+                STREAMING_STATUS_LINE_ROWS
+            } else {
+                0
+            }
+        })
+        .unwrap_or(0)
 }
 
 /// Ensure the cursor is on a fresh line before drawing the initial prompt.
@@ -280,11 +354,20 @@ pub(crate) fn write_status_line(text: &str) {
     let _guard = lock_output();
     let state = PROMPT_STATE.lock().unwrap();
 
-    if !state.visible || !state.status_line_active || state.start_row == 0 {
+    let reserved_rows = if state.status_line_active {
+        STREAMING_STATUS_LINE_ROWS
+    } else {
+        0
+    };
+
+    if !state.visible || reserved_rows == 0 || state.start_row < reserved_rows {
         return;
     }
 
-    let row = state.start_row - 1;
+    // Layout: <output> / <spacer> / <status line> / <prompt>
+    let spacer_row = state.start_row - 2;
+    let status_row = state.start_row - 1;
+
     let cursor_info = state
         .cursor_pos
         .map(|(off, col)| (state.start_row + off, col));
@@ -299,13 +382,10 @@ pub(crate) fn write_status_line(text: &str) {
 
         queue!(stdout, Hide)?;
 
-        // Always clear the spacer row above the status line. Resize redraws intentionally
-        // leave this row untouched, so stale content can otherwise remain visible.
-        if row > 0 {
-            queue!(stdout, MoveTo(0, row - 1), Clear(ClearType::CurrentLine))?;
-        }
+        // Keep the spacer row truly blank.
+        queue!(stdout, MoveTo(0, spacer_row), Clear(ClearType::CurrentLine))?;
 
-        queue!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
+        queue!(stdout, MoveTo(0, status_row), Clear(ClearType::CurrentLine))?;
         write!(stdout, "{}", text)?;
 
         // Restore cursor
@@ -475,62 +555,55 @@ fn calculate_output_size(mut col: u16, text: &str, width: u16) -> (u16, u16) {
     (lines, col)
 }
 
-fn count_trailing_newlines(text: &str) -> u8 {
-    let mut count = 0u8;
-    for ch in text.chars().rev() {
-        match ch {
-            '\n' => {
-                count = count.saturating_add(1);
-            }
-            '\r' => {
-                // ignore \r in CRLF; keep scanning
-            }
-            _ => break,
-        }
-    }
-    count
-}
-
-fn clamp_trailing_newlines() {
-    if let Ok(mut state) = OUTPUT_CURSOR.lock() {
-        state.trailing_newlines = state.trailing_newlines.min(2);
-    }
-}
-
-/// Ensure there are at least `min_trailing` newlines separating output blocks.
+/// Ensure output is terminated by a line break.
 ///
-/// This is a best-effort normalization based on tracking what this process has
-/// printed; it cannot remove extra newlines that were already emitted.
-///
-/// - If the previous output ended with fewer than `min_trailing` trailing
-///   newlines, prints the difference.
-/// - If it ended with `min_trailing` or more trailing newlines, does nothing.
-///
-/// Note: the output cursor only tracks up to 2 trailing newlines.
-pub(crate) fn normalize_block_spacing_min(min_trailing: u8) {
+/// This intentionally does *not* add extra blank lines; it only inserts a `\n`
+/// if the output cursor is currently mid-line.
+pub(crate) fn ensure_line_break() {
     let _guard = lock_output();
 
-    let min_trailing = min_trailing.clamp(0, 2);
-
-    let trailing = OUTPUT_CURSOR
-        .lock()
-        .map(|s| s.trailing_newlines)
-        .unwrap_or(0);
-
-    match (trailing, min_trailing) {
-        (_, 0) => {}
-        (0, 1) => print_above_locked("\n"),
-        (0, 2) => print_above_locked("\n\n"),
-        (1, 2) => print_above_locked("\n"),
-        _ => {}
+    if output_cursor_col() != 0 {
+        print_above_locked("\n");
     }
-
-    clamp_trailing_newlines();
 }
 
-/// Ensure there are at least two newlines separating output blocks.
-pub(crate) fn normalize_block_spacing() {
-    normalize_block_spacing_min(2);
+fn visible_trailing_newlines(text: &str) -> Option<u8> {
+    let mut chars = text.chars().peekable();
+    let mut saw_visible = false;
+    let mut trailing: u8 = 0;
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if matches!(chars.peek(), Some('[')) {
+                chars.next();
+                for code in chars.by_ref() {
+                    if ('@'..='~').contains(&code) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        saw_visible = true;
+        if ch == '\n' {
+            trailing = trailing.saturating_add(1);
+        } else {
+            trailing = 0;
+        }
+    }
+
+    if saw_visible { Some(trailing) } else { None }
+}
+
+fn update_output_trailing_newlines(text: &str) {
+    let Some(trailing) = visible_trailing_newlines(text) else {
+        return;
+    };
+
+    if let Ok(mut state) = OUTPUT_CURSOR.lock() {
+        state.trailing_newlines = trailing;
+    }
 }
 
 fn shift_prompt_down(lines: u16) {
@@ -551,9 +624,12 @@ fn shift_prompt_down(lines: u16) {
     };
 
     let term_height = term_height();
-    // If status active, reserve a spacer row above it so output stays
-    // one line away from the status line.
-    let reserved_rows = if status_active { 2u16 } else { 0u16 };
+    // If status active, reserve the status line rows above the prompt.
+    let reserved_rows = if status_active {
+        STREAMING_STATUS_LINE_ROWS
+    } else {
+        0u16
+    };
     let effective_start_row = start_row.saturating_sub(reserved_rows);
     let effective_height = height.saturating_add(reserved_rows);
 
@@ -630,20 +706,9 @@ fn print_above_locked(text: &str) {
         return;
     }
 
-    // Track trailing newlines so callers can normalize spacing between blocks.
-    if let Ok(mut state) = OUTPUT_CURSOR.lock() {
-        let trailing = count_trailing_newlines(text);
-        state.trailing_newlines = if trailing == 0 {
-            0
-        } else {
-            state.trailing_newlines.saturating_add(trailing)
-        };
-    }
-
     if !is_prompt_visible() {
         print!("{}", text);
         let _ = stdout.flush();
-        clamp_trailing_newlines();
         return;
     }
 
@@ -672,23 +737,22 @@ fn print_above_locked(text: &str) {
             (state.start_row, state.height, state.status_line_active)
         };
 
-        // The row just above the prompt (accounting for streaming status line + spacer above)
-        let insert_row = if status_active {
-            start_row.saturating_sub(2)
+        // The row just above the prompt (accounting for streaming status line rows)
+        let reserved_rows = if status_active {
+            STREAMING_STATUS_LINE_ROWS
         } else {
-            start_row
+            0u16
         };
+
+        let insert_row = start_row.saturating_sub(reserved_rows);
 
         // Calculate how many lines we want to insert
         let desired_insert_lines = lines_needed.saturating_add(1);
 
-        // Calculate effective height (prompt height + status line + spacer if active)
-        let effective_height = if status_active { height + 2 } else { height };
-
         // Calculate maximum lines we can insert without pushing prompt off-screen
         // The prompt can move down until start_row + height == term_height
         let term_height = term_height();
-        let max_insert = term_height.saturating_sub(start_row + effective_height);
+        let max_insert = term_height.saturating_sub(start_row.saturating_add(height));
 
         // Use the smaller of desired and maximum
         let insert_lines = desired_insert_lines.min(max_insert);
@@ -733,7 +797,7 @@ fn print_above_locked(text: &str) {
                 if let Ok(mut state) = OUTPUT_CURSOR.lock() {
                     state.col = new_col;
                 }
-                clamp_trailing_newlines();
+                update_output_trailing_newlines(text);
                 return;
             }
         } else {
@@ -770,7 +834,7 @@ fn print_above_locked(text: &str) {
             if let Ok(mut state) = OUTPUT_CURSOR.lock() {
                 state.col = new_col;
             }
-            clamp_trailing_newlines();
+            update_output_trailing_newlines(text);
             return;
         }
     }
@@ -794,30 +858,29 @@ fn print_above_locked(text: &str) {
         if let Ok(mut state) = OUTPUT_CURSOR.lock() {
             state.col = new_col;
         }
-        clamp_trailing_newlines();
+        update_output_trailing_newlines(text);
         return;
     }
+
+    let reserved_rows = if status_active {
+        STREAMING_STATUS_LINE_ROWS
+    } else {
+        0u16
+    };
 
     // Continue printing where we left off
     let output_row = old_start_row
         .saturating_sub(1)
-        .saturating_sub(if status_active { 2 } else { 0 });
+        .saturating_sub(reserved_rows);
 
-    let scroll_region_bottom = start_row.saturating_sub(if status_active { 2 } else { 0 });
-
-    // If scrolling region is invalid (e.g. at top of screen), fallback to normal print
-    if scroll_region_bottom < 1 {
-        print!("{}", text);
-        let _ = stdout.flush();
-        if let Ok(mut state) = OUTPUT_CURSOR.lock() {
-            state.col = new_col;
-        }
-        clamp_trailing_newlines();
-        return;
-    }
+    // Reserve the streaming status line rows (immediately above the prompt) when active.
+    //
+    // `start_row` is 0-indexed, but the terminal scroll-region escape uses 1-indexed rows.
+    let scroll_region_bottom_row = start_row.saturating_sub(reserved_rows.saturating_add(1));
+    let scroll_region_bottom_line = scroll_region_bottom_row.saturating_add(1);
 
     let _ = execute!(stdout, crossterm::cursor::SavePosition, Hide);
-    print!("\x1b[{};{}r", 1, scroll_region_bottom);
+    print!("\x1b[{};{}r", 1, scroll_region_bottom_line);
     let _ = execute!(stdout, MoveTo(output_col, output_row));
     print!("{}", text);
     let _ = stdout.flush();
@@ -841,8 +904,7 @@ fn print_above_locked(text: &str) {
     if let Ok(mut state) = OUTPUT_CURSOR.lock() {
         state.col = new_col;
     }
-
-    clamp_trailing_newlines();
+    update_output_trailing_newlines(text);
 }
 
 /// Get terminal height.
@@ -944,12 +1006,16 @@ fn redraw_from_history_with_size_inner(
     let mut stdout = io::stdout();
 
     // Calculate where output should start so it ends just above the prompt.
-    // Reserve space for: (if status active) blank spacer + status line + prompt gap, else just a prompt gap.
+    // Reserve space for the streaming status line row when it is active.
     let status_active = PROMPT_STATE
         .lock()
         .map(|s| s.status_line_active)
         .unwrap_or(false);
-    let reserved_above_prompt = if status_active { 2 } else { 1 };
+    let reserved_above_prompt = if status_active {
+        STREAMING_STATUS_LINE_ROWS
+    } else {
+        0
+    };
     let available_height = term_height
         .saturating_sub(prompt_height)
         .saturating_sub(reserved_above_prompt);
@@ -1007,7 +1073,8 @@ fn redraw_from_history_with_size_inner(
     }
 
     // Reset output cursor state
-    set_output_cursor(final_col);
+    let trailing = visible_trailing_newlines(&normalized).unwrap_or(0);
+    set_output_cursor(final_col, trailing);
 }
 
 /// Redraw all output from history after terminal resize.
@@ -1036,4 +1103,39 @@ pub(crate) fn redraw_from_history_with_size_locked(
 /// Uses current terminal dimensions (queries the terminal).
 pub(crate) fn redraw_from_history(prompt_height: u16) {
     redraw_from_history_with_size(prompt_height, None, None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::newlines_needed;
+
+    #[test]
+    fn ensure_trailing_newlines_counts_implicit_wrap() {
+        // Cursor at col 0 without explicit newline (implicit wrap) should behave as if we already
+        // have 1 trailing newline, so requesting 2 only prints 1.
+        assert_eq!(newlines_needed(2, 0, 0, true), 1);
+    }
+
+    #[test]
+    fn ensure_trailing_newlines_mid_line_needs_two() {
+        assert_eq!(newlines_needed(2, 5, 0, true), 2);
+    }
+
+    #[test]
+    fn ensure_trailing_newlines_one_newline_needs_one() {
+        assert_eq!(newlines_needed(2, 0, 1, true), 1);
+        assert_eq!(newlines_needed(2, 10, 1, true), 1);
+    }
+
+    #[test]
+    fn ensure_trailing_newlines_already_blank_needs_none() {
+        assert_eq!(newlines_needed(2, 0, 2, true), 0);
+        assert_eq!(newlines_needed(2, 10, 3, true), 0);
+    }
+
+    #[test]
+    fn ensure_trailing_newlines_no_output_does_not_assume_wrap() {
+        // Startup: col 0, no output yet should not be treated as an implicit newline.
+        assert_eq!(newlines_needed(2, 0, 0, false), 2);
+    }
 }

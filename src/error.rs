@@ -3,14 +3,14 @@
 
 use thiserror::Error;
 
+/// Helper module for error handling utilities and formatting.
 /// Extract a concise error message from common API error JSON formats.
 /// Handles Google, Anthropic, OpenAI, and similar API error structures.
+/// Returns the most specific error message available.
 fn extract_error_message(json: &serde_json::Value) -> Option<String> {
     // Common patterns:
     // Google: {"error": {"message": "...", "status": "...", "reason": "..."}}
     // Anthropic: {"error": {"type": "...", "message": "..."}}
-    // OpenAI: {"error": {"message": "...", "type": "..."}}
-    // Simple: {"message": "..."} or {"error": "..."}
 
     // Try nested error object first
     if let Some(error_obj) = json.get("error") {

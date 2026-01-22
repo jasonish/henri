@@ -457,6 +457,8 @@ async fn run_event_loop(
             terminal::println_above(&msg);
         }
 
+        // Don't reserve the streaming status line area until we actually start streaming.
+        // This avoids showing a blank status area on startup.
         prompt_box.draw(&input_state, true)?;
 
         // If we started with a restored session, replay it into the output history now that
@@ -470,7 +472,7 @@ async fn run_event_loop(
             prompt_box.draw(&input_state, false)?;
         }
 
-        // Start spinner/bandwidth updates; status line row is activated lazily when needed.
+        // Start spinner/bandwidth updates.
         listener::reload_show_network_stats();
         listener::init_spinner();
     }
@@ -2112,15 +2114,43 @@ fn spawn_chat_task(
 
     // Show the submitted input above the prompt with grey background
     // The prompt text contains inline image markers like Image#1, Image#2, etc.
+    //
+    // Ensure we have a blank line before the user prompt if there was previous output.
+    // This keeps the conversation visually separated between turns.
+    //
+    // Note: `PromptBox::hide()` resets the output cursor state, so we can't rely solely on
+    // `terminal::output_has_output()` to know whether there's previous on-screen content.
+    if history::has_events() {
+        if terminal::output_has_output() {
+            terminal::ensure_trailing_newlines(2);
+        } else {
+            // First output after a prompt hide/show. A single newline here creates exactly one
+            // blank row before the prompt line when the prompt is printed next.
+            terminal::print_above("\n");
+        }
+    } else {
+        terminal::ensure_line_break();
+    }
+
     let display_prompt = prompt.strip_prefix('!').unwrap_or(&prompt);
+
+    // Use a slightly reduced width to avoid terminals auto-wrapping when the last column
+    // is filled. We'll still paint the remainder of the line using `\x1b[K`.
     let term_width = terminal::term_width() as usize;
+    let safe_width = term_width.saturating_sub(1).max(1);
     let prompt_prefix = if prompt.trim_start().starts_with('!') {
         input::SHELL_PROMPT
     } else {
         input::PROMPT
     };
-    let content_width = term_width.saturating_sub(2); // prefix is 2 chars
+    let content_width = safe_width.saturating_sub(2); // prefix is 2 chars
     let mut is_first_row = true;
+
+    // Build all prompt lines first so we can avoid printing a trailing newline on the
+    // final line. Leaving the cursor mid-line prevents a visible blank row above the
+    // streaming status line while we're waiting for the model.
+    let mut prompt_lines: Vec<String> = Vec::new();
+
     for (i, line) in display_prompt.lines().enumerate() {
         // Wrap each logical line to fit terminal width
         let wrapped = render::wrap_text(line, content_width);
@@ -2137,15 +2167,33 @@ fn spawn_chat_task(
             };
             // Colorize image markers
             let styled_line = render::colorize_image_markers(wrapped_line);
-            // Calculate display width and pad to terminal width
-            let line_display_width =
-                render::display_width(prefix) + render::display_width(wrapped_line);
-            let padding = term_width.saturating_sub(line_display_width);
-            let padding_str = " ".repeat(padding);
-            let full_line = format!("{}{}{}", prefix, styled_line, padding_str);
-            terminal::println_above(&full_line.on_color(render::BG_GREY).to_string());
+
+            // Full-width grey background without printing trailing spaces.
+            //
+            // Important: `colorize_image_markers()` may emit ANSI reset codes; re-assert
+            // the prompt background before `\x1b[K` so the erase uses the grey background.
+            let line = format!(
+                "{}{}{}{}\x1b[K\x1b[0m",
+                render::BG_GREY_ANSI,
+                prefix,
+                styled_line,
+                render::BG_GREY_ANSI,
+            );
+            prompt_lines.push(line);
         }
     }
+
+    for (idx, line) in prompt_lines.iter().enumerate() {
+        if idx + 1 < prompt_lines.len() {
+            terminal::print_above(&format!("{}\n", line));
+        } else {
+            terminal::print_above(line);
+        }
+    }
+
+    // Tell the CLI listener that the most recent output is now the user prompt.
+    // This keeps spacing decisions between streaming blocks correct.
+    listener::CliListener::note_user_prompt_printed();
 
     // Add to history for resize redraw
     let image_metas: Vec<history::ImageMeta> = pasted_images
@@ -2732,11 +2780,9 @@ async fn handle_command(
                 Ok(json) => {
                     let pretty =
                         serde_json::to_string_pretty(&json).unwrap_or_else(|_| json.to_string());
-                    terminal::println_above("");
                     for line in pretty.lines() {
                         terminal::println_above(line);
                     }
-                    terminal::println_above("");
                 }
                 Err(e) => {
                     terminal::println_above(&format!("Error: {}", e).red().to_string());
@@ -2757,11 +2803,9 @@ async fn handle_command(
                     Ok(json) => {
                         let pretty = serde_json::to_string_pretty(&json)
                             .unwrap_or_else(|_| json.to_string());
-                        terminal::println_above("");
                         for line in pretty.lines() {
                             terminal::println_above(line);
                         }
-                        terminal::println_above("");
                     }
                     Err(e) => {
                         terminal::println_above(&format!("Error: {}", e).red().to_string());
@@ -2858,9 +2902,7 @@ async fn handle_command(
 fn show_help(_custom_commands: &[CustomCommand]) {
     let has_claude_oauth = crate::commands::has_claude_oauth_provider();
 
-    terminal::println_above("");
     terminal::println_above(&"Available commands:".cyan().bold().to_string());
-    terminal::println_above("");
 
     for cmd in crate::commands::COMMANDS {
         // Skip Claude OAuth commands if not configured
@@ -2873,7 +2915,6 @@ fn show_help(_custom_commands: &[CustomCommand]) {
         terminal::println_above(&format!("  {} {}", cmd_name.green(), cmd.description));
     }
 
-    terminal::println_above("");
     terminal::println_above(&"Shell commands:".cyan().bold().to_string());
     let shell_cmd = format!("{:<21}", "!<cmd>");
     terminal::println_above(&format!(
@@ -2881,7 +2922,6 @@ fn show_help(_custom_commands: &[CustomCommand]) {
         shell_cmd.green()
     ));
 
-    terminal::println_above("");
     terminal::println_above(&"Keyboard shortcuts:".cyan().bold().to_string());
     let shortcut = format!("{:<21}", "Ctrl+M");
     terminal::println_above(&format!("  {} Switch model", shortcut.yellow()));
@@ -2914,7 +2954,6 @@ fn show_help(_custom_commands: &[CustomCommand]) {
         "  {} Edit prompt in $VISUAL/$EDITOR",
         shortcut.yellow()
     ));
-    terminal::println_above("");
 }
 
 #[cfg(test)]

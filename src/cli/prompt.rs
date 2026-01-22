@@ -1229,8 +1229,9 @@ impl PromptBox {
             // Space for output above will be reserved on first output.
             // If the status line is active, reserve the current row for it and
             // start the prompt one row below.
-            if cli_terminal::is_streaming_status_line_active() {
-                cursor_row.saturating_add(1)
+            let reserve_rows = cli_terminal::streaming_status_line_reserved_rows();
+            if reserve_rows > 0 {
+                cursor_row.saturating_add(reserve_rows)
             } else {
                 cursor_row
             }

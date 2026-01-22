@@ -596,8 +596,6 @@ struct WordWrapper {
     maybe_table_row: bool,
     /// Whether the current line might be a markdown heading
     maybe_heading: bool,
-    /// Count of consecutive blank lines seen (for normalization)
-    consecutive_blank_lines: usize,
 }
 
 impl WordWrapper {
@@ -619,7 +617,6 @@ impl WordWrapper {
             table_width: 0,
             maybe_table_row: false,
             maybe_heading: false,
-            consecutive_blank_lines: 0,
         }
     }
 
@@ -638,7 +635,6 @@ impl WordWrapper {
         self.in_table = false;
         self.maybe_table_row = false;
         self.maybe_heading = false;
-        self.consecutive_blank_lines = 0;
     }
 
     fn needs_line_break(&self) -> bool {
@@ -717,8 +713,7 @@ impl WordWrapper {
         self.word_buffer.clear();
     }
 
-    /// Flush the table buffer, formatting and outputting the table
-    fn flush_table(&mut self) {
+    fn flush_table_inner(&mut self, trailing_newline: bool) {
         if self.table_buffer.is_empty() {
             return;
         }
@@ -729,14 +724,31 @@ impl WordWrapper {
         let table_text = self.table_buffer.join("\n");
         let aligned = align_markdown_tables(&table_text, Some(self.table_width));
 
-        // Output each line
-        for line in aligned.lines() {
-            terminal::println_above(line);
+        // Output each line. When flushing at end-of-response, avoid printing a trailing newline on
+        // the final row so we don't leave a visually blank row above the spacer/status area.
+        let mut lines = aligned.lines().peekable();
+        while let Some(line) = lines.next() {
+            let is_last = lines.peek().is_none();
+            if !trailing_newline && is_last {
+                terminal::print_above(line);
+                self.column = display_width(line);
+            } else {
+                terminal::println_above(line);
+                self.column = 0;
+            }
         }
 
         self.table_buffer.clear();
         self.in_table = false;
-        self.column = 0;
+    }
+
+    /// Flush the table buffer, formatting and outputting the table.
+    fn flush_table(&mut self) {
+        self.flush_table_inner(true);
+    }
+
+    fn flush_table_no_trailing_newline(&mut self) {
+        self.flush_table_inner(false);
     }
 
     /// Check if a line looks like a table row (starts and ends with |)
@@ -932,44 +944,19 @@ impl WordWrapper {
                         // Normal text - flush word and handle newline
                         self.flush_word(width);
 
-                        // Check if this is a blank line (empty or whitespace-only)
-                        let is_blank_line = self.line_buffer.trim().is_empty();
-
-                        if is_blank_line {
-                            self.consecutive_blank_lines += 1;
-                            // Only output one blank line - skip additional consecutive ones
-                            if self.consecutive_blank_lines <= 1 {
-                                terminal::print_above("\n");
-                                // Start new line with indent (with style if set)
-                                if self.indent > 0 {
-                                    let indent_str = " ".repeat(self.indent);
-                                    if let Some(style) = self.style {
-                                        terminal::print_above(&format!("{}{}", style, indent_str));
-                                    } else {
-                                        terminal::print_above(&indent_str);
-                                    }
-                                } else if let Some(style) = self.style {
-                                    terminal::print_above(style);
-                                }
-                                self.column = self.indent;
+                        // Output newline and start next line with indent
+                        terminal::print_above("\n");
+                        if self.indent > 0 {
+                            let indent_str = " ".repeat(self.indent);
+                            if let Some(style) = self.style {
+                                terminal::print_above(&format!("{}{}", style, indent_str));
+                            } else {
+                                terminal::print_above(&indent_str);
                             }
-                        } else {
-                            // Non-blank line - reset counter and output
-                            self.consecutive_blank_lines = 0;
-                            terminal::print_above("\n");
-                            // Start new line with indent (with style if set)
-                            if self.indent > 0 {
-                                let indent_str = " ".repeat(self.indent);
-                                if let Some(style) = self.style {
-                                    terminal::print_above(&format!("{}{}", style, indent_str));
-                                } else {
-                                    terminal::print_above(&indent_str);
-                                }
-                            } else if let Some(style) = self.style {
-                                terminal::print_above(style);
-                            }
-                            self.column = self.indent;
+                        } else if let Some(style) = self.style {
+                            terminal::print_above(style);
                         }
+                        self.column = self.indent;
                         self.line_buffer.clear();
                     }
                 }
@@ -1063,6 +1050,14 @@ impl WordWrapper {
 
         result
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LastBlock {
+    UserPrompt,
+    Thinking,
+    Text,
+    Tool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1165,6 +1160,17 @@ struct StreamState {
     thinking: WordWrapper,
     /// Word wrapper for response text (no style)
     response: WordWrapper,
+    /// Last logical block that emitted visible output.
+    last_block: Option<LastBlock>,
+    /// Trailing newlines seen in thinking deltas that we haven't rendered yet.
+    ///
+    /// Some providers/models (notably Gemini via antigravity) tend to emit one or more `\n`
+    /// at the end of thinking. If we render those eagerly, we end up with a dangling empty line
+    /// right above the streaming status line.
+    ///
+    /// We buffer these newlines and only render them once we see subsequent non-newline thinking
+    /// content. When thinking ends, we discard the buffered newlines.
+    thinking_pending_newlines: usize,
     /// Whether any assistant text output was printed since the last reset.
     text_output_written: bool,
     /// Current output state for spacing/blocks
@@ -1184,6 +1190,8 @@ impl StreamState {
         Self {
             thinking: WordWrapper::new(Some("\x1b[90m"), 0),
             response: WordWrapper::new(None, 0),
+            last_block: None,
+            thinking_pending_newlines: 0,
             text_output_written: false,
             output_state: OutputState::Idle,
             buffered_events: Vec::new(),
@@ -1196,6 +1204,7 @@ impl StreamState {
     fn reset(&mut self) {
         self.thinking.reset();
         self.response.reset();
+        self.thinking_pending_newlines = 0;
         self.text_output_written = false;
         self.output_state = OutputState::Idle;
         self.buffered_events.clear();
@@ -1226,6 +1235,14 @@ impl CliListener {
 
     pub(crate) fn register_active(&'static self) {
         let _ = ACTIVE_LISTENER.set(self);
+    }
+
+    pub(crate) fn note_user_prompt_printed() {
+        if let Some(listener) = ACTIVE_LISTENER.get()
+            && let Ok(mut state) = listener.state.lock()
+        {
+            state.last_block = Some(LastBlock::UserPrompt);
+        }
     }
 
     pub(crate) fn buffer_event(event: &OutputEvent) {
@@ -1263,7 +1280,13 @@ impl CliListener {
     }
 
     /// Close an open tool block if one exists.
-    fn close_tool_block(&self) {
+    ///
+    /// If `ensure_line_break` is true, a line break is inserted if output is currently mid-line.
+    /// This is useful when we're about to print more output and want it to start on a fresh line.
+    ///
+    /// For end-of-turn cleanup (e.g. `Done`), we intentionally avoid forcing a line break so we
+    /// don't leave a trailing empty line above the prompt.
+    fn close_tool_block_inner(&self, ensure_line_break: bool) {
         let was_in_block = self
             .state
             .lock()
@@ -1277,9 +1300,19 @@ impl CliListener {
             })
             .unwrap_or(false);
         if was_in_block {
-            terminal::println_above("");
+            if ensure_line_break {
+                terminal::ensure_line_break();
+            }
             history::push(HistoryEvent::ToolEnd);
         }
+    }
+
+    fn close_tool_block(&self) {
+        self.close_tool_block_inner(true);
+    }
+
+    fn close_tool_block_no_line_break(&self) {
+        self.close_tool_block_inner(false);
     }
 
     fn maybe_space_after_todo(&self) {
@@ -1289,7 +1322,7 @@ impl CliListener {
             .map(|mut s| s.output_state.take_after_todo_list())
             .unwrap_or(false);
         if needs_spacing {
-            terminal::println_above("");
+            terminal::ensure_line_break();
         }
     }
 
@@ -1346,21 +1379,79 @@ impl CliListener {
                 // Accumulate for history
                 history::append_thinking(text);
 
-                // Start with style on first content
-                // Note: We use raw escape here because we're streaming character-by-character
-                // and colored requires complete strings
-                if !state.thinking.has_content {
-                    terminal::print_above("\x1b[90m");
-                    state.thinking.has_content = true;
+                // Buffer trailing newlines in thinking. Some providers/models emit one or more
+                // `\n` at the end of thinking; rendering those eagerly leaves an empty line above
+                // the streaming status line.
+                let bytes = text.as_bytes();
+                let mut cut = bytes.len();
+                let mut trailing_newlines = 0usize;
+                while cut > 0 {
+                    match bytes[cut - 1] {
+                        b'\n' => {
+                            trailing_newlines += 1;
+                            cut -= 1;
+                        }
+                        b'\r' => {
+                            cut -= 1;
+                        }
+                        _ => break,
+                    }
                 }
-                state.thinking.process_text(text, width);
+                let main = &text[..cut];
+
+                let mut did_output = false;
+
+                if !main.is_empty() {
+                    // Insert spacing before the first thinking output.
+                    //
+                    // This is reactive (we only do it once we know thinking is being printed), and
+                    // it handles cases where the previous output intentionally didn't end with a
+                    // newline (user prompt / tool checkmark).
+                    if !state.thinking.has_content {
+                        if matches!(
+                            state.last_block,
+                            Some(LastBlock::Tool) | Some(LastBlock::UserPrompt)
+                        ) {
+                            // Prompt -> Thinking: blank line
+                            // Tool   -> Thinking: blank line
+                            terminal::ensure_trailing_newlines(2);
+                        } else {
+                            terminal::ensure_line_break();
+                        }
+                    }
+
+                    // Flush any previously buffered trailing newlines now that we have more content.
+                    if state.thinking_pending_newlines > 0 {
+                        let pending = "\n".repeat(state.thinking_pending_newlines);
+                        state.thinking.process_text(&pending, width);
+                        state.thinking_pending_newlines = 0;
+                    }
+
+                    // Start with style on first content
+                    // Note: We use raw escape here because we're streaming character-by-character
+                    // and colored requires complete strings
+                    if !state.thinking.has_content {
+                        terminal::print_above("\x1b[90m");
+                        state.thinking.has_content = true;
+                    }
+
+                    state.thinking.process_text(main, width);
+                    state.last_block = Some(LastBlock::Thinking);
+                    did_output = true;
+                }
+
+                state.thinking_pending_newlines = state
+                    .thinking_pending_newlines
+                    .saturating_add(trailing_newlines);
 
                 if matches!(
                     state.output_state,
                     OutputState::Idle | OutputState::Thinking { .. } | OutputState::AfterTodoList
                 ) {
                     state.output_state.start_thinking();
-                    state.output_state.mark_thinking_output();
+                    if did_output {
+                        state.output_state.mark_thinking_output();
+                    }
                 }
             }
 
@@ -1368,6 +1459,10 @@ impl CliListener {
                 let Ok(mut state) = self.state.lock() else {
                     return;
                 };
+
+                // Leave any buffered trailing newlines pending. If response text arrives next,
+                // we'll flush them there so the text starts on the expected line. If the turn
+                // ends without text, they'll be discarded on `Done`.
 
                 let width = Self::terminal_width();
                 state.thinking.flush_word(width);
@@ -1379,8 +1474,8 @@ impl CliListener {
                     OutputState::Thinking { has_output: false }
                 ) && !state.thinking.has_content
                 {
-                    terminal::print_above("\x1b[90m[thinking with no data]\x1b[0m\n\n");
-                    history::append_thinking("[thinking with no data]\n\n");
+                    terminal::println_above("\x1b[90m[thinking with no data]\x1b[0m");
+                    history::append_thinking("[thinking with no data]");
                     state.output_state.mark_thinking_output();
                 }
 
@@ -1392,7 +1487,6 @@ impl CliListener {
                 }
 
                 if state.output_state.end_thinking() {
-                    terminal::normalize_block_spacing_min(2);
                     history::push(HistoryEvent::ThinkingEnd);
                 }
 
@@ -1417,11 +1511,36 @@ impl CliListener {
                     return;
                 };
 
+                // Flush any buffered trailing newlines from thinking now that response text is
+                // arriving. These are real model-emitted newlines; we just delayed rendering them
+                // to avoid leaving a dangling blank row above the status line when nothing follows.
+                if state.thinking_pending_newlines > 0 {
+                    terminal::print_above(&"\n".repeat(state.thinking_pending_newlines));
+                    state.thinking_pending_newlines = 0;
+                }
+
+                // Ensure response text starts on the correct line.
+                //
+                // Rules:
+                // - Prompt   -> Text: newline (prompt is printed without a trailing newline)
+                // - Thinking -> Text: blank line
+                // - Tool     -> Text: blank line
+                if matches!(state.last_block, Some(LastBlock::Tool)) {
+                    terminal::ensure_trailing_newlines(2);
+                } else if !state.text_output_written {
+                    if matches!(state.last_block, Some(LastBlock::Thinking)) {
+                        terminal::ensure_trailing_newlines(2);
+                    } else {
+                        terminal::ensure_line_break();
+                    }
+                }
+
                 state.text_output_written = true;
                 state.response.process_text(text, width);
                 history::append_assistant_text(text);
                 state.output_state.start_text();
                 state.output_state.mark_text_output();
+                state.last_block = Some(LastBlock::Text);
             }
 
             OutputEvent::TextEnd => {
@@ -1437,13 +1556,20 @@ impl CliListener {
                 // If a text block ended without writing any output, render a visible
                 // placeholder so we can see it existed.
                 if !state.text_output_written {
-                    terminal::print_above("[text with no data]\n\n");
-                    history::append_assistant_text("[text with no data]\n\n");
+                    terminal::println_above("[text with no data]");
+                    history::append_assistant_text("[text with no data]");
                 }
 
                 // Flush any remaining word buffer
                 let width = Self::terminal_width();
                 state.response.flush_word(width);
+
+                // If we were buffering a markdown table, flush it. When the model ends mid-table
+                // (no trailing newline), avoid printing an additional trailing newline on the final
+                // table row so we don't leave an extra blank row above the spacer/status area.
+                if state.response.in_table {
+                    state.response.flush_table_no_trailing_newline();
+                }
 
                 // Handle incomplete code block: just print closing fence
                 if state.response.in_code_block {
@@ -1452,12 +1578,6 @@ impl CliListener {
                 }
 
                 if state.output_state.end_text() {
-                    if terminal::is_streaming_status_line_active() {
-                        // Avoid double spacing; status line already has a spacer row.
-                        terminal::normalize_block_spacing_min(0);
-                    } else {
-                        terminal::normalize_block_spacing_min(1);
-                    }
                     history::push(HistoryEvent::ResponseEnd);
                 }
                 history::finish_assistant_text();
@@ -1468,30 +1588,43 @@ impl CliListener {
                 spinner_working();
                 let starting_block = if let Ok(mut state) = self.state.lock() {
                     let width = Self::terminal_width();
+
                     if state.thinking.needs_line_break() {
                         state.thinking.finish_line(width);
                     }
                     if state.response.needs_line_break() {
                         state.response.finish_line(width);
                     }
-                    if terminal::output_cursor_col() != 0 {
-                        terminal::print_above("\n");
+                    if state.thinking_pending_newlines > 0 {
+                        terminal::print_above(&"\n".repeat(state.thinking_pending_newlines));
+                        state.thinking_pending_newlines = 0;
                     }
+
                     let starting = !state.in_tool_block;
+
                     if starting {
-                        terminal::normalize_block_spacing();
-                        // After normalizing, re-check in case we were mid-line.
-                        if terminal::output_cursor_col() != 0 {
-                            terminal::print_above("\n");
+                        // Spacing rules (reactive): insert a blank line between blocks where it
+                        // improves readability, but not between consecutive tool calls.
+                        if matches!(
+                            state.last_block,
+                            Some(LastBlock::Thinking) | Some(LastBlock::Text)
+                        ) {
+                            terminal::ensure_trailing_newlines(2);
+                        } else {
+                            terminal::ensure_line_break();
                         }
-                        if state.output_state.start_tool_block() {
-                            terminal::println_above("");
-                        }
+
+                        state.output_state.start_tool_block();
                         state.in_tool_block = true;
+                    } else {
+                        // Subsequent tool call: ensure it starts on its own line.
+                        terminal::ensure_line_break();
                     }
+
                     let text = format!("▶ {}", description);
                     terminal::print_above(&text);
                     state.last_tool_call_open = true;
+                    state.last_block = Some(LastBlock::Tool);
                     starting
                 } else {
                     false
@@ -1545,23 +1678,35 @@ impl CliListener {
                     })
                     .unwrap_or(false);
 
+                // We intentionally avoid printing a trailing newline here.
+                // Leaving the cursor at end-of-line prevents a "dangling" empty line
+                // above the prompt when a turn ends with just a tool call.
                 let text = if *is_error {
                     if pending_tool_line {
-                        format!(" {}\n", "✗".red())
+                        format!(" {}", "✗".red())
                     } else {
-                        format!("{}\n", "✗".red())
+                        "✗".red().to_string()
                     }
                 } else if diff_shown {
-                    // Diff already showed checkmark, just need newline
-                    "".to_string()
+                    // Diff already showed checkmark.
+                    String::new()
                 } else if pending_tool_line {
-                    format!(" {}\n", "✓".green())
+                    format!(" {}", "✓".green())
                 } else {
-                    format!("{}\n", "✓".green())
+                    "✓".green().to_string()
                 };
+
                 if !text.is_empty() {
+                    if !pending_tool_line {
+                        terminal::ensure_line_break();
+                    }
                     terminal::print_above(&text);
                 }
+
+                if let Ok(mut state) = self.state.lock() {
+                    state.last_block = Some(LastBlock::Tool);
+                }
+
                 history::push(HistoryEvent::ToolResult {
                     output: error_preview.clone().unwrap_or_default(),
                     is_error: *is_error,
@@ -1569,7 +1714,7 @@ impl CliListener {
             }
 
             OutputEvent::Info(msg) => {
-                terminal::normalize_block_spacing();
+                terminal::ensure_line_break();
                 terminal::println_above(msg);
                 history::push(HistoryEvent::Info(msg.clone()));
             }
@@ -1583,13 +1728,13 @@ impl CliListener {
                 if let Ok(mut state) = self.state.lock() {
                     state.output_state = OutputState::Idle;
                 }
-                terminal::normalize_block_spacing();
+                terminal::ensure_line_break();
                 terminal::println_above(&msg.red().to_string());
                 history::push(HistoryEvent::Error(msg.clone()));
             }
 
             OutputEvent::Warning(msg) => {
-                terminal::normalize_block_spacing();
+                terminal::ensure_line_break();
                 terminal::println_above(&msg.yellow().to_string());
                 history::push(HistoryEvent::Warning(msg.clone()));
             }
@@ -1606,7 +1751,7 @@ impl CliListener {
                     if state.response.needs_line_break() {
                         state.response.finish_line(width);
                     }
-                    terminal::normalize_block_spacing();
+                    terminal::ensure_line_break();
                 }
 
                 if let Ok(mut state) = self.state.lock() {
@@ -1671,7 +1816,7 @@ impl CliListener {
                 if pending_tool_line {
                     terminal::print_above(&format!(" {}\n", "✓".green()));
                 } else {
-                    terminal::normalize_block_spacing();
+                    terminal::ensure_line_break();
                     terminal::println_above(&format!(" {}", "✓".green()));
                 }
 
@@ -1708,14 +1853,14 @@ impl CliListener {
                     "Context at {:.0}% ({}/{}) - auto-compacting...",
                     pct, current_usage, limit
                 );
-                terminal::normalize_block_spacing();
+                terminal::ensure_line_break();
                 terminal::println_above(&msg.yellow().to_string());
                 history::push(HistoryEvent::AutoCompact { message: msg });
             }
 
             OutputEvent::AutoCompactCompleted { messages_compacted } => {
                 let msg = format!("Compacted {} messages into summary.", messages_compacted);
-                terminal::normalize_block_spacing();
+                terminal::ensure_line_break();
                 terminal::println_above(&msg.green().to_string());
                 history::push(HistoryEvent::AutoCompact { message: msg });
             }
@@ -1733,31 +1878,28 @@ impl CliListener {
             }
 
             OutputEvent::Done => {
-                self.close_tool_block();
+                // End-of-turn: close the tool block without forcing a trailing newline.
+                self.close_tool_block_no_line_break();
                 // Capture final duration and update display
                 finalize_streaming();
                 spinner_ready();
-                // Leave a single blank line before the next prompt/status line.
-                if terminal::is_streaming_status_line_active() {
-                    // The status line already reserves a spacer row above it.
-                    terminal::normalize_block_spacing_min(0);
-                } else {
-                    terminal::normalize_block_spacing_min(1);
-                }
                 // Reset turn-level state for next turn
                 if let Ok(mut state) = self.state.lock() {
                     state.output_state = OutputState::Idle;
+                    state.thinking_pending_newlines = 0;
                 }
             }
 
             OutputEvent::Interrupted => {
-                self.close_tool_block();
+                // End-of-turn: close the tool block without forcing a trailing newline.
+                self.close_tool_block_no_line_break();
                 // Finalize current duration so the stats are displayed on "Cancelled"
                 finalize_streaming();
                 spinner_ready();
                 // Reset turn-level state for next turn
                 if let Ok(mut state) = self.state.lock() {
                     state.output_state = OutputState::Idle;
+                    state.thinking_pending_newlines = 0;
                 }
             }
 

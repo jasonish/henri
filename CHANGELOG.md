@@ -4,6 +4,8 @@
 
 ### Changed
 
+- CLI: Improved vertical spacing in streaming output with reactive spacing model
+  that eliminates trailing blank lines at end of turns
 - Session files now use `.json` extension instead of `.jsonl`
 - OpenAI provider: Added `prompt_cache_key` to Codex API requests using session
   ID, enabling prompt caching across requests within the same session

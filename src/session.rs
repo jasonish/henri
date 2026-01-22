@@ -625,6 +625,8 @@ pub(crate) fn format_age(saved_at: &DateTime<Utc>) -> String {
 /// This is intended to be called from the interactive CLI (TUI) after the prompt is
 /// visible, so output is rendered above the prompt and is resizable.
 pub(crate) fn replay_session_into_output(state: &SessionState) {
+    use std::collections::HashMap;
+
     use crate::cli::history::{self, HistoryEvent};
     // Use the same marker format as the interactive CLI ("Image#1", "Image#2", ...).
     const IMAGE_MARKER_PREFIX: &str = "Image#";
@@ -662,13 +664,20 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
     history::push(HistoryEvent::Info("".to_string()));
 
     let mut in_tool_block = false;
+    let mut idx = 0;
 
-    for msg in &state.messages {
+    while idx < state.messages.len() {
+        let msg = &state.messages[idx];
         match msg.role {
-            Role::System => continue,
+            Role::System => {
+                idx += 1;
+                continue;
+            }
             Role::User => {
-                // Skip intermediate tool-result-only messages (they are rendered as part of the tool loop).
+                // Tool-result-only messages are processed with the preceding assistant message,
+                // so skip them here.
                 if is_tool_result_only_serializable(msg) {
+                    idx += 1;
                     continue;
                 }
 
@@ -682,6 +691,16 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
                 history::push_user_prompt(&text, images);
             }
             Role::Assistant => {
+                // Look ahead for a tool-result-only user message to match results with uses.
+                let tool_results: HashMap<String, (bool, String)> = if let Some(next_msg) =
+                    state.messages.get(idx + 1)
+                    && is_tool_result_only_serializable(next_msg)
+                {
+                    collect_tool_results(next_msg)
+                } else {
+                    HashMap::new()
+                };
+
                 // Render blocks in the same order as live output.
                 match &msg.content {
                     SerializableContent::Text(text) => {
@@ -719,13 +738,28 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
                                         is_streaming: false,
                                     });
                                 }
-                                SerializableContentBlock::ToolUse { name, input, .. } => {
+                                SerializableContentBlock::ToolUse {
+                                    id, name, input, ..
+                                } => {
                                     if !in_tool_block {
                                         history::push(HistoryEvent::ToolStart);
                                         in_tool_block = true;
                                     }
                                     let description = format_tool_call_description(name, input);
                                     history::push(HistoryEvent::ToolUse { description });
+
+                                    // Push matching ToolResult from the lookahead if available.
+                                    if let Some((is_error, content)) = tool_results.get(id) {
+                                        let output = if *is_error {
+                                            content.lines().next().unwrap_or("").to_string()
+                                        } else {
+                                            String::new()
+                                        };
+                                        history::push(HistoryEvent::ToolResult {
+                                            output,
+                                            is_error: *is_error,
+                                        });
+                                    }
                                 }
                                 SerializableContentBlock::ToolResult {
                                     is_error, content, ..
@@ -778,6 +812,7 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
                 }
             }
         }
+        idx += 1;
     }
 
     // Keep history in a consistent state.
@@ -806,6 +841,26 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
             .collect();
         history::push(HistoryEvent::TodoList { items });
     }
+}
+
+/// Collect tool results from a tool-result-only user message into a map of tool_use_id -> (is_error, content).
+fn collect_tool_results(
+    msg: &SerializableMessage,
+) -> std::collections::HashMap<String, (bool, String)> {
+    let mut results = std::collections::HashMap::new();
+    if let SerializableContent::Blocks(blocks) = &msg.content {
+        for block in blocks {
+            if let SerializableContentBlock::ToolResult {
+                tool_use_id,
+                is_error,
+                content,
+            } = block
+            {
+                results.insert(tool_use_id.clone(), (*is_error, content.clone()));
+            }
+        }
+    }
+    results
 }
 
 fn is_tool_result_only_serializable(msg: &SerializableMessage) -> bool {

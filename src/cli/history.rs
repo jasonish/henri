@@ -179,6 +179,13 @@ pub(crate) fn snapshot() -> Vec<HistoryEvent> {
     HISTORY.lock().map(|h| h.events.clone()).unwrap_or_default()
 }
 
+pub(crate) fn has_events() -> bool {
+    HISTORY
+        .lock()
+        .map(|h| !h.events.is_empty())
+        .unwrap_or(false)
+}
+
 /// Push a user prompt event.
 pub(crate) fn push_user_prompt(text: &str, images: Vec<ImageMeta>) {
     push(HistoryEvent::UserPrompt {
