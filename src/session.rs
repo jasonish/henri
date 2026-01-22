@@ -10,7 +10,7 @@
 //! ```text
 //! ~/.cache/henri/sessions/
 //!   {dir_hash}/                    # Directory per working directory
-//!     {session_id}.jsonl           # One file per session
+//!     {session_id}.json            # One file per session
 //! ```
 
 use std::fs::{self, File};
@@ -349,7 +349,7 @@ fn sessions_dir_for_path(dir: &Path) -> PathBuf {
 
 /// Get the path for a specific session file.
 fn get_session_path(dir: &Path, session_id: &str) -> PathBuf {
-    sessions_dir_for_path(dir).join(format!("{}.jsonl", session_id))
+    sessions_dir_for_path(dir).join(format!("{}.json", session_id))
 }
 
 /// Generate a new session ID based on current timestamp.
@@ -479,7 +479,7 @@ pub(crate) fn list_sessions(dir: &Path) -> Vec<SessionInfo> {
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "jsonl")
+        if path.extension().is_some_and(|ext| ext == "json")
             && let Some(info) = load_session_info(&path)
         {
             sessions.push(info);
@@ -501,7 +501,7 @@ fn load_session_info(path: &Path) -> Option<SessionInfo> {
     let meta_line = lines.next()?.ok()?;
     let meta: SessionMeta = serde_json::from_str(&meta_line).ok()?;
 
-    // For v1 sessions, derive ID from filename (strip .jsonl extension)
+    // For v1 sessions, derive ID from filename (strip extension)
     let session_id = if meta.session_id.is_empty() {
         path.file_stem()
             .and_then(|s| s.to_str())

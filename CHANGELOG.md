@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Session files now use `.json` extension instead of `.jsonl`
+
 ## [0.4.0] - 2026-01-20
 
 ### Added
