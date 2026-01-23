@@ -143,6 +143,23 @@ pub(crate) fn remove_last_turn(messages: &mut Vec<Message>) -> usize {
     removed
 }
 
+/// Remove assistant responses and tool-result-only user messages from the end,
+/// stopping once the most recent real user prompt is preserved.
+///
+/// Returns the number of messages removed.
+pub(crate) fn remove_pending_tool_turn(messages: &mut Vec<Message>) -> usize {
+    let mut removed = 0;
+    while let Some(last) = messages.last() {
+        let stop = last.role == Role::User && !last.is_tool_result_only();
+        if stop {
+            break;
+        }
+        messages.pop();
+        removed += 1;
+    }
+    removed
+}
+
 /// Remove the oldest turn from a message history.
 ///
 /// A "turn" consists of a user message with actual content (not just tool results),

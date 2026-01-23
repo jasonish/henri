@@ -16,6 +16,12 @@
 - Use "#variant" for all thinking modes across all providers. Some likely still
   need some work.
 
+### Fixed
+
+- CLI: Cancelling during a tool-call loop now properly removes all pending
+  messages (assistant responses and tool results) back to the user's original
+  prompt, instead of only removing the last message
+
 ## [0.4.0] - 2026-01-20
 
 ### Added

@@ -50,7 +50,7 @@ use crate::custom_commands::{self, CustomCommand};
 use crate::history::FileHistory;
 use crate::output::{self, OutputContext};
 use crate::provider::zen::ZenProvider;
-use crate::provider::{ContentBlock, Message, MessageContent, Role};
+use crate::provider::{ContentBlock, Message, MessageContent, Role, remove_pending_tool_turn};
 use crate::providers::{
     ModelChoice, ModelProvider, ProviderManager, cycle_model_variant, cycle_thinking_state,
     default_thinking_state, get_model_variant, uses_model_variants,
@@ -2054,7 +2054,7 @@ fn handle_chat_outcome(
         }
         ChatOutcome::Interrupted => {
             terminal::println_above("Cancelled");
-            messages.pop();
+            remove_pending_tool_turn(messages);
             prompt_box.hide()?;
         }
     }
