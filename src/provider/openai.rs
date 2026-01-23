@@ -27,18 +27,18 @@ const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const OPENAI_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_DEFAULT_MODEL: &str = "gpt-5.2-codex#medium";
 const OPENAI_MODELS: &[&str] = &[
-    "gpt-5.2-codex#xhigh",
-    "gpt-5.2-codex#high",
-    "gpt-5.2-codex#medium",
     "gpt-5.2-codex#low",
-    "gpt-5.2#xhigh",
-    "gpt-5.2#high",
-    "gpt-5.2#medium",
+    "gpt-5.2-codex#medium",
+    "gpt-5.2-codex#high",
+    "gpt-5.2-codex#xhigh",
     "gpt-5.2#low",
-    "gpt-5.1-codex-max#xhigh",
-    "gpt-5.1-codex-max#high",
-    "gpt-5.1-codex-max#medium",
+    "gpt-5.2#medium",
+    "gpt-5.2#high",
+    "gpt-5.2#xhigh",
     "gpt-5.1-codex-max#low",
+    "gpt-5.1-codex-max#medium",
+    "gpt-5.1-codex-max#high",
+    "gpt-5.1-codex-max#xhigh",
     "gpt-5.1-codex-mini#medium",
     "gpt-5.1-codex-mini#high",
 ];
@@ -58,6 +58,20 @@ fn split_openai_model(model: &str) -> (&str, Option<&str>) {
 fn reasoning_effort_from_model(model: &str) -> &str {
     let (_, suffix) = split_openai_model(model);
     suffix.unwrap_or_default()
+}
+
+/// Get the base model name (without variant suffix) from a model string
+fn base_model_name(model: &str) -> &str {
+    split_openai_model(model).0
+}
+
+/// Get all variants for a given base model from the model list
+fn get_model_variants(base: &str) -> Vec<&'static str> {
+    OPENAI_MODELS
+        .iter()
+        .filter(|m| base_model_name(m) == base)
+        .copied()
+        .collect()
 }
 
 #[derive(Debug)]
@@ -173,6 +187,32 @@ impl OpenAiProvider {
 
     pub(crate) fn models() -> &'static [&'static str] {
         OPENAI_MODELS
+    }
+
+    /// Get the available variants (reasoning effort levels) for a given model.
+    /// Returns the variant suffixes like "xhigh", "high", "medium", "low".
+    pub(crate) fn model_variants(model: &str) -> Vec<&'static str> {
+        let base = base_model_name(model);
+        get_model_variants(base)
+            .iter()
+            .filter_map(|m| split_openai_model(m).1)
+            .collect()
+    }
+
+    /// Cycle to the next variant for the given model.
+    /// Returns the new full model string with the next variant.
+    pub(crate) fn cycle_model_variant(model: &str) -> String {
+        let base = base_model_name(model);
+        let variants = get_model_variants(base);
+
+        if variants.is_empty() {
+            return model.to_string();
+        }
+
+        // Find current position and cycle to next
+        let current_idx = variants.iter().position(|v| *v == model).unwrap_or(0);
+        let next_idx = (current_idx + 1) % variants.len();
+        variants[next_idx].to_string()
     }
 
     fn build_codex_input(&self, messages: &[Message]) -> Vec<CodexInputItem> {
@@ -912,4 +952,78 @@ fn chatgpt_account_id(token: &str) -> Option<String> {
         .and_then(|v| v.get("chatgpt_account_id"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_openai_model() {
+        assert_eq!(
+            split_openai_model("gpt-5.2-codex#medium"),
+            ("gpt-5.2-codex", Some("medium"))
+        );
+        assert_eq!(
+            split_openai_model("gpt-5.2#high"),
+            ("gpt-5.2", Some("high"))
+        );
+        assert_eq!(split_openai_model("gpt-5.2-codex"), ("gpt-5.2-codex", None));
+        assert_eq!(split_openai_model("gpt-5.2#"), ("gpt-5.2#", None));
+    }
+
+    #[test]
+    fn test_model_variants() {
+        // gpt-5.2-codex has 4 variants (low to high)
+        let variants = OpenAiProvider::model_variants("gpt-5.2-codex#medium");
+        assert_eq!(variants, vec!["low", "medium", "high", "xhigh"]);
+
+        // gpt-5.2 also has 4 variants
+        let variants = OpenAiProvider::model_variants("gpt-5.2#high");
+        assert_eq!(variants, vec!["low", "medium", "high", "xhigh"]);
+
+        // gpt-5.1-codex-mini has only 2 variants
+        let variants = OpenAiProvider::model_variants("gpt-5.1-codex-mini#medium");
+        assert_eq!(variants, vec!["medium", "high"]);
+    }
+
+    #[test]
+    fn test_cycle_model_variant() {
+        // Cycle through gpt-5.2-codex variants (low to high, then wrap)
+        assert_eq!(
+            OpenAiProvider::cycle_model_variant("gpt-5.2-codex#low"),
+            "gpt-5.2-codex#medium"
+        );
+        assert_eq!(
+            OpenAiProvider::cycle_model_variant("gpt-5.2-codex#medium"),
+            "gpt-5.2-codex#high"
+        );
+        assert_eq!(
+            OpenAiProvider::cycle_model_variant("gpt-5.2-codex#high"),
+            "gpt-5.2-codex#xhigh"
+        );
+        assert_eq!(
+            OpenAiProvider::cycle_model_variant("gpt-5.2-codex#xhigh"),
+            "gpt-5.2-codex#low" // wraps around
+        );
+
+        // Cycle through gpt-5.1-codex-mini variants (only 2)
+        assert_eq!(
+            OpenAiProvider::cycle_model_variant("gpt-5.1-codex-mini#medium"),
+            "gpt-5.1-codex-mini#high"
+        );
+        assert_eq!(
+            OpenAiProvider::cycle_model_variant("gpt-5.1-codex-mini#high"),
+            "gpt-5.1-codex-mini#medium" // wraps around
+        );
+    }
+
+    #[test]
+    fn test_cycle_model_variant_unknown() {
+        // Unknown model returns unchanged
+        assert_eq!(
+            OpenAiProvider::cycle_model_variant("unknown-model"),
+            "unknown-model"
+        );
+    }
 }

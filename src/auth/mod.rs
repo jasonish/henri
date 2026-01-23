@@ -260,7 +260,6 @@ async fn login_openai_compat() -> Result<()> {
         "For each model, you can optionally set a reasoning effort level.".bright_black()
     );
 
-    let mut models: Vec<String> = Vec::new();
     let mut model_configs: Vec<ModelConfig> = Vec::new();
 
     loop {
@@ -270,7 +269,7 @@ async fn login_openai_compat() -> Result<()> {
 
         let model_name = model_name.trim();
         if model_name.is_empty() {
-            if models.is_empty() && model_configs.is_empty() {
+            if model_configs.is_empty() {
                 println!("{}", "At least one model is required.".red());
                 continue;
             }
@@ -285,21 +284,22 @@ async fn login_openai_compat() -> Result<()> {
             .prompt()
             .map_err(|e| Error::Prompt(e.to_string()))?;
 
-        if reasoning == "none" {
-            // Simple model entry
-            models.push(model_name.to_string());
+        let reasoning_effort = if reasoning == "none" {
+            None
         } else {
-            // Model with reasoning effort config
-            model_configs.push(ModelConfig {
-                name: model_name.to_string(),
-                reasoning_effort: Some(reasoning.to_string()),
-                thinking: None,
-                temperature: None,
-                max_tokens: None,
-                system_prompt: None,
-                stop_sequences: None,
-            });
-        }
+            Some(reasoning.to_string())
+        };
+
+        model_configs.push(ModelConfig {
+            id: model_name.to_string(),
+            name: None,
+            reasoning_effort,
+            thinking: None,
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+            stop_sequences: None,
+        });
 
         println!("{}", format!("✓ Added model: {}", model_name).green());
     }
@@ -309,7 +309,6 @@ async fn login_openai_compat() -> Result<()> {
         enabled: true,
         api_key,
         base_url: base_url.trim().to_string(),
-        models,
         model_configs,
     };
 
@@ -388,7 +387,6 @@ async fn login_openrouter() -> Result<()> {
         "Examples: anthropic/claude-sonnet-4, openai/gpt-4o, google/gemini-2.5-pro".bright_black()
     );
 
-    let mut models: Vec<String> = Vec::new();
     let mut model_configs: Vec<ModelConfig> = Vec::new();
 
     loop {
@@ -398,7 +396,7 @@ async fn login_openrouter() -> Result<()> {
 
         let model_name = model_name.trim();
         if model_name.is_empty() {
-            if models.is_empty() && model_configs.is_empty() {
+            if model_configs.is_empty() {
                 println!("{}", "At least one model is required.".red());
                 continue;
             }
@@ -413,19 +411,22 @@ async fn login_openrouter() -> Result<()> {
             .prompt()
             .map_err(|e| Error::Prompt(e.to_string()))?;
 
-        if reasoning == "none" {
-            models.push(model_name.to_string());
+        let reasoning_effort = if reasoning == "none" {
+            None
         } else {
-            model_configs.push(ModelConfig {
-                name: model_name.to_string(),
-                reasoning_effort: Some(reasoning.to_string()),
-                thinking: None,
-                temperature: None,
-                max_tokens: None,
-                system_prompt: None,
-                stop_sequences: None,
-            });
-        }
+            Some(reasoning.to_string())
+        };
+
+        model_configs.push(ModelConfig {
+            id: model_name.to_string(),
+            name: None,
+            reasoning_effort,
+            thinking: None,
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+            stop_sequences: None,
+        });
 
         println!("{}", format!("✓ Added model: {}", model_name).green());
     }
@@ -433,7 +434,6 @@ async fn login_openrouter() -> Result<()> {
     let openrouter_config = OpenRouterConfig {
         enabled: true,
         api_key,
-        models,
         model_configs,
     };
 

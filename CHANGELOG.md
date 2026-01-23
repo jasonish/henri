@@ -11,9 +11,10 @@
   ID, enabling prompt caching across requests within the same session
 - Session IDs now use UUIDv7 format for time-sortable uniqueness instead of
   timestamp-based format
-
 - CLI: User prompts now render with vertical padding (grey background rows above
   and below) for better visual separation from model responses
+- Use "#variant" for all thinking modes across all providers. Some likely still
+  need some work.
 
 ## [0.4.0] - 2026-01-20
 

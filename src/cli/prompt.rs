@@ -1450,20 +1450,30 @@ impl PromptBox {
         let model = &self.status.model;
         let cwd = &self.status.cwd;
 
-        // Build thinking text if available.
-        let thinking_owned: Option<String>;
-        let thinking_info: Option<(&str, Color)> = if self.status.thinking.available {
+        // Build thinking suffix for model name (e.g., "#high", "#off").
+        let mut thinking_suffix: Option<(String, Color)> = if self.status.thinking.available {
             if !self.status.thinking.enabled {
-                Some(("thinking off", Color::Yellow))
-            } else if let Some(ref mode) = self.status.thinking.mode {
-                thinking_owned = Some(format!("thinking {}", mode));
-                Some((thinking_owned.as_ref().unwrap(), Color::Green))
+                Some(("#off".to_string(), Color::Yellow))
             } else {
-                Some(("thinking on", Color::Green))
+                self.status
+                    .thinking
+                    .mode
+                    .as_ref()
+                    .map(|mode| (format!("#{}", mode), Color::Green))
             }
         } else {
             None
         };
+
+        // Avoid duplicating variant suffixes already in the model name.
+        let mut model_display = model.as_str();
+        if let Some((base, suffix)) = model.split_once('#')
+            && let Some((suffix_text, suffix_color)) = &thinking_suffix
+            && suffix_text == &format!("#{}", suffix)
+        {
+            model_display = base;
+            thinking_suffix = Some((format!("#{}", suffix), *suffix_color));
+        }
 
         // Build network stats if enabled.
         let net_text = if self.show_network_stats {
@@ -1479,40 +1489,33 @@ impl PromptBox {
 
         // Calculate widths of fixed elements.
         let provider_width = display_width(provider);
-        let model_width = display_width(model);
+        let model_width = display_width(model_display);
         let cwd_width = display_width(cwd);
-        // "[thinking xxx]" = 1 (space) + 1 ([) + inner + 1 (])
-        let thinking_width = thinking_info
+        // Thinking suffix width (e.g., "#high" appended to model)
+        let thinking_suffix_width = thinking_suffix
             .as_ref()
-            .map(|(inner, _)| 1 + 1 + display_width(inner) + 1)
+            .map(|(s, _)| display_width(s))
             .unwrap_or(0);
         let net_width = net_text.as_ref().map(|s| display_width(s)).unwrap_or(0);
 
-        // Fixed: "provider/model " (the slash and trailing space)
-        let fixed_left = provider_width + 1 + model_width + 1;
-        let total_left = fixed_left + cwd_width + thinking_width;
+        // Fixed: "provider/model#suffix " (the slash and trailing space)
+        let fixed_left = provider_width + 1 + model_width + thinking_suffix_width + 1;
+        let total_left = fixed_left + cwd_width;
         let total_with_net = total_left + if net_width > 0 { 1 + net_width } else { 0 };
 
-        // Decide what fits. Priority: hide net first, then thinking, then truncate cwd.
+        // Decide what fits. Priority: hide net first, then truncate cwd.
         let show_net = net_text.is_some() && total_with_net <= width;
         let available = width.saturating_sub(if show_net { 1 + net_width } else { 0 });
 
-        // If thinking doesn't fit even with minimal cwd, hide it.
-        let min_cwd_width = 1; // At least show "…"
-        let show_thinking =
-            thinking_info.is_some() && fixed_left + min_cwd_width + thinking_width <= available;
-        let effective_thinking_width = if show_thinking { thinking_width } else { 0 };
-
         // Truncate cwd if needed.
-        let total_without_cwd = fixed_left + effective_thinking_width;
-        let cwd_display = if total_without_cwd + cwd_width > available {
-            let max_cwd = available.saturating_sub(total_without_cwd + 1);
+        let cwd_display = if fixed_left + cwd_width > available {
+            let max_cwd = available.saturating_sub(fixed_left + 1);
             truncate_to_width(cwd, max_cwd)
         } else {
             cwd.to_string()
         };
 
-        // Render: provider (magenta) / (grey) model (cyan) space cwd (blue) [thinking] (colored)
+        // Render: provider (magenta) / (grey) model (cyan) #suffix (colored) space cwd (blue)
         queue!(stdout, SetForegroundColor(Color::Magenta))?;
         write!(stdout, "{}", provider)?;
 
@@ -1520,27 +1523,19 @@ impl PromptBox {
         write!(stdout, "/")?;
 
         queue!(stdout, SetForegroundColor(Color::Cyan))?;
-        write!(stdout, "{}", model)?;
+        write!(stdout, "{}", model_display)?;
+
+        // Append thinking suffix to model name (e.g., "#high", "#off")
+        if let Some((suffix, color)) = &thinking_suffix {
+            queue!(stdout, SetForegroundColor(*color))?;
+            write!(stdout, "{}", suffix)?;
+        }
 
         queue!(stdout, ResetColor)?;
         write!(stdout, " ")?;
 
         queue!(stdout, SetForegroundColor(Color::Blue))?;
         write!(stdout, "{}", cwd_display)?;
-
-        if show_thinking && let Some((inner, color)) = thinking_info {
-            queue!(stdout, ResetColor)?;
-            write!(stdout, " ")?;
-
-            queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
-            write!(stdout, "[")?;
-
-            queue!(stdout, SetForegroundColor(color))?;
-            write!(stdout, "{}", inner)?;
-
-            queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
-            write!(stdout, "]")?;
-        }
 
         // Handle bandwidth display.
         if show_net {

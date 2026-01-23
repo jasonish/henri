@@ -40,45 +40,30 @@ enum ApiType {
 struct ZenModelSpec {
     name: &'static str,
     api_type: ApiType,
-    supports_thinking: bool,
-    /// Whether the thinking toggle is available for this model.
-    /// Some models support thinking but force it on (cannot be disabled).
-    thinking_toggleable: bool,
 }
 
 impl ZenModelSpec {
-    const fn new(
-        name: &'static str,
-        api_type: ApiType,
-        supports_thinking: bool,
-        thinking_toggleable: bool,
-    ) -> Self {
-        Self {
-            name,
-            api_type,
-            supports_thinking,
-            thinking_toggleable,
-        }
+    const fn new(name: &'static str, api_type: ApiType) -> Self {
+        Self { name, api_type }
     }
 }
 
 const ZEN_MODELS: &[ZenModelSpec] = &[
-    ZenModelSpec::new("big-pickle", ApiType::OpenAiCompatible, true, true),
-    ZenModelSpec::new("claude-haiku-4-5", ApiType::Anthropic, true, true),
-    ZenModelSpec::new("claude-opus-4-5", ApiType::Anthropic, true, true),
-    ZenModelSpec::new("claude-sonnet-4-5", ApiType::Anthropic, true, true),
-    ZenModelSpec::new("gemini-3-pro", ApiType::Gemini, true, true),
-    ZenModelSpec::new("gemini-3-flash", ApiType::Gemini, true, true),
-    ZenModelSpec::new("glm-4.6", ApiType::OpenAiCompatible, true, true),
-    ZenModelSpec::new("glm-4.7-free", ApiType::OpenAiCompatible, true, true),
-    ZenModelSpec::new("gpt-5.1", ApiType::OpenAiResponses, true, true),
-    ZenModelSpec::new("gpt-5.2", ApiType::OpenAiResponses, true, true),
-    ZenModelSpec::new("gpt-5.2-codex", ApiType::OpenAiResponses, true, true),
-    ZenModelSpec::new("gpt-5.1-codex", ApiType::OpenAiResponses, true, true),
-    ZenModelSpec::new("gpt-5.1-codex-max", ApiType::OpenAiResponses, true, true),
-    ZenModelSpec::new("grok-code", ApiType::OpenAiCompatible, true, false),
-    // minimax-m2.1-free supports thinking but it's forced (cannot be disabled)
-    ZenModelSpec::new("minimax-m2.1-free", ApiType::Anthropic, true, false),
+    ZenModelSpec::new("big-pickle", ApiType::OpenAiCompatible),
+    ZenModelSpec::new("claude-haiku-4-5", ApiType::Anthropic),
+    ZenModelSpec::new("claude-opus-4-5", ApiType::Anthropic),
+    ZenModelSpec::new("claude-sonnet-4-5", ApiType::Anthropic),
+    ZenModelSpec::new("gemini-3-pro", ApiType::Gemini),
+    ZenModelSpec::new("gemini-3-flash", ApiType::Gemini),
+    ZenModelSpec::new("glm-4.6", ApiType::OpenAiCompatible),
+    ZenModelSpec::new("glm-4.7", ApiType::OpenAiCompatible),
+    ZenModelSpec::new("gpt-5.2", ApiType::OpenAiResponses),
+    ZenModelSpec::new("gpt-5.2-codex", ApiType::OpenAiResponses),
+    ZenModelSpec::new("gpt-5.1", ApiType::OpenAiResponses),
+    ZenModelSpec::new("gpt-5.1-codex", ApiType::OpenAiResponses),
+    ZenModelSpec::new("gpt-5.1-codex-max", ApiType::OpenAiResponses),
+    ZenModelSpec::new("gpt-5-nano", ApiType::OpenAiResponses),
+    ZenModelSpec::new("grok-code", ApiType::OpenAiCompatible),
 ];
 
 fn get_model_spec(model: &str) -> Option<&'static ZenModelSpec> {
@@ -126,7 +111,7 @@ impl ZenProvider {
             client: Client::new(),
             api_key: config.api_key.clone(),
             model: config.model.clone(),
-            thinking_enabled: true,
+            thinking_enabled: false,
             thinking_mode: None,
             openai_compat_delegate,
             services,
@@ -141,16 +126,16 @@ impl ZenProvider {
             enabled: true,
             api_key: config.api_key.clone(),
             base_url: "https://opencode.ai/zen/v1".to_string(),
-            models: Vec::new(),
             model_configs: Vec::new(),
         };
 
         provider_config
             .model_configs
             .push(crate::config::ModelConfig {
-                name: "big-pickle".to_string(),
+                id: "big-pickle".to_string(),
+                name: None,
                 reasoning_effort: None,
-                thinking: Some(serde_json::json!({"type": "enabled"})),
+                thinking: None,
                 temperature: None,
                 max_tokens: None,
                 system_prompt: None,
@@ -160,9 +145,10 @@ impl ZenProvider {
         provider_config
             .model_configs
             .push(crate::config::ModelConfig {
-                name: "glm-4.6".to_string(),
+                id: "glm-4.6".to_string(),
+                name: None,
                 reasoning_effort: None,
-                thinking: Some(serde_json::json!({"type": "enabled"})),
+                thinking: None,
                 temperature: None,
                 max_tokens: None,
                 system_prompt: None,
@@ -172,7 +158,8 @@ impl ZenProvider {
         provider_config
             .model_configs
             .push(crate::config::ModelConfig {
-                name: "grok-code".to_string(),
+                id: "grok-code".to_string(),
+                name: None,
                 reasoning_effort: None,
                 thinking: None,
                 temperature: None,
@@ -209,23 +196,13 @@ impl ZenProvider {
     }
 
     /// Returns the available thinking modes for the given model.
-    pub(crate) fn thinking_modes(model: &str) -> &'static [&'static str] {
-        if model == "gemini-3-flash" {
-            &["off", "minimal", "low", "medium", "high"]
-        } else if model == "gemini-3-pro" {
-            &["off", "low", "high"]
-        } else {
-            &["off", "on"]
-        }
+    pub(crate) fn thinking_modes(_model: &str) -> &'static [&'static str] {
+        &[]
     }
 
     /// Returns the default thinking state for the given model.
-    pub(crate) fn default_thinking_state(model: &str) -> crate::providers::ThinkingState {
-        if matches!(model, "gemini-3-pro" | "gemini-3-flash") {
-            crate::providers::ThinkingState::new(true, Some("low".to_string()))
-        } else {
-            crate::providers::ThinkingState::new(true, None)
-        }
+    pub(crate) fn default_thinking_state(_model: &str) -> crate::providers::ThinkingState {
+        crate::providers::ThinkingState::new(false, None)
     }
 
     pub(crate) fn models() -> &'static [&'static str] {
@@ -233,11 +210,8 @@ impl ZenProvider {
     }
 
     /// Returns true if the thinking toggle should be available for this model.
-    /// Some models support thinking but force it on (cannot be disabled).
-    pub(crate) fn model_thinking_toggleable(model: &str) -> bool {
-        get_model_spec(model)
-            .map(|m| m.thinking_toggleable)
-            .unwrap_or(true)
+    pub(crate) fn model_thinking_toggleable(_model: &str) -> bool {
+        false
     }
 
     /// Get the context limit for a given model name

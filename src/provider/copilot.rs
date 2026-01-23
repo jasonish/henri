@@ -32,9 +32,41 @@ const COPILOT_MODELS: &[&str] = &[
     "claude-haiku-4.5",
     "claude-sonnet-4.5",
     "claude-opus-4.5",
-    "gpt-5.1-codex",
-    "grok-code-fast-1",
+    "gpt-5.2",
+    "gpt-5.2#none",
+    "gpt-5.2#low",
+    "gpt-5.2#medium",
+    "gpt-5.2#high",
+    "gpt-5.2#xhigh",
+    "gpt-5.2-codex",
+    "gpt-5.2-codex#none",
+    "gpt-5.2-codex#low",
+    "gpt-5.2-codex#medium",
+    "gpt-5.2-codex#high",
+    "gpt-5.2-codex#xhigh",
+    "gpt-5-mini",
+    "gemini-3-pro-preview",
 ];
+
+fn split_model(model: &str) -> (&str, Option<&str>) {
+    match model.split_once('#') {
+        Some((base, suffix)) if !suffix.is_empty() => (base, Some(suffix)),
+        _ => (model, None),
+    }
+}
+
+/// Get the base model name (without variant suffix) from a model string
+fn base_model_name(model: &str) -> &str {
+    split_model(model).0
+}
+
+fn get_model_variants(base: &str) -> Vec<&'static str> {
+    COPILOT_MODELS
+        .iter()
+        .filter(|m| base_model_name(m) == base)
+        .copied()
+        .collect()
+}
 
 #[derive(Debug)]
 struct CopilotState {
@@ -174,7 +206,7 @@ impl CopilotProvider {
                 copilot_token: github.copilot_token,
                 copilot_expires_at: github.copilot_expires_at,
             }),
-            model: "claude-haiku-4.5".to_string(),
+            model: "claude-3.5-sonnet".to_string(),
             thinking_enabled: true,
             services,
         })
@@ -192,8 +224,34 @@ impl CopilotProvider {
         COPILOT_MODELS
     }
 
+    /// Get the available variants (suffixes) for a given model.
+    /// Returns values like "high", "medium", "low", "off".
+    pub(crate) fn model_variants(model: &str) -> Vec<&'static str> {
+        let base = base_model_name(model);
+        get_model_variants(base)
+            .iter()
+            .filter_map(|m| split_model(m).1)
+            .collect()
+    }
+
+    /// Cycle to the next variant for the given model.
+    /// Returns the new full model string with the next variant.
+    pub(crate) fn cycle_model_variant(model: &str) -> String {
+        let base = base_model_name(model);
+        let variants = get_model_variants(base);
+
+        if variants.is_empty() {
+            return model.to_string();
+        }
+
+        let current_idx = variants.iter().position(|v| *v == model).unwrap_or(0);
+        let next_idx = (current_idx + 1) % variants.len();
+        variants[next_idx].to_string()
+    }
+
     fn use_responses_api(&self) -> bool {
-        self.model.starts_with("gpt-5")
+        let base = base_model_name(&self.model);
+        base.starts_with("gpt-5") || base.starts_with("o1") || base.starts_with("o3")
     }
 
     async fn ensure_copilot_token(&self, state: &mut CopilotState) -> Result<String> {
@@ -490,7 +548,7 @@ impl CopilotProvider {
             .collect();
 
         CopilotChatRequest {
-            model: self.model.clone(),
+            model: base_model_name(&self.model).to_string(),
             messages: self.build_messages(messages.to_vec()),
             stream: true,
             tools: openai_tools,
@@ -509,17 +567,22 @@ impl CopilotProvider {
             })
             .collect();
 
-        let reasoning = if self.model.starts_with("gpt-5") && self.thinking_enabled {
+        let base_model = base_model_name(&self.model);
+        let reasoning = if base_model.starts_with("gpt-5") {
+            let effort = split_model(&self.model).1.unwrap_or("medium");
             Some(CopilotReasoningConfig {
-                effort: "medium".to_string(),
-                summary: "auto".to_string(),
+                effort: Some(effort.to_string()),
+                summary: "concise".to_string(),
             })
         } else {
-            None
+            Some(CopilotReasoningConfig {
+                effort: None,
+                summary: "concise".to_string(),
+            })
         };
 
         CopilotResponsesRequest {
-            model: self.model.clone(),
+            model: base_model.to_string(),
             input: self.build_responses_input(messages.to_vec()),
             stream: true,
             reasoning,
@@ -529,9 +592,11 @@ impl CopilotProvider {
 
     /// Get the context limit for a given model name
     pub(crate) fn context_limit(model: &str) -> Option<u64> {
-        // Copilot GPT-5 models have 400k context
-        if model.starts_with("gpt-5") {
+        let base = base_model_name(model);
+        if base.starts_with("gpt-5") {
             Some(400_000)
+        } else if base.starts_with("o1") || base.starts_with("o3") {
+            Some(200_000)
         } else {
             None
         }
@@ -779,7 +844,7 @@ struct CopilotResponsesRequest {
 
 #[derive(Debug, Clone, Serialize)]
 struct CopilotReasoningConfig {
-    effort: String,
+    effort: Option<String>,
     summary: String,
 }
 

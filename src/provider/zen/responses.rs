@@ -17,7 +17,7 @@ use crate::services::Services;
 use crate::tools;
 use crate::usage;
 
-use super::{ChatContext, ZEN_BASE_URL, get_model_spec, strip_unsupported_schema_fields};
+use super::{ChatContext, ZEN_BASE_URL, strip_unsupported_schema_fields};
 
 #[derive(Serialize)]
 pub(super) struct OpenAiResponsesRequest {
@@ -205,7 +205,7 @@ fn build_input(messages: &[Message]) -> Vec<serde_json::Value> {
 pub(super) async fn build_request(
     model: &str,
     messages: &[Message],
-    thinking_enabled: bool,
+    _thinking_enabled: bool,
     services: &Services,
 ) -> OpenAiResponsesRequest {
     let tools: Vec<OpenAiResponsesTool> = tools::all_definitions(services)
@@ -221,18 +221,7 @@ pub(super) async fn build_request(
 
     let input = build_input(messages);
 
-    let model_supports_thinking = get_model_spec(model)
-        .map(|m| m.supports_thinking)
-        .unwrap_or(false);
-
-    let reasoning = if thinking_enabled && model_supports_thinking {
-        Some(serde_json::json!({
-            "effort": "medium",
-            "summary": "auto"
-        }))
-    } else {
-        None
-    };
+    let reasoning = None;
 
     OpenAiResponsesRequest {
         model: model.to_string(),

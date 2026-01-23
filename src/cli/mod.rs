@@ -52,7 +52,8 @@ use crate::output::{self, OutputContext};
 use crate::provider::zen::ZenProvider;
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
 use crate::providers::{
-    ModelChoice, ModelProvider, ProviderManager, cycle_thinking_state, default_thinking_state,
+    ModelChoice, ModelProvider, ProviderManager, cycle_model_variant, cycle_thinking_state,
+    default_thinking_state, get_model_variant, uses_model_variants,
 };
 use crate::services::Services;
 use crate::session;
@@ -158,10 +159,16 @@ fn supports_thinking(provider: ModelProvider, model: &str) -> bool {
     match provider {
         ModelProvider::Antigravity => true,
         ModelProvider::OpenCodeZen => ZenProvider::model_thinking_toggleable(model),
-        ModelProvider::GitHubCopilot => model.starts_with("gpt-5"),
-        ModelProvider::Claude => true,
-        ModelProvider::OpenAi => false,
-        ModelProvider::OpenAiCompat => true,
+        ModelProvider::GitHubCopilot => {
+            let base = model.split_once('#').map(|(b, _)| b).unwrap_or(model);
+            uses_model_variants(provider, model)
+                || base.starts_with("gpt-5")
+                || base.starts_with("o1")
+                || base.starts_with("o3")
+        }
+        ModelProvider::OpenAi => uses_model_variants(provider, model),
+        ModelProvider::Claude => uses_model_variants(provider, model),
+        ModelProvider::OpenAiCompat => false, // Thinking is config-only, not UI toggleable
         ModelProvider::OpenRouter => true,
     }
 }
@@ -861,11 +868,23 @@ async fn run_event_loop(
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
                         // Toggle thinking for next request using cached provider/model
+                        // Note: For variant providers (like OpenAI), model changes only apply
+                        // when idle since we can't change the model mid-chat.
                         if supports_thinking(task.provider, &task.model_id) {
-                            let next =
-                                cycle_thinking_state(task.provider, &task.model_id, thinking_state);
-                            thinking_state.enabled = next.enabled;
-                            thinking_state.mode = next.mode;
+                            if uses_model_variants(task.provider, &task.model_id) {
+                                let variant =
+                                    get_model_variant(&task.model_id).map(|s| s.to_string());
+                                thinking_state.enabled = variant.as_deref() != Some("off");
+                                thinking_state.mode = variant;
+                            } else {
+                                let next = cycle_thinking_state(
+                                    task.provider,
+                                    &task.model_id,
+                                    thinking_state,
+                                );
+                                thinking_state.enabled = next.enabled;
+                                thinking_state.mode = next.mode;
+                            }
 
                             // Update status bar with cached provider info
                             let provider_name = task
@@ -2046,7 +2065,7 @@ fn handle_chat_outcome(
 async fn handle_global_shortcuts(
     key: crossterm::event::KeyEvent,
     thinking_state: &mut crate::providers::ThinkingState,
-    provider_manager: &ProviderManager,
+    provider_manager: &mut ProviderManager,
     services: &Services,
     prompt_box: &mut PromptBox,
     input_state: &InputState,
@@ -2059,9 +2078,24 @@ async fn handle_global_shortcuts(
 
             // Only cycle if thinking is available for this model
             if supports_thinking(provider, model) {
-                let next = cycle_thinking_state(provider, model, thinking_state);
-                thinking_state.enabled = next.enabled;
-                thinking_state.mode = next.mode;
+                // Check if this provider uses model variants for reasoning levels
+                if uses_model_variants(provider, model) {
+                    // Cycle to next model variant
+                    let new_model = cycle_model_variant(provider, model);
+                    let custom_provider = provider_manager
+                        .current_custom_provider()
+                        .map(|s| s.to_string());
+                    provider_manager.set_model(provider, new_model.clone(), custom_provider);
+
+                    // Update thinking state mode to reflect the variant
+                    let variant = get_model_variant(&new_model).map(|s| s.to_string());
+                    thinking_state.enabled = variant.as_deref() != Some("off");
+                    thinking_state.mode = variant;
+                } else {
+                    let next = cycle_thinking_state(provider, model, thinking_state);
+                    thinking_state.enabled = next.enabled;
+                    thinking_state.mode = next.mode;
+                }
 
                 // Update prompt status to show new thinking state
                 update_prompt_status(

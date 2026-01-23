@@ -43,7 +43,7 @@ pub(crate) struct OpenAiChatConfig {
 
 /// Trait for accessing model-specific configuration.
 pub trait ModelConfigProvider: Send + Sync {
-    fn get_model_config(&self, model_name: &str) -> Option<&crate::config::ModelConfig>;
+    fn get_model_config(&self, model_id: &str) -> Option<&crate::config::ModelConfig>;
 }
 
 #[derive(Serialize)]
@@ -477,8 +477,13 @@ pub(crate) async fn build_request(
         })
         .collect();
 
-    // Get model-specific config if available
+    // Get model-specific config (lookup by display name)
     let model_params = model_config.get_model_config(&config.model);
+
+    // Get the API model id from the config
+    let api_model = model_params
+        .map(|c| c.id.clone())
+        .unwrap_or_else(|| config.model.clone());
 
     // Use override if provided, otherwise fall back to model config
     let reasoning_effort = reasoning_effort_override
@@ -486,7 +491,7 @@ pub(crate) async fn build_request(
         .or_else(|| model_params.and_then(|c| c.reasoning_effort.clone()));
 
     Ok(OpenAiRequest {
-        model: config.model.clone(),
+        model: api_model,
         messages: build_messages(&all_messages),
         stream: true,
         tools,
@@ -671,7 +676,6 @@ impl OpenAiCompatProvider {
             enabled: openai_compat.enabled,
             api_key: openai_compat.api_key.clone(),
             base_url: openai_compat.base_url.clone(),
-            models: openai_compat.models.clone(),
             model_configs: openai_compat.model_configs.clone(),
         };
 
@@ -766,8 +770,8 @@ impl Provider for OpenAiCompatProvider {
 
 // Implement ModelConfigProvider for OpenAiCompatProviderConfig
 impl ModelConfigProvider for crate::config::OpenAiCompatProviderConfig {
-    fn get_model_config(&self, model_name: &str) -> Option<&crate::config::ModelConfig> {
-        self.get_model_config(model_name)
+    fn get_model_config(&self, model_id: &str) -> Option<&crate::config::ModelConfig> {
+        self.get_model_config(model_id)
     }
 }
 

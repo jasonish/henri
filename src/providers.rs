@@ -106,7 +106,22 @@ pub(crate) fn default_thinking_state(provider: ModelProvider, model_id: &str) ->
     match provider {
         ModelProvider::Antigravity => AntigravityProvider::default_thinking_state(model_id),
         ModelProvider::OpenCodeZen => ZenProvider::default_thinking_state(model_id),
-        ModelProvider::Claude => AnthropicProvider::default_thinking_state(),
+        ModelProvider::Claude => AnthropicProvider::default_thinking_state(model_id),
+        ModelProvider::GitHubCopilot => {
+            if let Some(variant) = get_model_variant(model_id) {
+                ThinkingState::new(variant != "off", Some(variant.to_string()))
+            } else {
+                ThinkingState::new(true, None)
+            }
+        }
+        ModelProvider::OpenAi => {
+            // For OpenAI models with variants, use the variant as the mode
+            if let Some(variant) = get_model_variant(model_id) {
+                ThinkingState::new(true, Some(variant.to_string()))
+            } else {
+                ThinkingState::new(true, None)
+            }
+        }
         _ => ThinkingState::new(true, None),
     }
 }
@@ -117,18 +132,58 @@ pub(crate) fn cycle_thinking_state(
     current: &ThinkingState,
 ) -> ThinkingState {
     let modes: &[&str] = match provider {
-        ModelProvider::Antigravity => AntigravityProvider::thinking_modes(model_id),
         ModelProvider::OpenCodeZen => ZenProvider::thinking_modes(model_id),
         ModelProvider::Claude => AnthropicProvider::thinking_modes(),
         ModelProvider::GitHubCopilot
         | ModelProvider::OpenAi
         | ModelProvider::OpenAiCompat
-        | ModelProvider::OpenRouter => &["off", "on"],
+        | ModelProvider::OpenRouter
+        | ModelProvider::Antigravity => &["off", "on"],
     };
+
+    if modes.is_empty() {
+        return current.clone();
+    }
 
     let current_label = current.label();
     let next_label = next_thinking_label(current_label, modes);
     thinking_state_from_label(next_label)
+}
+
+/// Check if a provider uses model variants (like `model#variant`) for reasoning levels.
+/// For these providers, Ctrl+T should cycle through model variants instead of thinking modes.
+pub(crate) fn uses_model_variants(provider: ModelProvider, model_id: &str) -> bool {
+    match provider {
+        ModelProvider::GitHubCopilot => CopilotProvider::model_variants(model_id).len() > 1,
+        ModelProvider::Claude => AnthropicProvider::model_variants(model_id).len() > 1,
+        ModelProvider::OpenAi => {
+            // OpenAI models with variants use them for reasoning effort
+            OpenAiProvider::model_variants(model_id).len() > 1
+        }
+        ModelProvider::Antigravity => {
+            // Antigravity models use #variant for thinking levels
+            AntigravityProvider::model_variants(model_id).len() > 1
+        }
+        _ => false,
+    }
+}
+
+/// Cycle to the next model variant for providers that use model variants for reasoning.
+/// Returns the new model ID, or the same model ID if no variants are available.
+pub(crate) fn cycle_model_variant(provider: ModelProvider, model_id: &str) -> String {
+    match provider {
+        ModelProvider::GitHubCopilot => CopilotProvider::cycle_model_variant(model_id),
+        ModelProvider::Claude => AnthropicProvider::cycle_model_variant(model_id),
+        ModelProvider::OpenAi => OpenAiProvider::cycle_model_variant(model_id),
+        ModelProvider::Antigravity => AntigravityProvider::cycle_model_variant(model_id),
+        _ => model_id.to_string(),
+    }
+}
+
+/// Get the current variant/reasoning level from a model ID.
+/// Returns the variant suffix (e.g., "high", "medium") or None if no variant.
+pub(crate) fn get_model_variant(model_id: &str) -> Option<&str> {
+    model_id.split_once('#').map(|(_, variant)| variant)
 }
 
 /// A model choice representing a provider/model combination
@@ -575,13 +630,6 @@ impl ProviderManager {
 
     pub(crate) fn set_thinking_enabled(&mut self, enabled: bool) {
         match self.current_provider {
-            ModelProvider::Antigravity => {
-                if let Some(custom_name) = &self.current_custom_provider
-                    && let Some(p) = self.antigravity_providers.get_mut(custom_name)
-                {
-                    p.set_thinking_enabled(enabled);
-                }
-            }
             ModelProvider::OpenCodeZen => self.zen_provider.set_thinking_enabled(enabled),
             ModelProvider::GitHubCopilot => {
                 if let Some(ref mut p) = self.copilot_provider {
@@ -593,8 +641,11 @@ impl ProviderManager {
                     p.set_thinking_enabled(enabled);
                 }
             }
-            ModelProvider::OpenRouter | ModelProvider::OpenAiCompat | ModelProvider::Claude => {
-                // These providers use set_thinking_mode instead, or always display reasoning
+            ModelProvider::Antigravity
+            | ModelProvider::OpenRouter
+            | ModelProvider::OpenAiCompat
+            | ModelProvider::Claude => {
+                // These providers use model variants or set_thinking_mode instead
             }
         }
     }
@@ -603,17 +654,21 @@ impl ProviderManager {
     /// mode should be one of: "off", "minimal", "low", "medium", "high", or None for default
     pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
         match self.current_provider {
-            ModelProvider::Antigravity => {
-                if let Some(custom_name) = &self.current_custom_provider
-                    && let Some(p) = self.antigravity_providers.get_mut(custom_name)
-                {
-                    p.set_thinking_mode(mode);
-                }
-            }
             ModelProvider::OpenCodeZen => self.zen_provider.set_thinking_mode(mode),
             ModelProvider::Claude => {
                 if let Some(ref mut p) = self.anthropic_provider {
-                    p.set_thinking_mode(mode);
+                    p.set_thinking_mode(mode.clone());
+                    self.current_model_id = p.current_model().to_string();
+                }
+            }
+            ModelProvider::Antigravity | ModelProvider::OpenAi => {
+                if let Some(mode) = mode {
+                    let base = self
+                        .current_model_id
+                        .split_once('#')
+                        .map(|(b, _)| b)
+                        .unwrap_or(&self.current_model_id);
+                    self.current_model_id = format!("{}#{}", base, mode);
                 }
             }
             _ => {}

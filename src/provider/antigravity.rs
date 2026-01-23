@@ -26,13 +26,50 @@ const ANTIGRAVITY_ENDPOINTS: &[&str] = &[
     "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
 ];
 
-// Available models
+// Available models with thinking level variants
 const ANTIGRAVITY_MODELS: &[&str] = &[
-    "gemini-3-flash",
-    "gemini-3-pro-high",
-    "claude-sonnet-4-5-thinking",
-    "claude-opus-4-5-thinking",
+    "gemini-3-flash#minimal",
+    "gemini-3-flash#low",
+    "gemini-3-flash#medium",
+    "gemini-3-flash#high",
+    "gemini-3-pro-high#low",
+    "gemini-3-pro-high#high",
+    "claude-sonnet-4-5-thinking#off",
+    "claude-sonnet-4-5-thinking#low",
+    "claude-sonnet-4-5-thinking#medium",
+    "claude-sonnet-4-5-thinking#high",
+    "claude-sonnet-4-5-thinking#xhigh",
+    "claude-opus-4-5-thinking#off",
+    "claude-opus-4-5-thinking#low",
+    "claude-opus-4-5-thinking#medium",
+    "claude-opus-4-5-thinking#high",
+    "claude-opus-4-5-thinking#xhigh",
 ];
+
+fn split_model(model: &str) -> (&str, Option<&str>) {
+    match model.split_once('#') {
+        Some((base, suffix)) if !suffix.is_empty() => (base, Some(suffix)),
+        _ => (model, None),
+    }
+}
+
+fn thinking_level_from_model(model: &str) -> Option<&str> {
+    split_model(model).1
+}
+
+/// Get the base model name (without variant suffix) from a model string
+fn base_model_name(model: &str) -> &str {
+    split_model(model).0
+}
+
+/// Get all variants for a given base model from the model list
+fn get_model_variants(base: &str) -> Vec<&'static str> {
+    ANTIGRAVITY_MODELS
+        .iter()
+        .filter(|m| base_model_name(m) == base)
+        .copied()
+        .collect()
+}
 
 /// Maximum number of retries for the internal "fast" retry loop.
 /// This handles transient errors (network drops, 429s, 5xx).
@@ -110,8 +147,6 @@ impl ProgressTracker {
 pub(crate) struct AntigravityProvider {
     state: Mutex<AuthState>,
     model: String,
-    thinking_enabled: bool,
-    thinking_mode: Option<String>,
     services: Services,
 }
 
@@ -144,51 +179,61 @@ impl AntigravityProvider {
                 expires_at: antigravity.expires_at,
                 project_id: antigravity.project_id.clone(),
             }),
-            model: "gemini-3-flash".to_string(),
-            thinking_enabled: true,
-            thinking_mode: None,
+            model: "gemini-3-flash#medium".to_string(),
             services,
         })
-    }
-
-    pub(crate) fn set_thinking_enabled(&mut self, enabled: bool) {
-        self.thinking_enabled = enabled;
-        if !enabled {
-            self.thinking_mode = None;
-        }
-    }
-
-    pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
-        self.thinking_mode = mode;
     }
 
     pub(crate) fn set_model(&mut self, model: String) {
         self.model = model;
     }
 
-    /// Returns the available thinking modes for the given model.
-    pub(crate) fn thinking_modes(model: &str) -> &'static [&'static str] {
-        if model.starts_with("claude-") {
-            &["off", "low", "medium", "high", "xhigh"]
-        } else if model == "gemini-3-flash" {
-            &["minimal", "low", "medium", "high"]
-        } else if model.starts_with("gemini-") {
-            &["low", "high"]
-        } else {
-            &["off", "on"]
+    /// Get the available variants (thinking levels) for a given model.
+    /// Returns the variant suffixes like "high", "medium", "low".
+    pub(crate) fn model_variants(model: &str) -> Vec<&'static str> {
+        let base = base_model_name(model);
+        get_model_variants(base)
+            .iter()
+            .filter_map(|m| split_model(m).1)
+            .collect()
+    }
+
+    /// Cycle to the next variant for the given model.
+    /// Returns the new full model string with the next variant.
+    pub(crate) fn cycle_model_variant(model: &str) -> String {
+        let base = base_model_name(model);
+        let variants = get_model_variants(base);
+
+        if variants.is_empty() {
+            return model.to_string();
         }
+
+        // If the model doesn't have a variant, normalize it to include the default variant
+        // This handles cases where users specify a bare model name like "claude-opus-4-5-thinking"
+        let normalized_model = if split_model(model).1.is_none() {
+            // Default to #medium for bare model names (matches default_thinking_state behavior)
+            format!("{}#medium", base)
+        } else {
+            model.to_string()
+        };
+
+        // Find current position and cycle to next
+        let current_idx = variants
+            .iter()
+            .position(|v| *v == normalized_model)
+            .unwrap_or(0);
+        let next_idx = (current_idx + 1) % variants.len();
+        variants[next_idx].to_string()
     }
 
     /// Returns the default thinking state for the given model.
     pub(crate) fn default_thinking_state(model: &str) -> crate::providers::ThinkingState {
-        if model.starts_with("claude-") {
-            crate::providers::ThinkingState::new(true, Some("medium".to_string()))
-        } else if model.starts_with("gemini-3-pro") {
-            crate::providers::ThinkingState::new(true, Some("high".to_string()))
-        } else if model.starts_with("gemini-3-flash") {
-            crate::providers::ThinkingState::new(true, Some("medium".to_string()))
+        // Extract variant from model name
+        if let Some(variant) = thinking_level_from_model(model) {
+            crate::providers::ThinkingState::new(variant != "off", Some(variant.to_string()))
         } else {
-            crate::providers::ThinkingState::new(true, None)
+            // Fallback for bare model names (shouldn't happen with new format)
+            crate::providers::ThinkingState::new(true, Some("medium".to_string()))
         }
     }
 
@@ -460,8 +505,10 @@ impl AntigravityProvider {
             ]
         });
 
-        if self.model.starts_with("claude-") {
-            let budget = match self.thinking_mode.as_deref() {
+        let (base_model, thinking_level) = split_model(&self.model);
+
+        if base_model.starts_with("claude-") {
+            let budget = match thinking_level {
                 Some("low") => 4000,
                 Some("medium") => 16000,
                 Some("high") => 32000,
@@ -474,8 +521,8 @@ impl AntigravityProvider {
                     "thinkingBudget": budget,
                 });
             }
-        } else if self.model.starts_with("gemini-")
-            && let Some(level) = &self.thinking_mode
+        } else if base_model.starts_with("gemini-")
+            && let Some(level) = thinking_level
         {
             request["generationConfig"]["thinkingConfig"] = serde_json::json!({
                 "thinkingLevel": level,
@@ -511,11 +558,13 @@ impl AntigravityProvider {
         project_id: &str,
         request_id: String,
     ) -> serde_json::Value {
+        // Use base model name without the #variant suffix for the API
+        let api_model = base_model_name(&self.model);
         serde_json::json!({
             "project": project_id,
             "userAgent": "antigravity",
             "requestId": request_id,
-            "model": &self.model,
+            "model": api_model,
             "request": inner_request,
             "requestType": "agent"
         })
@@ -962,5 +1011,122 @@ impl Provider for AntigravityProvider {
 
     fn start_turn(&self) {
         crate::usage::antigravity().start_turn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_model() {
+        assert_eq!(
+            split_model("gemini-3-flash#medium"),
+            ("gemini-3-flash", Some("medium"))
+        );
+        assert_eq!(
+            split_model("claude-sonnet-4-5-thinking#high"),
+            ("claude-sonnet-4-5-thinking", Some("high"))
+        );
+        assert_eq!(split_model("gemini-3-flash"), ("gemini-3-flash", None));
+        assert_eq!(split_model("gemini-3-flash#"), ("gemini-3-flash#", None));
+    }
+
+    #[test]
+    fn test_model_variants() {
+        // gemini-3-flash has 4 variants (low to high)
+        let variants = AntigravityProvider::model_variants("gemini-3-flash#medium");
+        assert_eq!(variants, vec!["minimal", "low", "medium", "high"]);
+
+        // gemini-3-pro-high has 2 variants
+        let variants = AntigravityProvider::model_variants("gemini-3-pro-high#high");
+        assert_eq!(variants, vec!["low", "high"]);
+
+        // claude models have 5 variants
+        let variants = AntigravityProvider::model_variants("claude-sonnet-4-5-thinking#medium");
+        assert_eq!(variants, vec!["off", "low", "medium", "high", "xhigh"]);
+    }
+
+    #[test]
+    fn test_cycle_model_variant() {
+        // Cycle through gemini-3-flash variants (low to high, then wrap)
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("gemini-3-flash#minimal"),
+            "gemini-3-flash#low"
+        );
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("gemini-3-flash#low"),
+            "gemini-3-flash#medium"
+        );
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("gemini-3-flash#medium"),
+            "gemini-3-flash#high"
+        );
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("gemini-3-flash#high"),
+            "gemini-3-flash#minimal" // wraps around
+        );
+
+        // Cycle through claude-opus-4-5-thinking variants
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking#off"),
+            "claude-opus-4-5-thinking#low"
+        );
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking#low"),
+            "claude-opus-4-5-thinking#medium"
+        );
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking#medium"),
+            "claude-opus-4-5-thinking#high"
+        );
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking#high"),
+            "claude-opus-4-5-thinking#xhigh"
+        );
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking#xhigh"),
+            "claude-opus-4-5-thinking#off" // wraps around
+        );
+    }
+
+    #[test]
+    fn test_cycle_model_variant_unknown() {
+        // Unknown model returns unchanged
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("unknown-model"),
+            "unknown-model"
+        );
+    }
+
+    #[test]
+    fn test_cycle_model_variant_bare_model() {
+        // Bare model names (without variant) should be treated as #medium and cycle to #high
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking"),
+            "claude-opus-4-5-thinking#high"
+        );
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("claude-sonnet-4-5-thinking"),
+            "claude-sonnet-4-5-thinking#high"
+        );
+        // gemini-3-flash defaults to #medium which cycles to #high
+        assert_eq!(
+            AntigravityProvider::cycle_model_variant("gemini-3-flash"),
+            "gemini-3-flash#high"
+        );
+    }
+
+    #[test]
+    fn test_thinking_level_from_model() {
+        assert_eq!(
+            thinking_level_from_model("gemini-3-flash#high"),
+            Some("high")
+        );
+        assert_eq!(
+            thinking_level_from_model("claude-sonnet-4-5-thinking#off"),
+            Some("off")
+        );
+        assert_eq!(thinking_level_from_model("gemini-3-flash"), None);
     }
 }

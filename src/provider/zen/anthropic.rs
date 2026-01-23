@@ -16,7 +16,7 @@ use crate::sse;
 use crate::tools;
 use crate::usage;
 
-use super::{ChatContext, ZEN_BASE_URL, get_model_spec};
+use super::{ChatContext, ZEN_BASE_URL};
 
 #[derive(Serialize)]
 pub(super) struct AnthropicRequest {
@@ -198,7 +198,7 @@ pub(super) fn build_messages(messages: &[Message]) -> Vec<serde_json::Value> {
 pub(super) async fn build_request(
     model: &str,
     messages: &[Message],
-    thinking_enabled: bool,
+    _thinking_enabled: bool,
     services: &Services,
 ) -> AnthropicRequest {
     let tools: Vec<AnthropicTool> = tools::all_definitions(services)
@@ -211,18 +211,7 @@ pub(super) async fn build_request(
         })
         .collect();
 
-    let model_supports_thinking = get_model_spec(model)
-        .map(|m| m.supports_thinking)
-        .unwrap_or(false);
-
-    let thinking = if thinking_enabled && model_supports_thinking {
-        Some(AnthropicThinkingConfig {
-            kind: "enabled".to_string(),
-            budget_tokens: 10000,
-        })
-    } else {
-        None
-    };
+    let thinking = None;
 
     AnthropicRequest {
         model: model.to_string(),

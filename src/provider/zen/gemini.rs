@@ -19,7 +19,7 @@ use crate::sse;
 use crate::tools;
 use crate::usage;
 
-use super::{ChatContext, ZEN_BASE_URL, get_model_spec, strip_unsupported_schema_fields};
+use super::{ChatContext, ZEN_BASE_URL, strip_unsupported_schema_fields};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -238,10 +238,10 @@ fn build_contents(messages: &[Message]) -> Vec<GeminiContent> {
 }
 
 pub(super) async fn build_request(
-    model: &str,
+    _model: &str,
     messages: &[Message],
-    thinking_enabled: bool,
-    thinking_mode: Option<&str>,
+    _thinking_enabled: bool,
+    _thinking_mode: Option<&str>,
     services: &Services,
 ) -> GeminiRequest {
     let tools: Vec<GeminiToolDeclaration> = vec![GeminiToolDeclaration {
@@ -256,22 +256,10 @@ pub(super) async fn build_request(
             .collect(),
     }];
 
-    let model_supports_thinking = get_model_spec(model)
-        .map(|m| m.supports_thinking)
-        .unwrap_or(false);
-
-    let thinking_config = if thinking_enabled && model_supports_thinking {
-        thinking_mode.map(|mode| GeminiThinkingConfig {
-            thinking_level: mode.to_string(),
-        })
-    } else {
-        None
-    };
-
     let generation_config = Some(GeminiGenerationConfig {
         max_output_tokens: Some(8192),
         candidate_count: Some(1),
-        thinking_config,
+        thinking_config: None,
     });
 
     let cwd = std::env::current_dir()

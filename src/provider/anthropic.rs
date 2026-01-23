@@ -65,9 +65,47 @@ fn from_claude_code_name(name: &str) -> String {
     }
 }
 
-const ANTHROPIC_MODELS: &[&str] = &["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"];
+const ANTHROPIC_MODELS: &[&str] = &[
+    "claude-opus-4-5#off",
+    "claude-opus-4-5#low",
+    "claude-opus-4-5#medium",
+    "claude-opus-4-5#high",
+    "claude-sonnet-4-5#off",
+    "claude-sonnet-4-5#low",
+    "claude-sonnet-4-5#medium",
+    "claude-sonnet-4-5#high",
+    "claude-haiku-4-5#off",
+    "claude-haiku-4-5#low",
+    "claude-haiku-4-5#medium",
+    "claude-haiku-4-5#high",
+];
 
-const DEFAULT_MODEL: &str = ANTHROPIC_MODELS[2];
+const DEFAULT_MODEL: &str = "claude-haiku-4-5#medium";
+
+fn split_anthropic_model(model: &str) -> (&str, Option<&str>) {
+    match model.split_once('#') {
+        Some((base, suffix)) if !suffix.is_empty() => (base, Some(suffix)),
+        _ => (model, None),
+    }
+}
+
+fn thinking_level_from_model(model: &str) -> Option<&str> {
+    split_anthropic_model(model).1
+}
+
+/// Get the base model name (without variant suffix) from a model string
+fn base_model_name(model: &str) -> &str {
+    split_anthropic_model(model).0
+}
+
+/// Get all variants for a given base model from the model list
+fn get_model_variants(base: &str) -> Vec<&'static str> {
+    ANTHROPIC_MODELS
+        .iter()
+        .filter(|m| base_model_name(m) == base)
+        .copied()
+        .collect()
+}
 
 struct AuthState {
     local_id: String,
@@ -345,34 +383,76 @@ pub(crate) struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub(crate) fn try_new(services: Services) -> Result<Self> {
+        let model = DEFAULT_MODEL.to_string();
         Ok(Self {
             client: AnthropicClient::try_new()?,
-            model: DEFAULT_MODEL.to_string(),
-            thinking_mode: Some("medium".to_string()),
+            thinking_mode: thinking_level_from_model(&model).map(|s| s.to_string()),
+            model,
             services: services.clone(),
         })
     }
 
     pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
-        self.thinking_mode = mode;
+        if let Some(mode) = mode.clone() {
+            let base = base_model_name(&self.model);
+            self.model = format!("{}#{}", base, mode);
+            self.thinking_mode = Some(mode);
+        } else {
+            self.thinking_mode = None;
+        }
     }
 
     pub(crate) fn set_model(&mut self, model: String) {
         self.model = model;
+        self.thinking_mode = thinking_level_from_model(&self.model).map(|s| s.to_string());
+    }
+
+    pub(crate) fn current_model(&self) -> &str {
+        &self.model
     }
 
     /// Returns the available thinking modes for Claude models.
     pub(crate) fn thinking_modes() -> &'static [&'static str] {
-        &["off", "low", "medium", "high"]
+        &[]
     }
 
     /// Returns the default thinking state for Claude models.
-    pub(crate) fn default_thinking_state() -> crate::providers::ThinkingState {
-        crate::providers::ThinkingState::new(true, Some("medium".to_string()))
+    pub(crate) fn default_thinking_state(model: &str) -> crate::providers::ThinkingState {
+        if let Some(variant) = thinking_level_from_model(model) {
+            crate::providers::ThinkingState::new(variant != "off", Some(variant.to_string()))
+        } else {
+            crate::providers::ThinkingState::new(true, Some("medium".to_string()))
+        }
     }
 
     pub(crate) fn models() -> &'static [&'static str] {
         ANTHROPIC_MODELS
+    }
+
+    /// Get the available variants (thinking levels) for a given model.
+    /// Returns the variant suffixes like "high", "medium", "low", "off".
+    pub(crate) fn model_variants(model: &str) -> Vec<&'static str> {
+        let base = base_model_name(model);
+        get_model_variants(base)
+            .iter()
+            .filter_map(|m| split_anthropic_model(m).1)
+            .collect()
+    }
+
+    /// Cycle to the next variant for the given model.
+    /// Returns the new full model string with the next variant.
+    pub(crate) fn cycle_model_variant(model: &str) -> String {
+        let base = base_model_name(model);
+        let variants = get_model_variants(base);
+
+        if variants.is_empty() {
+            return model.to_string();
+        }
+
+        // Find current position and cycle to next
+        let current_idx = variants.iter().position(|v| *v == model).unwrap_or(0);
+        let next_idx = (current_idx + 1) % variants.len();
+        variants[next_idx].to_string()
     }
 
     async fn ensure_access_token(&self) -> Result<String> {
@@ -578,6 +658,7 @@ impl AnthropicProvider {
             })
             .collect();
 
+        let (model, _) = split_anthropic_model(&self.model);
         let thinking = match self.thinking_mode.as_deref() {
             Some("low") => Some(ThinkingConfig {
                 kind: "enabled".to_string(),
@@ -590,6 +671,10 @@ impl AnthropicProvider {
             Some("high") => Some(ThinkingConfig {
                 kind: "enabled".to_string(),
                 budget_tokens: 32000,
+            }),
+            Some("xhigh") => Some(ThinkingConfig {
+                kind: "enabled".to_string(),
+                budget_tokens: 48000,
             }),
             _ => None,
         };
@@ -627,7 +712,7 @@ impl AnthropicProvider {
         }
 
         AnthropicRequest {
-            model: self.model.clone(),
+            model: model.to_string(),
             messages: built_messages,
             system,
             max_tokens: 16000,

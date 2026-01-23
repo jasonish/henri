@@ -453,23 +453,24 @@ pub(crate) struct OpenAiCompatProviderConfig {
     #[serde(default)]
     pub api_key: String,
     pub base_url: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub models: Vec<String>,
     #[serde(default, rename = "model", skip_serializing_if = "Vec::is_empty")]
     pub model_configs: Vec<ModelConfig>,
 }
 
 impl OpenAiCompatProviderConfig {
-    /// Get all available model names (from both simple list and detailed configs)
+    /// Get all available model names for UI display
     pub(crate) fn all_models(&self) -> Vec<String> {
-        let mut models = self.models.clone();
-        models.extend(self.model_configs.iter().map(|m| m.name.clone()));
-        models
+        self.model_configs
+            .iter()
+            .map(|m| m.display_name().to_string())
+            .collect()
     }
 
-    /// Get configuration for a specific model
-    pub(crate) fn get_model_config(&self, model_name: &str) -> Option<&ModelConfig> {
-        self.model_configs.iter().find(|m| m.name == model_name)
+    /// Get configuration for a specific model by display name
+    pub(crate) fn get_model_config(&self, display_name: &str) -> Option<&ModelConfig> {
+        self.model_configs
+            .iter()
+            .find(|m| m.display_name() == display_name)
     }
 }
 
@@ -480,31 +481,35 @@ pub(crate) struct OpenRouterConfig {
     pub enabled: bool,
     #[serde(default)]
     pub api_key: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub models: Vec<String>,
     #[serde(default, rename = "model", skip_serializing_if = "Vec::is_empty")]
     pub model_configs: Vec<ModelConfig>,
 }
 
 impl OpenRouterConfig {
-    /// Get all available model names (from both simple list and detailed configs)
+    /// Get all available model names for UI display
     pub(crate) fn all_models(&self) -> Vec<String> {
-        let mut models = self.models.clone();
-        models.extend(self.model_configs.iter().map(|m| m.name.clone()));
-        models
+        self.model_configs
+            .iter()
+            .map(|m| m.display_name().to_string())
+            .collect()
     }
 
-    /// Get configuration for a specific model
-    pub(crate) fn get_model_config(&self, model_name: &str) -> Option<&ModelConfig> {
-        self.model_configs.iter().find(|m| m.name == model_name)
+    /// Get configuration for a specific model by display name
+    pub(crate) fn get_model_config(&self, display_name: &str) -> Option<&ModelConfig> {
+        self.model_configs
+            .iter()
+            .find(|m| m.display_name() == display_name)
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) struct ModelConfig {
-    /// Model name/identifier
-    pub name: String,
+    /// Model identifier sent to the API
+    pub id: String,
+    /// Optional display name for the UI (defaults to id if not set)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Reasoning effort level (low, medium, high)
     #[serde(default)]
     pub reasoning_effort: Option<String>,
@@ -524,6 +529,13 @@ pub(crate) struct ModelConfig {
     /// Stop sequences
     #[serde(default)]
     pub stop_sequences: Option<Vec<String>>,
+}
+
+impl ModelConfig {
+    /// Get the display name for UI purposes (falls back to id if name is not set)
+    pub(crate) fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.id)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -906,7 +918,8 @@ mod tests {
 
         // Test ModelConfig
         let model_config = ModelConfig {
-            name: "test".to_string(),
+            id: "test-model-id".to_string(),
+            name: Some("Test Model".to_string()),
             reasoning_effort: Some("high".to_string()),
             thinking: None,
             temperature: Some(0.7),
@@ -915,6 +928,8 @@ mod tests {
             stop_sequences: Some(vec!["STOP".to_string()]),
         };
         let toml = toml::to_string(&model_config).unwrap();
+        assert!(toml.contains("id = "), "Expected 'id'");
+        assert!(toml.contains("name = "), "Expected 'name'");
         assert!(
             toml.contains("reasoning-effort"),
             "Expected 'reasoning-effort'"
@@ -922,6 +937,20 @@ mod tests {
         assert!(toml.contains("max-tokens"), "Expected 'max-tokens'");
         assert!(toml.contains("system-prompt"), "Expected 'system-prompt'");
         assert!(toml.contains("stop-sequences"), "Expected 'stop-sequences'");
+
+        // Test display_name falls back to id when name is None
+        let model_config_no_name = ModelConfig {
+            id: "fallback-id".to_string(),
+            name: None,
+            reasoning_effort: None,
+            thinking: None,
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+            stop_sequences: None,
+        };
+        assert_eq!(model_config_no_name.display_name(), "fallback-id");
+        assert_eq!(model_config.display_name(), "Test Model");
     }
 
     #[test]
@@ -1068,5 +1097,60 @@ default = "tui"
         // But other valid fields should be preserved
         assert!(!config.show_network_stats);
         assert!(config.show_diffs);
+    }
+
+    #[test]
+    fn test_model_config_aliases() {
+        // Test that multiple model configs can share the same API id but have different names
+        let config = OpenAiCompatProviderConfig {
+            enabled: true,
+            api_key: "test".to_string(),
+            base_url: "https://example.com".to_string(),
+            model_configs: vec![
+                ModelConfig {
+                    id: "claude-opus-4-5-thinking".to_string(),
+                    name: Some("claude-opus-4-5-thinking#off".to_string()),
+                    reasoning_effort: Some("off".to_string()),
+                    thinking: None,
+                    temperature: None,
+                    max_tokens: None,
+                    system_prompt: None,
+                    stop_sequences: None,
+                },
+                ModelConfig {
+                    id: "claude-opus-4-5-thinking".to_string(),
+                    name: Some("claude-opus-4-5-thinking#high".to_string()),
+                    reasoning_effort: Some("high".to_string()),
+                    thinking: None,
+                    temperature: None,
+                    max_tokens: None,
+                    system_prompt: None,
+                    stop_sequences: None,
+                },
+            ],
+        };
+
+        // all_models() should return the display names
+        let models = config.all_models();
+        assert_eq!(models.len(), 2);
+        assert!(models.contains(&"claude-opus-4-5-thinking#off".to_string()));
+        assert!(models.contains(&"claude-opus-4-5-thinking#high".to_string()));
+
+        // get_model_config() should find by display name
+        let off_config = config.get_model_config("claude-opus-4-5-thinking#off");
+        assert!(off_config.is_some());
+        let off_config = off_config.unwrap();
+        assert_eq!(off_config.id, "claude-opus-4-5-thinking");
+        assert_eq!(off_config.reasoning_effort, Some("off".to_string()));
+
+        let high_config = config.get_model_config("claude-opus-4-5-thinking#high");
+        assert!(high_config.is_some());
+        let high_config = high_config.unwrap();
+        assert_eq!(high_config.id, "claude-opus-4-5-thinking");
+        assert_eq!(high_config.reasoning_effort, Some("high".to_string()));
+
+        // Looking up by API id should not find anything (we lookup by display name)
+        let by_id = config.get_model_config("claude-opus-4-5-thinking");
+        assert!(by_id.is_none());
     }
 }

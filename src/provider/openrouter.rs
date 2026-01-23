@@ -48,7 +48,6 @@ impl OpenRouterProvider {
         let provider_config = crate::config::OpenRouterConfig {
             enabled: openrouter_config.enabled,
             api_key: openrouter_config.api_key.clone(),
-            models: openrouter_config.models.clone(),
             model_configs: openrouter_config.model_configs.clone(),
         };
 
@@ -110,7 +109,7 @@ impl Provider for OpenRouterProvider {
 
 // Implement ModelConfigProvider for OpenRouterConfig
 impl ModelConfigProvider for crate::config::OpenRouterConfig {
-    fn get_model_config(&self, model_name: &str) -> Option<&crate::config::ModelConfig> {
-        self.get_model_config(model_name)
+    fn get_model_config(&self, model_id: &str) -> Option<&crate::config::ModelConfig> {
+        self.get_model_config(model_id)
     }
 }
