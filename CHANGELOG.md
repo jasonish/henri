@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Todo tools now appear as a single "todo" entry in the tools menu instead of
+  separate `todo_read` and `todo_write` entries
+- Todo tool usage guidelines are now only included in the system prompt when
+  the todo tools are enabled
+
 ### Fixed
 
 - CLI: Bandwidth display updates in real time again during streaming responses

@@ -772,6 +772,15 @@ impl ConfigFile {
         }
     }
 
+    /// Set todo_enabled and ensure underlying tools are enabled when enabling.
+    pub(crate) fn set_todo_enabled(&mut self, enabled: bool) {
+        self.todo_enabled = enabled;
+        if enabled {
+            self.disabled_tools
+                .retain(|t| t != "todo_read" && t != "todo_write");
+        }
+    }
+
     /// Get all providers of a specific type
     pub(crate) fn providers_of_type(
         &self,

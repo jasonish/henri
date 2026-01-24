@@ -30,6 +30,9 @@ pub(crate) const READ_ONLY_DISABLED_TOOLS: &[&str] = &["file_delete", "file_edit
 
 /// Built-in tool names and their human-readable descriptions.
 /// This is the single source of truth for tool metadata used in menus and UIs.
+///
+/// Note: "todo" is a consolidated UI entry representing both `todo_read` and
+/// `todo_write` tools. The actual tools exposed to the AI remain separate.
 pub(crate) const TOOL_INFO: &[(&str, &str)] = &[
     ("bash", "Execute shell commands"),
     ("fetch", "Fetch URLs and convert to markdown"),
@@ -40,8 +43,7 @@ pub(crate) const TOOL_INFO: &[(&str, &str)] = &[
     ("glob", "Find files using glob patterns"),
     ("grep", "Search for patterns in files"),
     ("list_dir", "List directory contents"),
-    ("todo_read", "Read the current todo list"),
-    ("todo_write", "Update the todo list"),
+    ("todo", "Todo list tools (read/write)"),
 ];
 
 /// Tool definition for AI model consumption
