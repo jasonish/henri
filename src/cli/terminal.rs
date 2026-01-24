@@ -198,9 +198,6 @@ pub(super) fn set_prompt_visible(height: u16, start_row: u16, status_row_offset:
         } else {
             status_row_offset.min(height.saturating_sub(1))
         };
-        state.bandwidth_allowed = false;
-        state.bandwidth_min_col = 0;
-        state.bandwidth_col = None;
         was
     } else {
         false
@@ -430,8 +427,7 @@ pub(crate) fn update_bandwidth_display(text: &str) {
     let width = term_width();
     let text_len = text.chars().count() as u16;
 
-    if text.is_empty() {
-        // Clear any previous bandwidth display.
+    let clear_display = |prev_col: Option<u16>| {
         let mut stdout = io::stdout();
         let _ = stdout.sync_update(|stdout| {
             use crossterm::queue;
@@ -459,6 +455,11 @@ pub(crate) fn update_bandwidth_display(text: &str) {
         if let Ok(mut state) = PROMPT_STATE.lock() {
             state.bandwidth_col = None;
         }
+    };
+
+    if text.is_empty() {
+        // Clear any previous bandwidth display.
+        clear_display(prev_col);
         return;
     }
 
@@ -466,7 +467,7 @@ pub(crate) fn update_bandwidth_display(text: &str) {
 
     // If we still cannot fit without overlapping, hide.
     if col.saturating_add(text_len) > width {
-        update_bandwidth_display("");
+        clear_display(prev_col);
         return;
     }
 

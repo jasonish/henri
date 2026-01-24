@@ -1515,6 +1515,23 @@ impl PromptBox {
             cwd.to_string()
         };
 
+        // Calculate net column if we plan to show it.
+        let net_col = if show_net {
+            (width.saturating_sub(net_width)) as u16
+        } else {
+            0
+        };
+        let left_width = fixed_left + display_width(&cwd_display);
+
+        // Track bandwidth layout so the streaming updater can render during a turn.
+        let bandwidth_allowed = show_net;
+        let bandwidth_min_col = if show_net {
+            left_width.saturating_add(1).min(width) as u16
+        } else {
+            0
+        };
+        let bandwidth_clear = !show_net;
+
         // Render: provider (magenta) / (grey) model (cyan) #suffix (colored) space cwd (blue)
         queue!(stdout, SetForegroundColor(Color::Magenta))?;
         write!(stdout, "{}", provider)?;
@@ -1537,27 +1554,22 @@ impl PromptBox {
         queue!(stdout, SetForegroundColor(Color::Blue))?;
         write!(stdout, "{}", cwd_display)?;
 
-        // Handle bandwidth display.
-        if show_net {
-            let net_col = (width.saturating_sub(net_width)) as u16;
-            cli_terminal::set_bandwidth_allowed(true);
-            cli_terminal::set_bandwidth_min_col(net_col);
-
-            if let Some(ref text) = net_text {
-                queue!(
-                    stdout,
-                    cursor::MoveTo(net_col, row),
-                    SetForegroundColor(Color::DarkGrey)
-                )?;
-                write!(stdout, "{}", text)?;
-            }
-        } else {
-            cli_terminal::set_bandwidth_allowed(false);
-            cli_terminal::set_bandwidth_min_col(0);
-            cli_terminal::set_bandwidth_col(None);
+        if show_net && let Some(ref text) = net_text {
+            queue!(
+                stdout,
+                cursor::MoveTo(net_col, row),
+                SetForegroundColor(Color::DarkGrey)
+            )?;
+            write!(stdout, "{}", text)?;
         }
 
         queue!(stdout, ResetColor)?;
+
+        cli_terminal::set_bandwidth_allowed(bandwidth_allowed);
+        cli_terminal::set_bandwidth_min_col(bandwidth_min_col);
+        if bandwidth_clear {
+            cli_terminal::set_bandwidth_col(None);
+        }
         Ok(())
     }
 }

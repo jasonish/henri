@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- CLI: Bandwidth display updates in real time again during streaming responses
+  and avoids overlapping the prompt status line
+
 ### Changed
 
 - CLI: Improved vertical spacing in streaming output with reactive spacing model
