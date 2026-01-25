@@ -471,7 +471,6 @@ pub(super) enum SettingOption {
     ShowNetworkStats(bool),
     ShowDiffs(bool),
     LspEnabled(bool),
-    TodoEnabled(bool),
 }
 
 impl SettingOption {
@@ -480,7 +479,6 @@ impl SettingOption {
             SettingOption::ShowNetworkStats(_) => "Network Stats",
             SettingOption::ShowDiffs(_) => "Show Diffs",
             SettingOption::LspEnabled(_) => "LSP Integration",
-            SettingOption::TodoEnabled(_) => "Todo Tools",
         }
     }
 
@@ -488,8 +486,7 @@ impl SettingOption {
         match self {
             SettingOption::ShowNetworkStats(enabled)
             | SettingOption::ShowDiffs(enabled)
-            | SettingOption::LspEnabled(enabled)
-            | SettingOption::TodoEnabled(enabled) => {
+            | SettingOption::LspEnabled(enabled) => {
                 if *enabled { "Enabled" } else { "Disabled" }.to_string()
             }
         }
@@ -499,8 +496,7 @@ impl SettingOption {
         match self {
             SettingOption::ShowNetworkStats(enabled)
             | SettingOption::ShowDiffs(enabled)
-            | SettingOption::LspEnabled(enabled)
-            | SettingOption::TodoEnabled(enabled) => {
+            | SettingOption::LspEnabled(enabled) => {
                 *enabled = !*enabled;
             }
         }
@@ -517,9 +513,6 @@ impl SettingOption {
                 }
                 SettingOption::LspEnabled(enabled) => {
                     config.lsp_enabled = *enabled;
-                }
-                SettingOption::TodoEnabled(enabled) => {
-                    config.set_todo_enabled(*enabled);
                 }
             }
             let _ = config.save();
@@ -633,7 +626,6 @@ impl SettingsMenuState {
                 SettingOption::ShowNetworkStats(config.show_network_stats),
                 SettingOption::ShowDiffs(config.show_diffs),
                 SettingOption::LspEnabled(config.lsp_enabled),
-                SettingOption::TodoEnabled(config.todo_enabled),
             ],
             selected_index: 0,
             default_model_submenu: None,
