@@ -496,17 +496,27 @@ impl LspClient {
 /// Manager for multiple LSP server connections
 pub(crate) struct LspManager {
     clients: RwLock<Vec<LspClient>>,
+    /// Pending server configs that haven't been started yet (lazy initialization)
+    pending_configs: RwLock<Vec<LspServerConfig>>,
 }
 
 impl LspManager {
     pub(crate) fn new() -> Self {
         Self {
             clients: RwLock::new(Vec::new()),
+            pending_configs: RwLock::new(Vec::new()),
         }
     }
 
-    /// Start an LSP server
-    pub async fn start_server(&self, config: &LspServerConfig) -> Result<()> {
+    /// Register LSP server configs for lazy initialization
+    /// Servers will be started on-demand when a matching file is edited
+    pub async fn register_configs(&self, configs: Vec<LspServerConfig>) {
+        let mut pending = self.pending_configs.write().await;
+        pending.extend(configs);
+    }
+
+    /// Start an LSP server from config
+    async fn start_server(&self, config: &LspServerConfig) -> Result<()> {
         let mut clients = self.clients.write().await;
         if clients.iter().any(|c| c.name == config.name) {
             return Ok(());
@@ -516,11 +526,35 @@ impl LspManager {
         Ok(())
     }
 
+    /// Start any pending LSP servers that handle the given file extension
+    async fn start_pending_servers_for_extension(&self, ext: &str) {
+        let configs = {
+            let mut pending = self.pending_configs.write().await;
+            let mut configs = Vec::new();
+            pending.retain(|config| {
+                let matches = config.file_extensions.iter().any(|e| e == ext);
+                if matches {
+                    configs.push(config.clone());
+                }
+                !matches
+            });
+            configs
+        };
+
+        for config in configs {
+            let _ = self.start_server(&config).await;
+        }
+    }
+
     /// Notify that a file was opened or changed
-    /// This will automatically open the file with the LSP if not already open
+    /// This will automatically start the LSP server if not already running,
+    /// and open the file with the LSP if not already open
     pub async fn notify_file_changed(&self, path: &Path, content: &str) -> Result<()> {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+        // Start any pending servers for this extension (supports multi-server configs)
+        self.start_pending_servers_for_extension(ext).await;
 
         let clients = self.clients.read().await;
         for client in clients.iter() {
@@ -570,11 +604,22 @@ impl LspManager {
         Vec::new()
     }
 
-    /// Check if any LSP server handles the given file extension
+    /// Check if any LSP server (running or pending) handles the given file extension
     pub async fn handles_file(&self, path: &Path) -> bool {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+        // Check running clients
         let clients = self.clients.read().await;
-        clients.iter().any(|c| c.handles_extension(ext))
+        if clients.iter().any(|c| c.handles_extension(ext)) {
+            return true;
+        }
+        drop(clients);
+
+        // Check pending configs
+        let pending = self.pending_configs.read().await;
+        pending
+            .iter()
+            .any(|c| c.file_extensions.iter().any(|e| e == ext))
     }
 
     /// Get the number of active LSP servers
@@ -612,15 +657,11 @@ pub(crate) fn manager() -> Arc<LspManager> {
         .clone()
 }
 
-/// Initialize LSP servers from configuration
-pub(crate) async fn initialize(servers: Vec<LspServerConfig>) -> Result<()> {
+/// Register LSP server configs for lazy initialization
+/// Servers will be started on-demand when a matching file is edited
+pub(crate) async fn register_configs(servers: Vec<LspServerConfig>) {
     let mgr = manager();
-    for config in servers {
-        if let Err(_e) = mgr.start_server(&config).await {
-            // LSP initialization is optional - silently ignore failures
-        }
-    }
-    Ok(())
+    mgr.register_configs(servers).await;
 }
 
 /// Format diagnostics for inclusion in tool results

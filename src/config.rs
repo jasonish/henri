@@ -855,7 +855,7 @@ pub async fn initialize_servers(working_dir: &Path, lsp_override: Option<bool>) 
     // Determine if LSP is enabled: command-line override takes precedence
     let lsp_enabled = lsp_override.unwrap_or(config_file.lsp_enabled);
 
-    // Initialize LSP servers if enabled
+    // Register LSP server configs for lazy initialization (servers start on-demand)
     if lsp_enabled && let Some(lsp_config) = &config_file.lsp {
         let servers: Vec<crate::lsp::LspServerConfig> = lsp_config
             .servers
@@ -869,7 +869,7 @@ pub async fn initialize_servers(working_dir: &Path, lsp_override: Option<bool>) 
                 root_path: working_dir.to_path_buf(),
             })
             .collect();
-        let _ = crate::lsp::initialize(servers).await;
+        crate::lsp::register_configs(servers).await;
     }
 }
 

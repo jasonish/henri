@@ -4,6 +4,9 @@
 
 ### Changed
 
+- LSP: Servers are now started lazily on-demand when a file with a matching
+  extension is edited, rather than all at startup. This improves startup time
+  when multiple LSP servers are configured.
 - Todo tools now appear as a single "todo" entry in the tools menu instead of
   separate `todo_read` and `todo_write` entries
 - Todo tool usage guidelines are now only included in the system prompt when
