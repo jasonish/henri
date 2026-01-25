@@ -519,6 +519,10 @@ fn is_prompt_visible() -> bool {
     PROMPT_STATE.lock().map(|s| s.visible).unwrap_or(false)
 }
 
+pub(crate) fn prompt_visible() -> bool {
+    is_prompt_visible()
+}
+
 fn calculate_output_size(mut col: u16, text: &str, width: u16) -> (u16, u16) {
     let mut lines = 0;
     let mut chars = text.chars().peekable();
@@ -674,6 +678,152 @@ fn shift_prompt_down(lines: u16) {
     }
 }
 
+/// Reserve blank lines above the prompt for a tool output viewport.
+/// Returns true if all requested lines were reserved.
+pub(crate) fn reserve_output_lines(lines: u16) -> bool {
+    if lines == 0 {
+        return true;
+    }
+
+    let _guard = lock_output();
+
+    if !is_prompt_visible() {
+        return false;
+    }
+
+    let (start_row, height, status_active) = {
+        let state = PROMPT_STATE.lock().unwrap();
+        (state.start_row, state.height, state.status_line_active)
+    };
+
+    let reserved_rows = if status_active {
+        STREAMING_STATUS_LINE_ROWS
+    } else {
+        0
+    };
+
+    let insert_row = start_row.saturating_sub(reserved_rows);
+    let term_height = term_height();
+
+    let max_insert = term_height.saturating_sub(start_row.saturating_add(height));
+    let shift = lines.min(max_insert);
+    let mut reserved = 0u16;
+
+    let mut stdout = io::stdout();
+    let _ = execute!(stdout, crossterm::cursor::SavePosition, Hide);
+
+    if shift > 0 {
+        let _ = execute!(stdout, MoveTo(0, insert_row));
+        for _ in 0..shift {
+            print!("\x1b[L");
+        }
+        let _ = stdout.flush();
+        reserved = reserved.saturating_add(shift);
+
+        if let Ok(mut state) = PROMPT_STATE.lock() {
+            state.start_row = state.start_row.saturating_add(shift);
+        }
+    }
+
+    if shift < lines {
+        let remaining = lines.saturating_sub(shift);
+        let output_bottom = insert_row.saturating_sub(1);
+        if output_bottom > 0 {
+            print!("\x1b[{};{}r", 1, output_bottom + 1);
+            let _ = execute!(stdout, MoveTo(0, output_bottom));
+            let _ = execute!(stdout, ScrollUp(remaining));
+            print!("\x1b[r");
+            let _ = stdout.flush();
+            reserved = reserved.saturating_add(remaining);
+        } else {
+            // No output area to scroll; cannot reserve remaining lines.
+        }
+    }
+
+    // Restore cursor to prompt
+    let restored = if let Ok(state) = PROMPT_STATE.lock()
+        && let Some((off, col)) = state.cursor_pos
+    {
+        let _ = execute!(stdout, MoveTo(col, state.start_row + off), Show);
+        true
+    } else {
+        false
+    };
+
+    if !restored {
+        let _ = execute!(stdout, crossterm::cursor::RestorePosition, Show);
+    }
+
+    let success = reserved == lines;
+    if success {
+        // Treat the reserved spacer line as the current output cursor location.
+        set_output_cursor(0, 1);
+    }
+
+    success
+}
+
+/// Render a viewport above the prompt.
+pub(crate) fn render_tool_viewport(lines: &[String], height: u16, spacer_lines: u16) {
+    use crossterm::SynchronizedUpdate;
+
+    let _guard = lock_output();
+
+    let (start_row, status_active, cursor_pos, visible) = {
+        let state = PROMPT_STATE.lock().unwrap();
+        (
+            state.start_row,
+            state.status_line_active,
+            state.cursor_pos,
+            state.visible,
+        )
+    };
+
+    if !visible || height == 0 {
+        return;
+    }
+
+    let reserved_rows = if status_active {
+        STREAMING_STATUS_LINE_ROWS
+    } else {
+        0
+    };
+
+    let spacer_bottom = start_row.saturating_sub(reserved_rows).saturating_sub(1);
+    let viewport_bottom = spacer_bottom.saturating_sub(spacer_lines);
+
+    if viewport_bottom + 1 < height {
+        return;
+    }
+
+    let viewport_top = viewport_bottom.saturating_sub(height.saturating_sub(1));
+
+    let mut stdout = io::stdout();
+    let _ = stdout.sync_update(|stdout| {
+        use crossterm::queue;
+        use crossterm::terminal::{Clear, ClearType};
+        use std::io::Write;
+
+        queue!(stdout, Hide)?;
+
+        for idx in 0..height {
+            let row = viewport_top.saturating_add(idx);
+            let line = lines.get(idx as usize).map(String::as_str).unwrap_or("");
+            queue!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
+            write!(stdout, "{}", line)?;
+        }
+
+        // Restore cursor
+        if let Some((off, col)) = cursor_pos {
+            queue!(stdout, MoveTo(col, start_row + off), Show)?;
+        } else {
+            queue!(stdout, Show)?;
+        }
+
+        io::Result::Ok(())
+    });
+}
+
 /// Write a complete line, handling prompt visibility.
 /// If prompt is visible, writes above it. Otherwise writes normally.
 pub(crate) fn println_above(text: &str) {
@@ -683,7 +833,10 @@ pub(crate) fn println_above(text: &str) {
 
 fn println_above_locked(text: &str) {
     if !is_prompt_visible() {
-        println!("{}", text);
+        print_above_locked(text);
+        if !text.ends_with('\n') {
+            print_above_locked("\n");
+        }
         return;
     }
 
@@ -707,9 +860,24 @@ fn print_above_locked(text: &str) {
         return;
     }
 
+    // When the terminal is in raw mode, `\n` does not reliably return to column 0.
+    // Normalize to CRLF so multi-line output renders correctly and our cursor tracking
+    // matches what the terminal actually does.
+    let normalized = text.contains('\n').then(|| normalize_newlines(text));
+    let text = normalized.as_deref().unwrap_or(text);
+
     if !is_prompt_visible() {
         print!("{}", text);
         let _ = stdout.flush();
+
+        let term_width = term_width();
+        let output_col = OUTPUT_CURSOR.lock().map(|state| state.col).unwrap_or(0);
+        let (_lines_needed, new_col) = calculate_output_size(output_col, text, term_width);
+        if let Ok(mut state) = OUTPUT_CURSOR.lock() {
+            state.col = new_col;
+            state.has_output = true;
+        }
+        update_output_trailing_newlines(text);
         return;
     }
 

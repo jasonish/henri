@@ -41,6 +41,7 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
         HistoryEvent::ToolStart | HistoryEvent::ToolEnd => String::new(),
         HistoryEvent::ToolUse { description } => render_tool_use(description),
         HistoryEvent::ToolResult { is_error, output } => render_tool_result(*is_error, output),
+        HistoryEvent::ToolOutput { text } => render_tool_output(text, width),
         HistoryEvent::Error(msg) => render_error(msg),
         HistoryEvent::Warning(msg) => render_warning(msg),
         HistoryEvent::Info(msg) => render_info(msg),
@@ -68,9 +69,11 @@ fn needs_blank_line_before(prev: Option<&HistoryEvent>, current: &HistoryEvent) 
         (HistoryEvent::ThinkingEnd, HistoryEvent::AssistantText { .. }) => true,
         // Tool -> Text: blank line
         (HistoryEvent::ToolResult { .. }, HistoryEvent::AssistantText { .. }) => true,
+        (HistoryEvent::ToolOutput { .. }, HistoryEvent::AssistantText { .. }) => true,
         (HistoryEvent::ToolEnd, HistoryEvent::AssistantText { .. }) => true,
         // Tool -> Thinking: blank line
         (HistoryEvent::ToolResult { .. }, HistoryEvent::Thinking { .. }) => true,
+        (HistoryEvent::ToolOutput { .. }, HistoryEvent::Thinking { .. }) => true,
         (HistoryEvent::ToolEnd, HistoryEvent::Thinking { .. }) => true,
         // Thinking/Text -> ToolStart: blank line
         (HistoryEvent::Thinking { .. }, HistoryEvent::ToolStart) => true,
@@ -435,6 +438,62 @@ fn render_warning(msg: &str) -> String {
 /// Render info message
 fn render_info(msg: &str) -> String {
     format!("{}\n", msg)
+}
+
+/// Apply styling to tool output without adding extra visible characters.
+///
+/// We use a background color to visually distinguish tool output from the
+/// assistant's normal conversation. This avoids adding prefix characters that
+/// would get copied when selecting output from the terminal.
+pub(crate) fn style_tool_output_line(line: &str) -> String {
+    // Subtle dark-gray background using xterm 256-color palette.
+    //
+    // We use `EL` (erase to end-of-line) so the background fills the full
+    // terminal width *without* padding with spaces, keeping copy/paste clean.
+    //
+    // Important: some command output includes leading `\t` characters (e.g. `git status`).
+    // A terminal tab advances the cursor without painting cells, so if we only rely on
+    // `EL` at the end, the left side can remain un-highlighted. To avoid that, we first
+    // clear the *entire* line (`2K`) while the background is active.
+    //
+    // We also re-apply the background after any reset sequences emitted by the command
+    // output.
+    //
+    // `100m` (bright-black background in 16-color ANSI) is often too harsh.
+    const BG: &str = "\x1b[48;5;233m";
+    const RESET: &str = "\x1b[0m";
+
+    if line.is_empty() {
+        return format!("{}\x1b[2K{}", BG, RESET);
+    }
+
+    let line = line.replace("\x1b[0m", "\x1b[0m\x1b[48;5;233m");
+    let line = line.replace("\x1b[m", "\x1b[m\x1b[48;5;233m");
+
+    // Paint full width by clearing the entire line with the background active, then
+    // render the content. Finally, `EL` ensures any remaining portion after the last
+    // printed character uses our background (in case the content changed background
+    // mid-line).
+    format!("{}\x1b[2K{}{}\x1b[K{}", BG, line, BG, RESET)
+}
+
+/// Render tool output tail (up to the configured viewport height).
+fn render_tool_output(text: &str, width: usize) -> String {
+    let wrapped = wrap_text(text, width);
+    if wrapped.is_empty() {
+        return String::new();
+    }
+
+    let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
+    let start = wrapped.len().saturating_sub(max_lines);
+    let mut output = String::new();
+
+    for line in &wrapped[start..] {
+        output.push_str(&style_tool_output_line(line));
+        output.push('\n');
+    }
+
+    output
 }
 
 /// Render file diff with colored +/- lines and syntax highlighting

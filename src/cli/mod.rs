@@ -19,6 +19,9 @@ pub(crate) mod terminal;
 
 mod editor;
 
+pub(crate) const TOOL_OUTPUT_VIEWPORT_LINES: usize = 10;
+pub(crate) const TOOL_OUTPUT_VIEWPORT_SPACER_LINES: u16 = 1;
+
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;

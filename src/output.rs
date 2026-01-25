@@ -20,9 +20,13 @@ pub(crate) enum OutputEvent {
     ToolCall { description: String },
     /// Tool execution completed
     ToolResult {
+        tool_name: String,
         is_error: bool,
         error_preview: Option<String>,
+        exit_code: Option<i32>,
     },
+    /// Tool output text (may be streamed)
+    ToolOutput { text: String },
     /// Informational message
     Info(String),
     /// Error message (terminal)
@@ -169,12 +173,23 @@ pub(crate) fn print_tool_call(ctx: &OutputContext, _name: &str, description: &st
 /// Print a tool result
 pub(crate) fn print_tool_result(
     ctx: &OutputContext,
+    tool_name: &str,
     is_error: bool,
     error_preview: Option<String>,
+    exit_code: Option<i32>,
 ) {
     ctx.emit(OutputEvent::ToolResult {
+        tool_name: tool_name.to_string(),
         is_error,
         error_preview,
+        exit_code,
+    });
+}
+
+/// Emit tool output text
+pub(crate) fn emit_tool_output(ctx: &OutputContext, text: &str) {
+    ctx.emit(OutputEvent::ToolOutput {
+        text: text.to_string(),
     });
 }
 

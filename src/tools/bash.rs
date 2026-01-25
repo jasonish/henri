@@ -8,6 +8,8 @@ use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+use crate::output;
+
 use super::sandbox;
 use super::{Tool, ToolDefinition, ToolResult};
 
@@ -16,19 +18,23 @@ const MAX_OUTPUT_BYTES: usize = 30_000;
 
 pub(crate) struct Bash;
 
-async fn capture_stream_output<R>(reader: R) -> String
+async fn capture_stream_output<R>(reader: R, output: output::OutputContext) -> String
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut output = String::new();
+    let mut output_buf = String::new();
     let mut lines = BufReader::new(reader).lines();
 
     while let Ok(Some(line)) = lines.next_line().await {
-        output.push_str(&line);
-        output.push('\n');
+        output_buf.push_str(&line);
+        output_buf.push('\n');
+
+        let mut emitted = line;
+        emitted.push('\n');
+        output::emit_tool_output(&output, &emitted);
     }
 
-    output
+    output_buf
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,7 +79,7 @@ Web content fetching:
         &self,
         tool_use_id: &str,
         input: serde_json::Value,
-        _output: &crate::output::OutputContext,
+        output: &crate::output::OutputContext,
         services: &crate::services::Services,
     ) -> ToolResult {
         let input: BashInput = match super::deserialize_input(tool_use_id, input) {
@@ -156,12 +162,22 @@ Web content fetching:
 
         let timeout_duration = std::time::Duration::from_secs(timeout_secs);
 
-        let stdout_task = tokio::spawn(async move { capture_stream_output(stdout).await });
+        let stdout_output = output.clone();
+        let stdout_task =
+            tokio::spawn(async move { capture_stream_output(stdout, stdout_output).await });
 
-        let stderr_task = tokio::spawn(async move { capture_stream_output(stderr).await });
+        let stderr_output = output.clone();
+        let stderr_task =
+            tokio::spawn(async move { capture_stream_output(stderr, stderr_output).await });
 
         // Wait for child with interrupt and timeout handling.
         // We separate child.wait() from output collection so we can kill on interrupt/timeout.
+        enum WaitOutcome {
+            Completed(Result<std::process::ExitStatus, std::io::Error>),
+            Interrupted,
+            TimedOut,
+        }
+
         let wait_result = tokio::select! {
             biased;
             // Check for interrupt every 100ms
@@ -171,13 +187,21 @@ Web content fetching:
                 }
             } => {
                 let _ = child.kill().await;
-                return ToolResult::error(tool_use_id, "Interrupted by user");
+                WaitOutcome::Interrupted
             }
-            result = tokio::time::timeout(timeout_duration, child.wait()) => result
+            result = tokio::time::timeout(timeout_duration, child.wait()) => {
+                match result {
+                    Ok(status) => WaitOutcome::Completed(status),
+                    Err(_) => {
+                        let _ = child.kill().await;
+                        WaitOutcome::TimedOut
+                    }
+                }
+            }
         };
 
         match wait_result {
-            Ok(Ok(status)) => {
+            WaitOutcome::Completed(Ok(status)) => {
                 // Collect output from spawned tasks
                 let stdout_output = stdout_task.await.unwrap_or_default();
                 let stderr_output = stderr_task.await.unwrap_or_default();
@@ -200,23 +224,47 @@ Web content fetching:
 
                 let exit_code = status.code().unwrap_or(-1);
                 if exit_code == 0 {
-                    ToolResult::success(tool_use_id, truncated)
+                    ToolResult {
+                        tool_use_id: tool_use_id.to_string(),
+                        kind: "tool_result".to_string(),
+                        content: truncated,
+                        is_error: false,
+                        exit_code: Some(exit_code),
+                    }
                 } else if truncated.is_empty() {
-                    ToolResult::error(tool_use_id, truncated)
+                    ToolResult {
+                        tool_use_id: tool_use_id.to_string(),
+                        kind: "tool_result".to_string(),
+                        content: format!("[Exit code: {}]", exit_code),
+                        is_error: true,
+                        exit_code: Some(exit_code),
+                    }
                 } else {
                     let error_output = format!("{}\n[Exit code: {}]", truncated, exit_code);
-                    ToolResult::error(tool_use_id, error_output)
+                    ToolResult {
+                        tool_use_id: tool_use_id.to_string(),
+                        kind: "tool_result".to_string(),
+                        content: error_output,
+                        is_error: true,
+                        exit_code: Some(exit_code),
+                    }
                 }
             }
-            Ok(Err(e)) => {
+            WaitOutcome::Completed(Err(e)) => {
                 ToolResult::error(tool_use_id, format!("Command execution failed: {}", e))
             }
-            Err(_) => {
-                let _ = child.kill().await;
+            WaitOutcome::TimedOut => {
+                stdout_task.abort();
+                stderr_task.abort();
                 ToolResult::error(
                     tool_use_id,
                     format!("Command timed out after {} seconds", timeout_secs),
                 )
+            }
+            WaitOutcome::Interrupted => {
+                stdout_task.abort();
+                stderr_task.abort();
+                ToolResult::error(tool_use_id, "Interrupted by user")
             }
         }
     }
@@ -240,6 +288,7 @@ mod tests {
             )
             .await;
         assert!(!result.is_error);
+        assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.content.trim(), "hello");
     }
 
@@ -257,7 +306,8 @@ mod tests {
             )
             .await;
         assert!(result.is_error);
-        assert_eq!(result.content, "");
+        assert_eq!(result.exit_code, Some(42));
+        assert_eq!(result.content, "[Exit code: 42]");
     }
 
     #[tokio::test]
@@ -274,6 +324,7 @@ mod tests {
             )
             .await;
         assert!(result.is_error);
+        assert_eq!(result.exit_code, Some(42));
         assert!(result.content.contains("something went wrong"));
         assert!(result.content.contains("[Exit code: 42]"));
     }

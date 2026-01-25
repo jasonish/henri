@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- CLI: Bash command output now streams in real-time to a viewport above the
+  prompt, showing the last 10 lines with a subtle background for distinction
+
 ### Changed
 
 - LSP: Servers are now started lazily on-demand when a file with a matching

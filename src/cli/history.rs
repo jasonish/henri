@@ -43,6 +43,8 @@ pub(crate) enum HistoryEvent {
     ToolEnd,
     /// Tool execution completed
     ToolResult { output: String, is_error: bool },
+    /// Tool output text (may be streamed)
+    ToolOutput { text: String },
     /// An error occurred
     Error(String),
     /// Warning message
@@ -154,6 +156,17 @@ impl History {
             *is_streaming = false;
         }
     }
+
+    /// Append tool output to the last ToolOutput event, or create a new one.
+    pub(crate) fn append_tool_output(&mut self, text: &str) {
+        if let Some(HistoryEvent::ToolOutput { text: existing }) = self.events.last_mut() {
+            existing.push_str(text);
+        } else {
+            self.push(HistoryEvent::ToolOutput {
+                text: text.to_string(),
+            });
+        }
+    }
 }
 
 // ============================================================================
@@ -217,6 +230,13 @@ pub(crate) fn append_thinking(text: &str) {
 pub(crate) fn finish_thinking() {
     if let Ok(mut history) = HISTORY.lock() {
         history.finish_thinking();
+    }
+}
+
+/// Append tool output to the last ToolOutput event, or create a new one.
+pub(crate) fn append_tool_output(text: &str) {
+    if let Ok(mut history) = HISTORY.lock() {
+        history.append_tool_output(text);
     }
 }
 

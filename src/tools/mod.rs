@@ -62,6 +62,8 @@ pub(crate) struct ToolResult {
     pub kind: String,
     pub content: String,
     pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }
 
 impl ToolResult {
@@ -71,6 +73,7 @@ impl ToolResult {
             kind: "tool_result".to_string(),
             content: content.into(),
             is_error: false,
+            exit_code: None,
         }
     }
 
@@ -80,6 +83,7 @@ impl ToolResult {
             kind: "tool_result".to_string(),
             content: message.into(),
             is_error: true,
+            exit_code: None,
         }
     }
 }

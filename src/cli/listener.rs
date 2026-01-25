@@ -1183,6 +1183,8 @@ struct StreamState {
     last_tool_call_open: bool,
     /// Whether we're inside a <Tool>...</Tool> block
     in_tool_block: bool,
+    /// Tool output viewport state
+    tool_output: ToolOutputState,
 }
 
 impl StreamState {
@@ -1198,6 +1200,7 @@ impl StreamState {
             diff_shown: false,
             last_tool_call_open: false,
             in_tool_block: false,
+            tool_output: ToolOutputState::new(),
         }
     }
 
@@ -1211,6 +1214,30 @@ impl StreamState {
         self.diff_shown = false;
         self.last_tool_call_open = false;
         self.in_tool_block = false;
+        self.tool_output.reset();
+    }
+}
+
+#[derive(Debug, Default)]
+struct ToolOutputState {
+    active: bool,
+    buffer: String,
+    reserved_lines: u16,
+}
+
+impl ToolOutputState {
+    fn new() -> Self {
+        Self {
+            active: false,
+            buffer: String::new(),
+            reserved_lines: 0,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.active = false;
+        self.buffer.clear();
+        self.reserved_lines = 0;
     }
 }
 
@@ -1336,6 +1363,7 @@ impl CliListener {
                 | OutputEvent::TextEnd
                 | OutputEvent::ToolCall { .. }
                 | OutputEvent::ToolResult { .. }
+                | OutputEvent::ToolOutput { .. }
                 | OutputEvent::Info(_)
                 | OutputEvent::Error(_)
                 | OutputEvent::Warning(_)
@@ -1638,8 +1666,10 @@ impl CliListener {
             }
 
             OutputEvent::ToolResult {
+                tool_name,
                 is_error,
                 error_preview,
+                exit_code,
             } => {
                 let pending_tool_line = self
                     .state
@@ -1667,7 +1697,6 @@ impl CliListener {
                     }
                 }
 
-                // Check if a diff was just shown (skip redundant success indicator)
                 let diff_shown = self
                     .state
                     .lock()
@@ -1678,14 +1707,29 @@ impl CliListener {
                     })
                     .unwrap_or(false);
 
+                let tool_output_active = self
+                    .state
+                    .lock()
+                    .map(|s| s.tool_output.active)
+                    .unwrap_or(false);
+
+                let exit_code_suffix = if *is_error && tool_name == "bash" {
+                    exit_code
+                        .as_ref()
+                        .map(|code| format!(" {}", format!("(exit code {})", code).bright_black()))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+
                 // We intentionally avoid printing a trailing newline here.
                 // Leaving the cursor at end-of-line prevents a "dangling" empty line
                 // above the prompt when a turn ends with just a tool call.
                 let text = if *is_error {
                     if pending_tool_line {
-                        format!(" {}", "✗".red())
+                        format!(" {}{}", "✗".red(), exit_code_suffix)
                     } else {
-                        "✗".red().to_string()
+                        format!("{}{}", "✗".red(), exit_code_suffix)
                     }
                 } else if diff_shown {
                     // Diff already showed checkmark.
@@ -1698,7 +1742,17 @@ impl CliListener {
 
                 if !text.is_empty() {
                     if !pending_tool_line {
-                        terminal::ensure_line_break();
+                        if terminal::prompt_visible() {
+                            if tool_output_active {
+                                terminal::ensure_line_break();
+                            }
+                        } else {
+                            // In batch mode, tool output is printed directly. Make sure the
+                            // checkmark starts on its own line even if the tool output did not
+                            // end with a newline.
+                            println!();
+                            let _ = io::stdout().flush();
+                        }
                     }
                     terminal::print_above(&text);
                 }
@@ -1711,6 +1765,92 @@ impl CliListener {
                     output: error_preview.clone().unwrap_or_default(),
                     is_error: *is_error,
                 });
+
+                if let Ok(mut state) = self.state.lock() {
+                    state.tool_output.reset();
+                }
+            }
+
+            OutputEvent::ToolOutput { text } => {
+                if text.is_empty() {
+                    return;
+                }
+
+                let width = Self::terminal_width();
+                let mut first_segment = true;
+
+                for segment in text.split_inclusive('\n') {
+                    let (reserve_delta, visible_lines, viewport_height, spacer_lines) = {
+                        let Ok(mut state) = self.state.lock() else {
+                            return;
+                        };
+
+                        if first_segment {
+                            state.last_tool_call_open = false;
+                            first_segment = false;
+                        }
+
+                        if !state.tool_output.active {
+                            state.tool_output.active = true;
+                        }
+
+                        state.tool_output.buffer.push_str(segment);
+
+                        let wrapped =
+                            crate::cli::render::wrap_text(&state.tool_output.buffer, width);
+                        let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
+                        let height = wrapped.len().min(max_lines);
+                        let start = wrapped.len().saturating_sub(height);
+                        let visible = wrapped[start..]
+                            .iter()
+                            .map(|line| crate::cli::render::style_tool_output_line(line))
+                            .collect::<Vec<_>>();
+
+                        // Keep a spacer row between the tool viewport and where subsequent
+                        // output (✓/✗, messages, etc.) is printed. This prevents the tool
+                        // result indicator from overwriting the last viewport line when the
+                        // streaming status line is active.
+                        let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;
+                        let desired_total = (height as u16).saturating_add(spacer);
+                        let reserve_delta =
+                            desired_total.saturating_sub(state.tool_output.reserved_lines);
+                        state.tool_output.reserved_lines = desired_total;
+
+                        (reserve_delta, visible, height as u16, spacer)
+                    };
+
+                    if reserve_delta > 0 {
+                        let reserved = terminal::reserve_output_lines(reserve_delta);
+                        if !reserved {
+                            if let Ok(mut state) = self.state.lock() {
+                                state.tool_output.reset();
+                            }
+                            terminal::ensure_line_break();
+                            let mut display = String::new();
+                            for seg in text.split_inclusive('\n') {
+                                let (line, has_nl) = seg
+                                    .strip_suffix('\n')
+                                    .map(|l| (l, true))
+                                    .unwrap_or((seg, false));
+                                display.push_str(&crate::cli::render::style_tool_output_line(line));
+                                if has_nl {
+                                    display.push('\n');
+                                }
+                            }
+                            terminal::print_above(&display);
+                            history::append_tool_output(text);
+                            return;
+                        }
+                    }
+
+                    terminal::render_tool_viewport(&visible_lines, viewport_height, spacer_lines);
+                }
+
+                history::append_tool_output(text);
+
+                if let Ok(mut state) = self.state.lock() {
+                    state.last_block = Some(LastBlock::Tool);
+                }
             }
 
             OutputEvent::Info(msg) => {

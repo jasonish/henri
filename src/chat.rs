@@ -168,7 +168,13 @@ pub(crate) async fn run_chat_iteration<P: Provider>(
                 };
                 // Skip tool result indicator for todo tools
                 if !tool_call.name.starts_with("todo_") {
-                    output::print_tool_result(output, tool_result.is_error, error_preview);
+                    output::print_tool_result(
+                        output,
+                        &tool_call.name,
+                        tool_result.is_error,
+                        error_preview,
+                        tool_result.exit_code,
+                    );
                 }
 
                 tool_results.push(ContentBlock::ToolResult {
@@ -179,7 +185,13 @@ pub(crate) async fn run_chat_iteration<P: Provider>(
             }
             None => {
                 let error_msg = format!("Unknown tool: {}", tool_call.name);
-                output::print_tool_result(output, true, Some(error_msg.clone()));
+                output::print_tool_result(
+                    output,
+                    &tool_call.name,
+                    true,
+                    Some(error_msg.clone()),
+                    None,
+                );
 
                 tool_results.push(ContentBlock::ToolResult {
                     tool_use_id: tool_call.id.clone(),
