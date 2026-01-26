@@ -89,6 +89,36 @@ struct AuthState {
 /// Antigravity system instruction prompt embedded at compile time.
 const ANTIGRAVITY_SYSTEM_INSTRUCTION: &str = include_str!("../prompts/antigravity.md");
 
+fn strip_unsupported_schema_fields(schema: serde_json::Value) -> serde_json::Value {
+    match schema {
+        serde_json::Value::Object(mut map) => {
+            map.remove("$schema");
+            map.remove("$id");
+            map.remove("$comment");
+            map.remove("$ref");
+            map.remove("$defs");
+            map.remove("definitions");
+            map.remove("const");
+            map.remove("additionalProperties");
+            map.remove("propertyNames");
+            map.remove("title");
+
+            let cleaned: serde_json::Map<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(k, v)| (k, strip_unsupported_schema_fields(v)))
+                .collect();
+
+            serde_json::Value::Object(cleaned)
+        }
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.into_iter()
+                .map(strip_unsupported_schema_fields)
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 /// Tracks streaming progress for periodic updates
 struct ProgressTracker {
     start: Option<Instant>,
@@ -465,7 +495,7 @@ impl AntigravityProvider {
                 serde_json::json!({
                     "name": t.name,
                     "description": t.description,
-                    "parameters": t.input_schema
+                    "parameters": strip_unsupported_schema_fields(t.input_schema)
                 })
             })
             .collect();

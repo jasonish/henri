@@ -31,6 +31,8 @@
 
 ### Fixed
 
+- Antigravity provider: Strip unsupported JSON Schema fields (like `$schema`) from
+  tool parameter schemas to prevent 400 errors when using MCP tools.
 - CLI: Queued prompts now remain visible after terminal resize
 - CLI: Bandwidth display updates in real time again during streaming responses
   and avoids overlapping the prompt status line
