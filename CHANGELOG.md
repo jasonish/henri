@@ -17,6 +17,7 @@
   updates within 50ms to show the current server count
 - CLI: Tool output viewport now shows "(... N previous lines)" indicator when
   output has scrolled the first lines out of view
+- Custom commands: Also load from `~/.config/opencode/command/`
 
 ### Changed
 

@@ -34,6 +34,7 @@ struct CommandFrontmatter {
 /// 2. .henri/commands/ (current directory)
 /// 3. ~/.claude/commands/ (user's home)
 /// 4. ~/.config/henri/commands/ (henri config)
+/// 5. ~/.config/opencode/command/ (OpenCode)
 pub(crate) fn load_custom_commands() -> io::Result<Vec<CustomCommand>> {
     let mut all_commands = Vec::new();
 
@@ -58,6 +59,13 @@ pub(crate) fn load_custom_commands() -> io::Result<Vec<CustomCommand>> {
         let mut config_dir = std::path::PathBuf::from(home);
         config_dir.push(".config/henri/commands");
         search_dirs.push((config_dir, "(~/.config/henri)"));
+    }
+
+    // 5. OpenCode directory ~/.config/opencode/command
+    if let Some(home) = std::env::var_os("HOME") {
+        let mut opencode_dir = std::path::PathBuf::from(home);
+        opencode_dir.push(".config/opencode/command");
+        search_dirs.push((opencode_dir, "(~/.config/opencode)"));
     }
 
     // Load commands from each directory
