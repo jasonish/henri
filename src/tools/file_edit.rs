@@ -156,7 +156,16 @@ impl Tool for FileEdit {
 
         // Notify LSP of the change and get diagnostics immediately
         let diagnostics = if services.lsp.handles_file(path).await {
-            let _ = services.lsp.notify_file_changed(path, &new_contents).await;
+            if let Ok(started_servers) = services.lsp.notify_file_changed(path, &new_contents).await
+            {
+                for server in &started_servers {
+                    let extensions = server.file_extensions.join(", ");
+                    _output.emit(crate::output::OutputEvent::Info(format!(
+                        "[LSP activated: {} ({})]",
+                        server.name, extensions
+                    )));
+                }
+            }
             services.lsp.get_diagnostics_with_wait(path).await
         } else {
             Vec::new()

@@ -1952,7 +1952,8 @@ impl CliListener {
 
             OutputEvent::Info(msg) => {
                 terminal::ensure_line_break();
-                terminal::println_above(msg);
+                terminal::println_above("");
+                terminal::println_above(&msg.cyan().to_string());
                 history::push(HistoryEvent::Info(msg.clone()));
             }
 

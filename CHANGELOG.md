@@ -12,6 +12,9 @@
   file extension, colorizing only the file content (not line numbers)
 - CLI: Tool result indicators can include a short summary (e.g. `file_read` and `bash`
   show lines/bytes read)
+- CLI: LSP server activation is now visible during tool execution with a cyan
+  info message (e.g. `[LSP activated: rust-analyzer (rs)]`) and prompt border
+  updates within 50ms to show the current server count
 
 ### Changed
 

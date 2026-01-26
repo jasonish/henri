@@ -440,6 +440,9 @@ async fn run_event_loop(
     // Track if we're processing the initial prompt (for batch mode)
     let mut processing_initial_prompt = false;
 
+    // Track LSP generation to detect when servers start during streaming
+    let mut last_lsp_generation = crate::lsp::generation();
+
     // Enable raw mode for the entire session (skip in batch mode)
     if !batch {
         crossterm_terminal::enable_raw_mode()?;
@@ -802,6 +805,42 @@ async fn run_event_loop(
                 Err(oneshot::error::TryRecvError::Empty) => {
                     // Still running, continue
                 }
+            }
+        }
+
+        // Check if LSP generation changed (a new server started during streaming).
+        // If so, redraw the prompt to show the updated LSP count.
+        if let Some(ref task) = chat_task {
+            let current_lsp_gen = crate::lsp::generation();
+            if current_lsp_gen != last_lsp_generation {
+                last_lsp_generation = current_lsp_gen;
+                let provider_name = task
+                    .custom_provider
+                    .as_deref()
+                    .unwrap_or_else(|| task.provider.id())
+                    .to_string();
+                let cwd = shorten_path(working_dir);
+                let thinking = ThinkingStatus {
+                    available: supports_thinking(task.provider, &task.model_id),
+                    enabled: thinking_state.enabled,
+                    mode: thinking_state.mode.clone(),
+                };
+                let security = SecurityStatus {
+                    read_only: services.is_read_only(),
+                    sandbox_enabled: services.is_sandbox_enabled(),
+                };
+                let lsp_server_count = get_lsp_server_count().await;
+                let mcp_server_count = get_mcp_server_count(services).await;
+                prompt_box.set_status(
+                    provider_name,
+                    task.model_id.clone(),
+                    cwd,
+                    thinking,
+                    security,
+                    lsp_server_count,
+                    mcp_server_count,
+                );
+                prompt_box.draw(&input_state, false)?;
             }
         }
 

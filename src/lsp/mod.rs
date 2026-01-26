@@ -515,19 +515,26 @@ impl LspManager {
         pending.extend(configs);
     }
 
-    /// Start an LSP server from config
-    async fn start_server(&self, config: &LspServerConfig) -> Result<()> {
+    /// Start an LSP server from config.
+    /// Returns Some(info) if a new server was started, None if already running.
+    async fn start_server(&self, config: &LspServerConfig) -> Result<Option<LspServerInfo>> {
         let mut clients = self.clients.write().await;
         if clients.iter().any(|c| c.name == config.name) {
-            return Ok(());
+            return Ok(None);
         }
         let client = LspClient::spawn(config).await?;
+        let info = LspServerInfo {
+            name: client.name.clone(),
+            file_extensions: client.file_extensions.clone(),
+        };
         clients.push(client);
-        Ok(())
+        increment_generation();
+        Ok(Some(info))
     }
 
-    /// Start any pending LSP servers that handle the given file extension
-    async fn start_pending_servers_for_extension(&self, ext: &str) {
+    /// Start any pending LSP servers that handle the given file extension.
+    /// Returns info about any newly started servers.
+    async fn start_pending_servers_for_extension(&self, ext: &str) -> Vec<LspServerInfo> {
         let configs = {
             let mut pending = self.pending_configs.write().await;
             let mut configs = Vec::new();
@@ -541,20 +548,29 @@ impl LspManager {
             configs
         };
 
+        let mut started = Vec::new();
         for config in configs {
-            let _ = self.start_server(&config).await;
+            if let Ok(Some(info)) = self.start_server(&config).await {
+                started.push(info);
+            }
         }
+        started
     }
 
-    /// Notify that a file was opened or changed
+    /// Notify that a file was opened or changed.
     /// This will automatically start the LSP server if not already running,
-    /// and open the file with the LSP if not already open
-    pub async fn notify_file_changed(&self, path: &Path, content: &str) -> Result<()> {
+    /// and open the file with the LSP if not already open.
+    /// Returns info about any newly started servers.
+    pub async fn notify_file_changed(
+        &self,
+        path: &Path,
+        content: &str,
+    ) -> Result<Vec<LspServerInfo>> {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
         // Start any pending servers for this extension (supports multi-server configs)
-        self.start_pending_servers_for_extension(ext).await;
+        let started = self.start_pending_servers_for_extension(ext).await;
 
         let clients = self.clients.read().await;
         for client in clients.iter() {
@@ -573,7 +589,7 @@ impl LspManager {
             }
         }
 
-        Ok(())
+        Ok(started)
     }
 
     /// Get diagnostics for a file with default wait time
@@ -650,11 +666,26 @@ pub(crate) struct LspServerInfo {
 /// Global LSP manager instance
 static LSP_MANAGER: std::sync::OnceLock<Arc<LspManager>> = std::sync::OnceLock::new();
 
+/// Generation counter incremented when LSP server count changes.
+/// Used by the UI to detect when prompt needs to be redrawn.
+static LSP_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Get the global LSP manager
 pub(crate) fn manager() -> Arc<LspManager> {
     LSP_MANAGER
         .get_or_init(|| Arc::new(LspManager::new()))
         .clone()
+}
+
+/// Get the current LSP generation counter.
+/// This increments whenever a new LSP server starts.
+pub(crate) fn generation() -> u64 {
+    LSP_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Increment the LSP generation counter (called when a server starts).
+fn increment_generation() {
+    LSP_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Register LSP server configs for lazy initialization
