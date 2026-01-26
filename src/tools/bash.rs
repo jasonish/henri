@@ -18,23 +18,37 @@ const MAX_OUTPUT_BYTES: usize = 30_000;
 
 pub(crate) struct Bash;
 
-async fn capture_stream_output<R>(reader: R, output: output::OutputContext) -> String
+async fn capture_stream_output<R>(reader: R, output: output::OutputContext) -> CapturedOutput
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut output_buf = String::new();
+    let mut line_count = 0usize;
     let mut lines = BufReader::new(reader).lines();
 
     while let Ok(Some(line)) = lines.next_line().await {
         output_buf.push_str(&line);
         output_buf.push('\n');
+        line_count += 1;
 
         let mut emitted = line;
         emitted.push('\n');
         output::emit_tool_output(&output, &emitted);
     }
 
-    output_buf
+    let byte_count = output_buf.len();
+    CapturedOutput {
+        text: output_buf,
+        line_count,
+        byte_count,
+    }
+}
+
+#[derive(Debug, Default)]
+struct CapturedOutput {
+    text: String,
+    line_count: usize,
+    byte_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,12 +217,16 @@ Web content fetching:
         match wait_result {
             WaitOutcome::Completed(Ok(status)) => {
                 // Collect output from spawned tasks
-                let stdout_output = stdout_task.await.unwrap_or_default();
-                let stderr_output = stderr_task.await.unwrap_or_default();
+                let stdout_output: CapturedOutput = stdout_task.await.unwrap_or_default();
+                let stderr_output: CapturedOutput = stderr_task.await.unwrap_or_default();
 
-                let mut combined = stdout_output;
-                if !stderr_output.is_empty() {
-                    combined.push_str(&stderr_output);
+                let line_count = stdout_output.line_count + stderr_output.line_count;
+                let byte_count = stdout_output.byte_count + stderr_output.byte_count;
+                let summary = Some(format!("(read {line_count} lines, {byte_count} bytes)"));
+
+                let mut combined = stdout_output.text;
+                if !stderr_output.text.is_empty() {
+                    combined.push_str(&stderr_output.text);
                 }
 
                 let truncated = if combined.len() > MAX_OUTPUT_BYTES {
@@ -230,7 +248,7 @@ Web content fetching:
                         content: truncated,
                         is_error: false,
                         exit_code: Some(exit_code),
-                        summary: None,
+                        summary,
                     }
                 } else if truncated.is_empty() {
                     ToolResult {
@@ -239,7 +257,7 @@ Web content fetching:
                         content: format!("[Exit code: {}]", exit_code),
                         is_error: true,
                         exit_code: Some(exit_code),
-                        summary: None,
+                        summary,
                     }
                 } else {
                     let error_output = format!("{}\n[Exit code: {}]", truncated, exit_code);
@@ -249,7 +267,7 @@ Web content fetching:
                         content: error_output,
                         is_error: true,
                         exit_code: Some(exit_code),
-                        summary: None,
+                        summary,
                     }
                 }
             }
@@ -293,6 +311,7 @@ mod tests {
         assert!(!result.is_error);
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.content.trim(), "hello");
+        assert_eq!(result.summary, Some("(read 1 lines, 6 bytes)".to_string()));
     }
 
     #[tokio::test]
