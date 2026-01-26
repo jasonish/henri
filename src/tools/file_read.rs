@@ -7,7 +7,6 @@ use std::path::Path;
 use serde::Deserialize;
 
 use super::{Tool, ToolDefinition, ToolResult};
-
 /// Maximum number of characters to return per line before truncation.
 const MAX_LINE_LENGTH: usize = 2048;
 
@@ -59,7 +58,7 @@ impl Tool for FileRead {
         &self,
         tool_use_id: &str,
         input: serde_json::Value,
-        _output: &crate::output::OutputContext,
+        output: &crate::output::OutputContext,
         _services: &crate::services::Services,
     ) -> ToolResult {
         let input: FileReadInput = match super::deserialize_input(tool_use_id, input) {
@@ -86,7 +85,7 @@ impl Tool for FileRead {
         let reader = BufReader::new(file);
         let offset = input.offset.unwrap_or(0);
         let user_limit = input.limit;
-        let mut output = String::new();
+        let mut output_buf = String::new();
         let mut line_count = 0;
         // Tracks where we stopped if a defensive limit was hit: (line_num, reason)
         let mut truncated_at: Option<(usize, &str)> = None;
@@ -121,13 +120,17 @@ impl Tool for FileRead {
                         format!("{:6}\t{}\n", line_num + 1, line)
                     };
 
-                    if output.len() + formatted_line.len() > MAX_OUTPUT_SIZE {
+                    if output_buf.len() + formatted_line.len() > MAX_OUTPUT_SIZE {
                         truncated_at = Some((line_num, "size limit"));
                         break;
                     }
 
-                    output.push_str(&formatted_line);
+                    output_buf.push_str(&formatted_line);
                     line_count += 1;
+
+                    if line_count <= 3 {
+                        crate::output::emit_tool_output(output, &formatted_line);
+                    }
                 }
                 Err(e) => {
                     return ToolResult::error(
@@ -138,25 +141,25 @@ impl Tool for FileRead {
             }
         }
 
-        if output.is_empty() {
+        if output_buf.is_empty() {
             if offset > 0 {
                 return ToolResult::error(
                     tool_use_id,
                     format!("Offset {} is beyond the end of the file", offset),
                 );
             }
-            output = "(empty file)\n".to_string();
+            output_buf = "(empty file)\n".to_string();
         }
 
         if let Some((line_num, reason)) = truncated_at {
-            let size_kb = output.len() / 1024;
-            output.push_str(&format!(
+            let size_kb = output_buf.len() / 1024;
+            output_buf.push_str(&format!(
                 "\n--- Output truncated ({reason}, {line_count} lines, ~{size_kb}KB) ---\n\
                  Use offset={line_num} to continue reading\n"
             ));
         }
-
-        ToolResult::success(tool_use_id, output)
+        let summary = format!("(read {line_count} lines, {} bytes)", output_buf.len());
+        ToolResult::success(tool_use_id, output_buf).with_summary(summary)
     }
 }
 

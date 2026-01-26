@@ -174,6 +174,7 @@ pub(crate) async fn run_chat_iteration<P: Provider>(
                         tool_result.is_error,
                         error_preview,
                         tool_result.exit_code,
+                        tool_result.summary,
                     );
                 }
 
@@ -190,6 +191,7 @@ pub(crate) async fn run_chat_iteration<P: Provider>(
                     &tool_call.name,
                     true,
                     Some(error_msg.clone()),
+                    None,
                     None,
                 );
 

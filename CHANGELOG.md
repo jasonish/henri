@@ -6,6 +6,10 @@
 
 - CLI: Bash command output now streams in real-time to a viewport above the
   prompt, showing the last 10 lines with a subtle background for distinction
+- CLI: `file_read` now previews the first 3 lines in the tool output viewport
+  while still returning the full (numbered) file contents
+- CLI: Tool result indicators can include a short summary (e.g. `file_read`
+  shows lines/bytes read)
 
 ### Changed
 

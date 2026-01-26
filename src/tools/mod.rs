@@ -64,6 +64,8 @@ pub(crate) struct ToolResult {
     pub is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl ToolResult {
@@ -74,6 +76,7 @@ impl ToolResult {
             content: content.into(),
             is_error: false,
             exit_code: None,
+            summary: None,
         }
     }
 
@@ -84,7 +87,13 @@ impl ToolResult {
             content: message.into(),
             is_error: true,
             exit_code: None,
+            summary: None,
         }
+    }
+
+    pub(crate) fn with_summary(mut self, summary: impl Into<String>) -> Self {
+        self.summary = Some(summary.into());
+        self
     }
 }
 

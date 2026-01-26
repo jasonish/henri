@@ -40,7 +40,11 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
         HistoryEvent::ThinkingEnd | HistoryEvent::ResponseEnd => String::new(),
         HistoryEvent::ToolStart | HistoryEvent::ToolEnd => String::new(),
         HistoryEvent::ToolUse { description } => render_tool_use(description),
-        HistoryEvent::ToolResult { is_error, output } => render_tool_result(*is_error, output),
+        HistoryEvent::ToolResult {
+            is_error,
+            output,
+            summary,
+        } => render_tool_result(*is_error, output, summary.as_deref()),
         HistoryEvent::ToolOutput { text } => render_tool_output(text, width),
         HistoryEvent::Error(msg) => render_error(msg),
         HistoryEvent::Warning(msg) => render_warning(msg),
@@ -117,7 +121,11 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
                 }
                 s
             }
-            HistoryEvent::ToolResult { is_error, output } => {
+            HistoryEvent::ToolResult {
+                is_error,
+                output,
+                summary,
+            } => {
                 // If the previous event was a FileDiff, it already displayed a checkmark,
                 // so we don't need another one for success.
                 if !*is_error && matches!(prev, Some(HistoryEvent::FileDiff { .. })) {
@@ -125,7 +133,7 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
                 } else {
                     // Only add leading space if previous was ToolUse (inline display).
                     let inline = matches!(prev, Some(HistoryEvent::ToolUse { .. }));
-                    render_tool_result_with_context(*is_error, output, inline)
+                    render_tool_result_with_context(*is_error, output, summary.as_deref(), inline)
                 }
             }
             _ => render_event(event, width),
@@ -403,25 +411,36 @@ fn render_tool_use(description: &str) -> String {
 }
 
 /// Render tool result - checkmark or X
-fn render_tool_result(is_error: bool, _output: &str) -> String {
+fn render_tool_result(is_error: bool, _output: &str, summary: Option<&str>) -> String {
+    let summary_suffix = summary
+        .map(|text| format!(" {}", text.bright_black()))
+        .unwrap_or_default();
     if is_error {
-        format!(" {}\n", "✗".red())
+        format!(" {}{}\n", "✗".red(), summary_suffix)
     } else {
-        format!(" {}\n", "✓".green())
+        format!(" {}{}\n", "✓".green(), summary_suffix)
     }
 }
 
 /// Render tool result with context about whether it follows a ToolUse inline.
-fn render_tool_result_with_context(is_error: bool, _output: &str, inline: bool) -> String {
+fn render_tool_result_with_context(
+    is_error: bool,
+    _output: &str,
+    summary: Option<&str>,
+    inline: bool,
+) -> String {
+    let summary_suffix = summary
+        .map(|text| format!(" {}", text.bright_black()))
+        .unwrap_or_default();
     let symbol = if is_error {
         "✗".red().to_string()
     } else {
         "✓".green().to_string()
     };
     if inline {
-        format!(" {}\n", symbol)
+        format!(" {}{}\n", symbol, summary_suffix)
     } else {
-        format!("{}\n", symbol)
+        format!("{}{}\n", symbol, summary_suffix)
     }
 }
 
@@ -932,7 +951,7 @@ mod tests {
     #[test]
     fn test_render_tool_result_success() {
         enable_colors();
-        let result = render_tool_result(false, "");
+        let result = render_tool_result(false, "", None);
         assert!(result.contains("✓"));
         // Should contain ANSI escape codes
         assert!(result.contains("\x1b["));
@@ -941,7 +960,7 @@ mod tests {
     #[test]
     fn test_render_tool_result_error() {
         enable_colors();
-        let result = render_tool_result(true, "File not found");
+        let result = render_tool_result(true, "File not found", None);
         assert!(result.contains("✗"));
         // Should contain ANSI escape codes
         assert!(result.contains("\x1b["));
@@ -1025,6 +1044,7 @@ const x = 42;
             HistoryEvent::ToolResult {
                 output: "".to_string(),
                 is_error: false,
+                summary: None,
             },
         ];
 

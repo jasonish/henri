@@ -230,6 +230,7 @@ Web content fetching:
                         content: truncated,
                         is_error: false,
                         exit_code: Some(exit_code),
+                        summary: None,
                     }
                 } else if truncated.is_empty() {
                     ToolResult {
@@ -238,6 +239,7 @@ Web content fetching:
                         content: format!("[Exit code: {}]", exit_code),
                         is_error: true,
                         exit_code: Some(exit_code),
+                        summary: None,
                     }
                 } else {
                     let error_output = format!("{}\n[Exit code: {}]", truncated, exit_code);
@@ -247,6 +249,7 @@ Web content fetching:
                         content: error_output,
                         is_error: true,
                         exit_code: Some(exit_code),
+                        summary: None,
                     }
                 }
             }

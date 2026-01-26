@@ -24,6 +24,7 @@ pub(crate) enum OutputEvent {
         is_error: bool,
         error_preview: Option<String>,
         exit_code: Option<i32>,
+        summary: Option<String>,
     },
     /// Tool output text (may be streamed)
     ToolOutput { text: String },
@@ -177,12 +178,14 @@ pub(crate) fn print_tool_result(
     is_error: bool,
     error_preview: Option<String>,
     exit_code: Option<i32>,
+    summary: Option<String>,
 ) {
     ctx.emit(OutputEvent::ToolResult {
         tool_name: tool_name.to_string(),
         is_error,
         error_preview,
         exit_code,
+        summary,
     });
 }
 

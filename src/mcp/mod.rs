@@ -240,6 +240,7 @@ impl McpManager {
                             content,
                             is_error: result.is_error.unwrap_or(false),
                             exit_code: None,
+                            summary: None,
                         });
                     }
                     Err(e) => {

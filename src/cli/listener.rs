@@ -1670,6 +1670,7 @@ impl CliListener {
                 is_error,
                 error_preview,
                 exit_code,
+                summary,
             } => {
                 let pending_tool_line = self
                     .state
@@ -1722,22 +1723,27 @@ impl CliListener {
                     String::new()
                 };
 
+                let summary_suffix = summary
+                    .as_ref()
+                    .map(|s| format!(" {}", s.bright_black()))
+                    .unwrap_or_default();
+
                 // We intentionally avoid printing a trailing newline here.
                 // Leaving the cursor at end-of-line prevents a "dangling" empty line
                 // above the prompt when a turn ends with just a tool call.
                 let text = if *is_error {
                     if pending_tool_line {
-                        format!(" {}{}", "✗".red(), exit_code_suffix)
+                        format!(" {}{}{}", "✗".red(), exit_code_suffix, summary_suffix)
                     } else {
-                        format!("{}{}", "✗".red(), exit_code_suffix)
+                        format!("{}{}{}", "✗".red(), exit_code_suffix, summary_suffix)
                     }
                 } else if diff_shown {
                     // Diff already showed checkmark.
                     String::new()
                 } else if pending_tool_line {
-                    format!(" {}", "✓".green())
+                    format!(" {}{}", "✓".green(), summary_suffix)
                 } else {
-                    "✓".green().to_string()
+                    format!("{}{}", "✓".green(), summary_suffix)
                 };
 
                 if !text.is_empty() {
@@ -1764,6 +1770,7 @@ impl CliListener {
                 history::push(HistoryEvent::ToolResult {
                     output: error_preview.clone().unwrap_or_default(),
                     is_error: *is_error,
+                    summary: summary.clone(),
                 });
 
                 if let Ok(mut state) = self.state.lock() {

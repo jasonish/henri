@@ -42,7 +42,11 @@ pub(crate) enum HistoryEvent {
     /// End of tool block
     ToolEnd,
     /// Tool execution completed
-    ToolResult { output: String, is_error: bool },
+    ToolResult {
+        output: String,
+        is_error: bool,
+        summary: Option<String>,
+    },
     /// Tool output text (may be streamed)
     ToolOutput { text: String },
     /// An error occurred
@@ -325,6 +329,7 @@ pub(crate) fn push_message(message: &Message) {
                             push(HistoryEvent::ToolResult {
                                 output: content.clone(),
                                 is_error: *is_error,
+                                summary: None,
                             });
                             push(HistoryEvent::ToolEnd);
                         }

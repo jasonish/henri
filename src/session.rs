@@ -758,6 +758,7 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
                                         history::push(HistoryEvent::ToolResult {
                                             output,
                                             is_error: *is_error,
+                                            summary: None,
                                         });
                                     }
                                 }
@@ -774,6 +775,7 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
                                     history::push(HistoryEvent::ToolResult {
                                         output,
                                         is_error: *is_error,
+                                        summary: None,
                                     });
                                 }
                                 SerializableContentBlock::Summary {
