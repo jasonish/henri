@@ -501,6 +501,13 @@ pub(crate) fn style_tool_output_line(line: &str) -> String {
     format!("{}\x1b[2K{}{}\x1b[K{}", BG, line, BG, RESET)
 }
 
+/// Format the "scrolled lines" indicator shown when output is truncated.
+pub(crate) fn format_scrolled_indicator(hidden_lines: usize) -> String {
+    format!("(... {} previous lines)", hidden_lines)
+        .bright_black()
+        .to_string()
+}
+
 /// Render tool output tail (up to the configured viewport height).
 fn render_tool_output(text: &str, width: usize) -> String {
     let wrapped = wrap_text(text, width);
@@ -511,6 +518,12 @@ fn render_tool_output(text: &str, width: usize) -> String {
     let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
     let start = wrapped.len().saturating_sub(max_lines);
     let mut output = String::new();
+
+    // Show indicator if lines were scrolled out of view
+    if start > 0 {
+        output.push_str(&style_tool_output_line(&format_scrolled_indicator(start)));
+        output.push('\n');
+    }
 
     for line in &wrapped[start..] {
         output.push_str(&style_tool_output_line(line));
@@ -531,6 +544,12 @@ fn render_file_read_output(filename: &str, text: &str, width: usize) -> String {
     let start = wrapped.len().saturating_sub(max_lines);
     let language = syntax::language_from_path(filename);
     let mut output = String::new();
+
+    // Show indicator if lines were scrolled out of view
+    if start > 0 {
+        output.push_str(&style_tool_output_line(&format_scrolled_indicator(start)));
+        output.push('\n');
+    }
 
     for line in &wrapped[start..] {
         let styled = style_file_read_line(line, language.as_deref());

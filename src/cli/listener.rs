@@ -1819,22 +1819,32 @@ impl CliListener {
                         let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
                         let height = wrapped.len().min(max_lines);
                         let start = wrapped.len().saturating_sub(height);
-                        let visible = wrapped[start..]
-                            .iter()
-                            .map(|line| crate::cli::render::style_tool_output_line(line))
-                            .collect::<Vec<_>>();
+
+                        // Build visible lines, prepending scrolled indicator if needed
+                        let mut visible: Vec<String> = Vec::with_capacity(height + 1);
+                        if start > 0 {
+                            visible.push(crate::cli::render::style_tool_output_line(
+                                &crate::cli::render::format_scrolled_indicator(start),
+                            ));
+                        }
+                        visible.extend(
+                            wrapped[start..]
+                                .iter()
+                                .map(|line| crate::cli::render::style_tool_output_line(line)),
+                        );
+                        let viewport_height = visible.len() as u16;
 
                         // Keep a spacer row between the tool viewport and where subsequent
                         // output (✓/✗, messages, etc.) is printed. This prevents the tool
                         // result indicator from overwriting the last viewport line when the
                         // streaming status line is active.
                         let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;
-                        let desired_total = (height as u16).saturating_add(spacer);
+                        let desired_total = viewport_height.saturating_add(spacer);
                         let reserve_delta =
                             desired_total.saturating_sub(state.tool_output.reserved_lines);
                         state.tool_output.reserved_lines = desired_total;
 
-                        (reserve_delta, visible, height as u16, spacer)
+                        (reserve_delta, visible, viewport_height, spacer)
                     };
 
                     if reserve_delta > 0 {
@@ -1902,18 +1912,28 @@ impl CliListener {
                         let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
                         let height = wrapped.len().min(max_lines);
                         let start = wrapped.len().saturating_sub(height);
-                        let visible = wrapped[start..]
-                            .iter()
-                            .map(|line| style_file_read_line(line, language.as_deref()))
-                            .collect::<Vec<_>>();
+
+                        // Build visible lines, prepending scrolled indicator if needed
+                        let mut visible: Vec<String> = Vec::with_capacity(height + 1);
+                        if start > 0 {
+                            visible.push(crate::cli::render::style_tool_output_line(
+                                &crate::cli::render::format_scrolled_indicator(start),
+                            ));
+                        }
+                        visible.extend(
+                            wrapped[start..]
+                                .iter()
+                                .map(|line| style_file_read_line(line, language.as_deref())),
+                        );
+                        let viewport_height = visible.len() as u16;
 
                         let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;
-                        let desired_total = (height as u16).saturating_add(spacer);
+                        let desired_total = viewport_height.saturating_add(spacer);
                         let reserve_delta =
                             desired_total.saturating_sub(state.tool_output.reserved_lines);
                         state.tool_output.reserved_lines = desired_total;
 
-                        (reserve_delta, visible, height as u16, spacer)
+                        (reserve_delta, visible, viewport_height, spacer)
                     };
 
                     if reserve_delta > 0 {

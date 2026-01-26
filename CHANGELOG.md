@@ -15,6 +15,8 @@
 - CLI: LSP server activation is now visible during tool execution with a cyan
   info message (e.g. `[LSP activated: rust-analyzer (rs)]`) and prompt border
   updates within 50ms to show the current server count
+- CLI: Tool output viewport now shows "(... N previous lines)" indicator when
+  output has scrolled the first lines out of view
 
 ### Changed
 
