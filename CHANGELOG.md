@@ -30,6 +30,7 @@
 
 ### Fixed
 
+- CLI: Queued prompts now remain visible after terminal resize
 - CLI: Bandwidth display updates in real time again during streaming responses
   and avoids overlapping the prompt status line
 

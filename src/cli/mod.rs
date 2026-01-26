@@ -856,7 +856,9 @@ async fn run_event_loop(
                     // In batch mode the prompt is never shown; ignore resize events.
                     // Handling resizes here can force a prompt redraw and make it visible.
                     if !batch {
-                        prompt_box.handle_resize(&input_state, cols, rows).await?;
+                        prompt_box
+                            .handle_resize(&input_state, &pending_prompts, cols, rows)
+                            .await?;
                     }
                 }
                 Event::Paste(text) => {

@@ -849,12 +849,7 @@ impl PromptBox {
             .as_ref()
             .map(|m| m.display_height())
             .unwrap_or(0);
-        // Add pending height + 1 blank line if any pending
-        let pending_extra = if pending_height > 0 {
-            pending_height + 1
-        } else {
-            0
-        };
+        let pending_extra = pending_height;
         let total_height = input_height + menu_height + pending_extra + 1;
         let status_row_offset = pending_extra + input_height;
 
@@ -916,14 +911,6 @@ impl PromptBox {
 
                     current_row += 1;
                 }
-
-                // Blank line after pending prompts
-                queue!(
-                    stdout,
-                    cursor::MoveTo(0, current_row),
-                    terminal::Clear(ClearType::CurrentLine)
-                )?;
-                current_row += 1;
             }
 
             // Draw input box
@@ -1033,6 +1020,7 @@ impl PromptBox {
     pub(super) async fn handle_resize(
         &mut self,
         state: &InputState,
+        pending_prompts: &VecDeque<super::PendingPrompt>,
         mut cols: u16,
         mut rows: u16,
     ) -> io::Result<()> {
@@ -1074,8 +1062,11 @@ impl PromptBox {
                 .as_ref()
                 .map(|m| m.display_height())
                 .unwrap_or(0);
+            // Include pending prompts height
+            let pending_extra = pending_prompts.len() as u16;
             input_height
                 .saturating_add(menu_height)
+                .saturating_add(pending_extra)
                 .saturating_add(1)
                 .max(4)
         };
@@ -1090,7 +1081,17 @@ impl PromptBox {
         self.reset_position();
         // Use redraw positioning after a resize redraw so the prompt is anchored
         // to the bottom of the terminal (and keeps the reserved status/spacer rows intact).
-        self.draw_with_stdout(&mut stdout, state, false, false)?;
+        // If there are pending prompts, use draw_with_pending to show them.
+        if pending_prompts.is_empty() {
+            self.draw_with_stdout(&mut stdout, state, false, false)?;
+        } else {
+            drop(_output_guard);
+            self.draw_with_pending(state, pending_prompts)?;
+            super::listener::CliListener::flush_buffered();
+            drop(_buffer_guard);
+            super::listener::CliListener::flush_buffered();
+            return Ok(());
+        }
         drop(_output_guard);
         super::listener::CliListener::flush_buffered();
         drop(_buffer_guard);
