@@ -248,6 +248,17 @@ impl Usage {
         self.turn_cache_read_tokens.store(0, Ordering::Relaxed);
     }
 
+    /// Reset the last-* usage values.
+    ///
+    /// This is useful when starting a brand new conversation (/clear) so features like
+    /// auto-compaction don't use stale usage data from a prior (possibly different) model.
+    pub(crate) fn reset_last_usage(&self) {
+        self.last_input_tokens.store(0, Ordering::Relaxed);
+        self.last_output_tokens.store(0, Ordering::Relaxed);
+        self.last_cache_creation_tokens.store(0, Ordering::Relaxed);
+        self.last_cache_read_tokens.store(0, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_input(&self, tokens: u64) {
         self.last_input_tokens.store(tokens, Ordering::Relaxed);
         self.total_input_tokens.fetch_add(tokens, Ordering::Relaxed);
@@ -321,4 +332,13 @@ static ANTIGRAVITY_USAGE: std::sync::OnceLock<Usage> = std::sync::OnceLock::new(
 
 pub(crate) fn antigravity() -> &'static Usage {
     ANTIGRAVITY_USAGE.get_or_init(Usage::default)
+}
+
+pub(crate) fn reset_last_context_usage() {
+    anthropic().reset_last_usage();
+    zen().reset_last_usage();
+    openai_compat().reset_last_usage();
+    openai().reset_last_usage();
+    openrouter().reset_last_usage();
+    antigravity().reset_last_usage();
 }

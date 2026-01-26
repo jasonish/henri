@@ -34,6 +34,8 @@
 - CLI: Queued prompts now remain visible after terminal resize
 - CLI: Bandwidth display updates in real time again during streaming responses
   and avoids overlapping the prompt status line
+- CLI: After switching models and running `/clear`, auto-compaction no longer
+  triggers immediately due to stale usage data
 
 ### Changed
 

@@ -1642,6 +1642,7 @@ async fn run_event_loop(
                             messages.clear();
                             *current_session_id = Some(session::generate_session_id());
                             services.set_session_id(current_session_id.clone());
+                            crate::usage::reset_last_context_usage();
                             history::clear();
                             clear_todos();
                             terminal::redraw_from_history(prompt_box.height());
@@ -2737,6 +2738,7 @@ async fn handle_command(
             messages.clear();
             *current_session_id = Some(session::generate_session_id());
             services.set_session_id(current_session_id.clone());
+            crate::usage::reset_last_context_usage();
             history::clear();
             clear_todos();
             terminal::redraw_from_history(prompt_box.height());
