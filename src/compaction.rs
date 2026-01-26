@@ -305,10 +305,10 @@ mod tests {
                 text: "Hi!".to_string(),
             }]),
         ];
-        let (to_compact, to_preserve) = segment_messages(&messages, 2);
-        // With only 1 turn (< 2), nothing to compact
-        assert!(to_compact.is_empty());
-        assert_eq!(to_preserve.len(), 2);
+        let (to_compact, to_preserve) = segment_messages(&messages, 0);
+        // With preserve_recent_turns=0, everything can be compacted.
+        assert_eq!(to_compact.len(), 2);
+        assert!(to_preserve.is_empty());
     }
 
     #[test]

@@ -220,9 +220,19 @@ pub(crate) fn init_spinner() {
 /// Set spinner to "Ready" state
 pub(crate) fn spinner_ready() {
     SPINNER_STATE.store(0, Ordering::Release);
+    // Write the ready line immediately to avoid a brief period where the reserved
+    // status-line rows are blank (which looks like an extra empty line).
+    write_ready_status_line();
     if let Some(tx) = SPINNER_TX.get() {
         let _ = tx.send(0);
     }
+}
+
+fn write_ready_status_line() {
+    update_total_tokens_display();
+    let stats = build_stats_string();
+    let line = format_status_line(&"✓ Done".green().to_string(), stats.as_deref());
+    terminal::write_status_line(&line);
 }
 
 /// Set spinner to "Working" state

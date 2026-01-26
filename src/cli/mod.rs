@@ -659,8 +659,12 @@ async fn run_event_loop(
                         } else {
                             // Finalize compaction
                             messages = finalize_compaction(task_result.messages, compaction_state);
-                            terminal::println_above(
-                                &format!("Compacted {} messages into summary.", messages.len())
+                            terminal::ensure_line_break();
+                            terminal::println_above("");
+                            // Avoid printing a trailing newline so we don't leave an extra blank
+                            // row above the reserved streaming status line.
+                            terminal::print_above(
+                                &format!("[Compacted {} messages into summary.]", messages.len())
                                     .green()
                                     .to_string(),
                             );
@@ -2909,8 +2913,8 @@ async fn handle_command(
                 return CommandResult::Continue;
             }
 
-            // Segment messages (preserve last 2 turns)
-            let (to_compact, to_preserve) = compaction::segment_messages(messages, 2);
+            // Segment messages (compact everything, preserve nothing)
+            let (to_compact, to_preserve) = compaction::segment_messages(messages, 0);
 
             if to_compact.is_empty() {
                 terminal::println_above(&"No messages to compact.".yellow().to_string());
@@ -2918,11 +2922,17 @@ async fn handle_command(
             }
 
             let messages_compacted = to_compact.len();
+            terminal::ensure_line_break();
+            terminal::println_above("");
+            // Keep one blank line between the status message and the model output.
             terminal::println_above(
-                &format!("Compacting {} messages...", messages_compacted)
+                &format!("[Compacting {} messages...]", messages_compacted)
                     .cyan()
                     .to_string(),
             );
+
+            // Ensure model output starts after a blank line.
+            crate::cli::listener::CliListener::note_user_prompt_printed();
 
             // Build the summarization request
             let request_text = compaction::build_summarization_request_text(&to_compact);
