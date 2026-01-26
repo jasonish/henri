@@ -46,6 +46,9 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
             summary,
         } => render_tool_result(*is_error, output, summary.as_deref()),
         HistoryEvent::ToolOutput { text } => render_tool_output(text, width),
+        HistoryEvent::FileReadOutput { filename, text } => {
+            render_file_read_output(filename, text, width)
+        }
         HistoryEvent::Error(msg) => render_error(msg),
         HistoryEvent::Warning(msg) => render_warning(msg),
         HistoryEvent::Info(msg) => render_info(msg),
@@ -74,10 +77,12 @@ fn needs_blank_line_before(prev: Option<&HistoryEvent>, current: &HistoryEvent) 
         // Tool -> Text: blank line
         (HistoryEvent::ToolResult { .. }, HistoryEvent::AssistantText { .. }) => true,
         (HistoryEvent::ToolOutput { .. }, HistoryEvent::AssistantText { .. }) => true,
+        (HistoryEvent::FileReadOutput { .. }, HistoryEvent::AssistantText { .. }) => true,
         (HistoryEvent::ToolEnd, HistoryEvent::AssistantText { .. }) => true,
         // Tool -> Thinking: blank line
         (HistoryEvent::ToolResult { .. }, HistoryEvent::Thinking { .. }) => true,
         (HistoryEvent::ToolOutput { .. }, HistoryEvent::Thinking { .. }) => true,
+        (HistoryEvent::FileReadOutput { .. }, HistoryEvent::Thinking { .. }) => true,
         (HistoryEvent::ToolEnd, HistoryEvent::Thinking { .. }) => true,
         // Thinking/Text -> ToolStart: blank line
         (HistoryEvent::Thinking { .. }, HistoryEvent::ToolStart) => true,
@@ -513,6 +518,100 @@ fn render_tool_output(text: &str, width: usize) -> String {
     }
 
     output
+}
+
+/// Render file read output with syntax highlighting based on file extension.
+fn render_file_read_output(filename: &str, text: &str, width: usize) -> String {
+    let wrapped = wrap_text(text, width);
+    if wrapped.is_empty() {
+        return String::new();
+    }
+
+    let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
+    let start = wrapped.len().saturating_sub(max_lines);
+    let language = syntax::language_from_path(filename);
+    let mut output = String::new();
+
+    for line in &wrapped[start..] {
+        let styled = style_file_read_line(line, language.as_deref());
+        output.push_str(&styled);
+        output.push('\n');
+    }
+
+    output
+}
+
+/// Style a file read output line with syntax highlighting and background.
+///
+/// The line format is expected to be `{line_num:6}\t{content}` - only the content
+/// portion after the tab is syntax highlighted.
+pub(crate) fn style_file_read_line(line: &str, language: Option<&str>) -> String {
+    const BG: &str = "\x1b[48;5;233m";
+    const RESET: &str = "\x1b[0m";
+
+    if line.is_empty() {
+        return format!("{}\x1b[2K{}", BG, RESET);
+    }
+
+    // Split at the first tab to separate line number prefix from content
+    let (prefix, content) = if let Some(tab_pos) = line.find('\t') {
+        (&line[..=tab_pos], &line[tab_pos + 1..])
+    } else {
+        // No tab found - treat entire line as content
+        ("", line)
+    };
+
+    // Apply syntax highlighting only to the content portion
+    let highlighted_content = if let Some(lang) = language {
+        highlight_line_content(content, lang)
+    } else {
+        content.to_string()
+    };
+
+    // Re-apply background after any reset sequences from syntax highlighting
+    let highlighted_content = highlighted_content.replace("\x1b[0m", "\x1b[0m\x1b[48;5;233m");
+    let highlighted_content = highlighted_content.replace("\x1b[m", "\x1b[m\x1b[48;5;233m");
+
+    format!(
+        "{}\x1b[2K{}{}{}\x1b[K{}",
+        BG, prefix, highlighted_content, BG, RESET
+    )
+}
+
+/// Highlight a single line of code content (used for file read output).
+pub(crate) fn highlight_line_content(line: &str, language: &str) -> String {
+    let spans = syntax::highlight_code(line, Some(language));
+
+    if spans.is_empty() {
+        return line.to_string();
+    }
+
+    let mut result = String::new();
+    let mut last_end = 0;
+
+    for span in spans {
+        // Add any gap
+        if span.start > last_end {
+            result.push_str(&line[last_end..span.start]);
+        }
+
+        // Add the colored span using truecolor
+        let text = &line[span.start..span.end];
+        result.push_str(
+            &text
+                .truecolor(span.color.r, span.color.g, span.color.b)
+                .to_string(),
+        );
+
+        last_end = span.end;
+    }
+
+    // Add any remaining text
+    if last_end < line.len() {
+        result.push_str(&line[last_end..]);
+    }
+
+    result
 }
 
 /// Render file diff with colored +/- lines and syntax highlighting

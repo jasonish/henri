@@ -19,7 +19,7 @@ use super::history::{self, HistoryEvent, TodoItem, TodoStatus};
 use super::markdown::{
     render_markdown_inlines, render_markdown_inlines_with_style, render_markdown_line,
 };
-use super::render::{BG_DARK_GREEN, BG_DARK_RED};
+use super::render::{BG_DARK_GREEN, BG_DARK_RED, style_file_read_line};
 use super::terminal;
 
 static ACTIVE_LISTENER: OnceLock<&'static CliListener> = OnceLock::new();
@@ -1374,6 +1374,7 @@ impl CliListener {
                 | OutputEvent::ToolCall { .. }
                 | OutputEvent::ToolResult { .. }
                 | OutputEvent::ToolOutput { .. }
+                | OutputEvent::FileReadOutput { .. }
                 | OutputEvent::Info(_)
                 | OutputEvent::Error(_)
                 | OutputEvent::Warning(_)
@@ -1864,6 +1865,85 @@ impl CliListener {
                 }
 
                 history::append_tool_output(text);
+
+                if let Ok(mut state) = self.state.lock() {
+                    state.last_block = Some(LastBlock::Tool);
+                }
+            }
+
+            OutputEvent::FileReadOutput { filename, text } => {
+                if text.is_empty() {
+                    return;
+                }
+
+                let width = Self::terminal_width();
+                let language = syntax::language_from_path(filename);
+                let mut first_segment = true;
+
+                for segment in text.split_inclusive('\n') {
+                    let (reserve_delta, visible_lines, viewport_height, spacer_lines) = {
+                        let Ok(mut state) = self.state.lock() else {
+                            return;
+                        };
+
+                        if first_segment {
+                            state.last_tool_call_open = false;
+                            first_segment = false;
+                        }
+
+                        if !state.tool_output.active {
+                            state.tool_output.active = true;
+                        }
+
+                        state.tool_output.buffer.push_str(segment);
+
+                        let wrapped =
+                            crate::cli::render::wrap_text(&state.tool_output.buffer, width);
+                        let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
+                        let height = wrapped.len().min(max_lines);
+                        let start = wrapped.len().saturating_sub(height);
+                        let visible = wrapped[start..]
+                            .iter()
+                            .map(|line| style_file_read_line(line, language.as_deref()))
+                            .collect::<Vec<_>>();
+
+                        let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;
+                        let desired_total = (height as u16).saturating_add(spacer);
+                        let reserve_delta =
+                            desired_total.saturating_sub(state.tool_output.reserved_lines);
+                        state.tool_output.reserved_lines = desired_total;
+
+                        (reserve_delta, visible, height as u16, spacer)
+                    };
+
+                    if reserve_delta > 0 {
+                        let reserved = terminal::reserve_output_lines(reserve_delta);
+                        if !reserved {
+                            if let Ok(mut state) = self.state.lock() {
+                                state.tool_output.reset();
+                            }
+                            terminal::ensure_line_break();
+                            let mut display = String::new();
+                            for seg in text.split_inclusive('\n') {
+                                let (line, has_nl) = seg
+                                    .strip_suffix('\n')
+                                    .map(|l| (l, true))
+                                    .unwrap_or((seg, false));
+                                display.push_str(&style_file_read_line(line, language.as_deref()));
+                                if has_nl {
+                                    display.push('\n');
+                                }
+                            }
+                            terminal::print_above(&display);
+                            history::append_file_read_output(filename, text);
+                            return;
+                        }
+                    }
+
+                    terminal::render_tool_viewport(&visible_lines, viewport_height, spacer_lines);
+                }
+
+                history::append_file_read_output(filename, text);
 
                 if let Ok(mut state) = self.state.lock() {
                     state.last_block = Some(LastBlock::Tool);

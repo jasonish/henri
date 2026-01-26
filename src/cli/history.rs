@@ -49,6 +49,8 @@ pub(crate) enum HistoryEvent {
     },
     /// Tool output text (may be streamed)
     ToolOutput { text: String },
+    /// File read output with filename for syntax highlighting
+    FileReadOutput { filename: String, text: String },
     /// An error occurred
     Error(String),
     /// Warning message
@@ -171,6 +173,23 @@ impl History {
             });
         }
     }
+
+    /// Append file read output to the last FileReadOutput event with the same filename, or create a new one.
+    pub(crate) fn append_file_read_output(&mut self, filename: &str, text: &str) {
+        if let Some(HistoryEvent::FileReadOutput {
+            filename: existing_filename,
+            text: existing,
+        }) = self.events.last_mut()
+            && existing_filename == filename
+        {
+            existing.push_str(text);
+            return;
+        }
+        self.push(HistoryEvent::FileReadOutput {
+            filename: filename.to_string(),
+            text: text.to_string(),
+        });
+    }
 }
 
 // ============================================================================
@@ -241,6 +260,13 @@ pub(crate) fn finish_thinking() {
 pub(crate) fn append_tool_output(text: &str) {
     if let Ok(mut history) = HISTORY.lock() {
         history.append_tool_output(text);
+    }
+}
+
+/// Append file read output to the last FileReadOutput event, or create a new one.
+pub(crate) fn append_file_read_output(filename: &str, text: &str) {
+    if let Ok(mut history) = HISTORY.lock() {
+        history.append_file_read_output(filename, text);
     }
 }
 

@@ -28,6 +28,8 @@ pub(crate) enum OutputEvent {
     },
     /// Tool output text (may be streamed)
     ToolOutput { text: String },
+    /// File read output with filename for syntax highlighting
+    FileReadOutput { filename: String, text: String },
     /// Informational message
     Info(String),
     /// Error message (terminal)
@@ -192,6 +194,14 @@ pub(crate) fn print_tool_result(
 /// Emit tool output text
 pub(crate) fn emit_tool_output(ctx: &OutputContext, text: &str) {
     ctx.emit(OutputEvent::ToolOutput {
+        text: text.to_string(),
+    });
+}
+
+/// Emit file read output with filename for syntax highlighting
+pub(crate) fn emit_file_read_output(ctx: &OutputContext, filename: &str, text: &str) {
+    ctx.emit(OutputEvent::FileReadOutput {
+        filename: filename.to_string(),
         text: text.to_string(),
     });
 }

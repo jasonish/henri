@@ -129,7 +129,11 @@ impl Tool for FileRead {
                     line_count += 1;
 
                     if line_count <= 3 {
-                        crate::output::emit_tool_output(output, &formatted_line);
+                        crate::output::emit_file_read_output(
+                            output,
+                            &input.filename,
+                            &formatted_line,
+                        );
                     }
                 }
                 Err(e) => {

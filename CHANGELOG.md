@@ -8,6 +8,8 @@
   prompt, showing the last 10 lines with a subtle background for distinction
 - CLI: `file_read` now previews the first 3 lines in the tool output viewport
   while still returning the full (numbered) file contents
+- CLI: `file_read` preview lines now display with syntax highlighting based on
+  file extension, colorizing only the file content (not line numbers)
 - CLI: Tool result indicators can include a short summary (e.g. `file_read` and `bash`
   show lines/bytes read)
 
