@@ -43,6 +43,8 @@
   and avoids overlapping the prompt status line
 - CLI: Reserve streaming status-line rows before streaming begins to avoid shifting
   or scrolling over the prompt block
+- CLI: Keep info/warning/error spacing consistent between live output and session replay
+  and render info messages with consistent styling
 - CLI: After switching models and running `/clear`, auto-compaction no longer
   triggers immediately due to stale usage data
 - CLI: Ctrl+D now behaves like Delete when input is not empty

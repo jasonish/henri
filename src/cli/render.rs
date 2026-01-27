@@ -67,6 +67,8 @@ fn needs_blank_line_before(prev: Option<&HistoryEvent>, current: &HistoryEvent) 
     };
 
     match (prev, current) {
+        // Any -> Info: blank line (live mode prints a blank line before info)
+        (_, HistoryEvent::Info(_)) => true,
         // UserPrompt -> Thinking: blank line
         (HistoryEvent::UserPrompt { .. }, HistoryEvent::Thinking { .. }) => true,
         // UserPrompt -> Text: blank line (prompt ends with newline in render)
@@ -89,6 +91,9 @@ fn needs_blank_line_before(prev: Option<&HistoryEvent>, current: &HistoryEvent) 
         (HistoryEvent::ThinkingEnd, HistoryEvent::ToolStart) => true,
         (HistoryEvent::AssistantText { .. }, HistoryEvent::ToolStart) => true,
         (HistoryEvent::ResponseEnd, HistoryEvent::ToolStart) => true,
+        // Info -> Tool: blank line
+        (HistoryEvent::Info(_), HistoryEvent::ToolStart) => true,
+        (HistoryEvent::Info(_), HistoryEvent::ToolUse { .. }) => true,
         // ResponseEnd -> Text/Thinking: blank line (for session replay across message boundaries)
         (HistoryEvent::ResponseEnd, HistoryEvent::AssistantText { .. }) => true,
         (HistoryEvent::ResponseEnd, HistoryEvent::Thinking { .. }) => true,
@@ -461,7 +466,7 @@ fn render_warning(msg: &str) -> String {
 
 /// Render info message
 fn render_info(msg: &str) -> String {
-    format!("{}\n", msg)
+    format!("{}\n", msg.cyan())
 }
 
 /// Apply styling to tool output without adding extra visible characters.

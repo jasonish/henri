@@ -1067,6 +1067,7 @@ enum LastBlock {
     UserPrompt,
     Thinking,
     Text,
+    Info,
     Tool,
 }
 
@@ -1561,13 +1562,16 @@ impl CliListener {
                 // Ensure response text starts on the correct line.
                 //
                 // Rules:
-                // - Prompt   -> Text: newline (prompt is printed without a trailing newline)
-                // - Thinking -> Text: blank line
-                // - Tool     -> Text: blank line
+                // - UserPrompt -> Text: blank line
+                // - Thinking   -> Text: blank line
+                // - Tool       -> Text: blank line
                 if matches!(state.last_block, Some(LastBlock::Tool)) {
                     terminal::ensure_trailing_newlines(2);
                 } else if !state.text_output_written {
-                    if matches!(state.last_block, Some(LastBlock::Thinking)) {
+                    if matches!(
+                        state.last_block,
+                        Some(LastBlock::Thinking) | Some(LastBlock::UserPrompt)
+                    ) {
                         terminal::ensure_trailing_newlines(2);
                     } else {
                         terminal::ensure_line_break();
@@ -1646,7 +1650,9 @@ impl CliListener {
                         // improves readability, but not between consecutive tool calls.
                         if matches!(
                             state.last_block,
-                            Some(LastBlock::Thinking) | Some(LastBlock::Text)
+                            Some(LastBlock::Thinking)
+                                | Some(LastBlock::Text)
+                                | Some(LastBlock::Info)
                         ) {
                             terminal::ensure_trailing_newlines(2);
                         } else {
@@ -1975,6 +1981,9 @@ impl CliListener {
                 terminal::println_above("");
                 terminal::println_above(&msg.cyan().to_string());
                 history::push(HistoryEvent::Info(msg.clone()));
+                if let Ok(mut state) = self.state.lock() {
+                    state.last_block = Some(LastBlock::Info);
+                }
             }
 
             OutputEvent::Error(msg) => {
@@ -1989,12 +1998,18 @@ impl CliListener {
                 terminal::ensure_line_break();
                 terminal::println_above(&msg.red().to_string());
                 history::push(HistoryEvent::Error(msg.clone()));
+                if let Ok(mut state) = self.state.lock() {
+                    state.last_block = Some(LastBlock::Info);
+                }
             }
 
             OutputEvent::Warning(msg) => {
                 terminal::ensure_line_break();
                 terminal::println_above(&msg.yellow().to_string());
                 history::push(HistoryEvent::Warning(msg.clone()));
+                if let Ok(mut state) = self.state.lock() {
+                    state.last_block = Some(LastBlock::Info);
+                }
             }
 
             OutputEvent::TodoList { todos } => {
