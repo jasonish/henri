@@ -34,14 +34,19 @@ pub(super) struct SlashMenuState {
 }
 
 impl SlashMenuState {
-    pub fn new() -> Self {
+    pub fn new(is_claude: bool) -> Self {
         Self {
             items: Vec::new(),
             selected: 0,
             custom_commands: load_custom_commands().unwrap_or_default(),
-            is_claude: false,
+            is_claude,
             has_claude_oauth: crate::commands::has_claude_oauth_provider(),
         }
+    }
+
+    /// Update whether the current provider is Claude/Anthropic
+    pub fn set_is_claude(&mut self, is_claude: bool) {
+        self.is_claude = is_claude;
     }
 
     /// Update the menu items based on the current query

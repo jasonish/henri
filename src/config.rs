@@ -29,40 +29,6 @@ pub(crate) enum DefaultModel {
     Specific(String),
 }
 
-/// Default UI mode for the application.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum UiDefault {
-    /// Command-line interface
-    #[default]
-    Cli,
-}
-
-/// UI layout mode for chat output.
-///
-/// Currently only Spaced mode is supported. The enum is kept for backwards
-/// compatibility with existing config files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum UiLayoutMode {
-    /// No tags; insert one empty line between blocks.
-    #[default]
-    #[serde(other)]
-    Spaced,
-}
-
-/// UI configuration section.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(crate) struct UiConfig {
-    /// Default interface to use. Defaults to cli.
-    #[serde(default)]
-    pub default: UiDefault,
-
-    /// Layout mode for the chat log. Defaults to spaced.
-    #[serde(default)]
-    pub layout_mode: UiLayoutMode,
-}
-
 /// Auto-compaction configuration section.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -115,8 +81,6 @@ pub(crate) struct ConfigFile {
     pub mcp: Option<McpConfig>,
     #[serde(default)]
     pub lsp: Option<LspConfig>,
-    #[serde(default)]
-    pub ui: UiConfig,
     #[serde(default = "default_show_network_stats")]
     pub show_network_stats: bool,
     #[serde(default = "default_show_diffs")]
@@ -383,10 +347,6 @@ pub(crate) struct AntigravityProviderConfig {
     pub refresh_token: String,
     pub expires_at: u64,
     #[serde(default)]
-    pub email: Option<String>,
-    #[serde(default)]
-    pub tier: Option<String>,
-    #[serde(default)]
     pub project_id: Option<String>,
 }
 
@@ -512,19 +472,12 @@ pub(crate) struct ModelConfig {
     /// Reasoning effort level (low, medium, high)
     #[serde(default)]
     pub reasoning_effort: Option<String>,
-    /// Extended thinking configuration (provider-specific JSON)
-    /// Example: {"type": "enabled"} or {"type": "enabled", "budget_tokens": 10000}
-    #[serde(default)]
-    pub thinking: Option<serde_json::Value>,
     /// Temperature for sampling (0.0 - 2.0)
     #[serde(default)]
     pub temperature: Option<f32>,
     /// Maximum tokens to generate
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Custom system prompt for this model
-    #[serde(default)]
-    pub system_prompt: Option<String>,
     /// Stop sequences
     #[serde(default)]
     pub stop_sequences: Option<Vec<String>>,
@@ -638,13 +591,6 @@ impl ConfigFile {
                 && let Ok(lsp) = lsp_val.clone().try_into()
             {
                 config.lsp = Some(lsp);
-            }
-
-            // ui - skip invalid values silently (use default)
-            if let Some(ui_val) = table.get("ui")
-                && let Ok(ui) = ui_val.clone().try_into()
-            {
-                config.ui = ui;
             }
 
             // show-network-stats
@@ -930,10 +876,8 @@ mod tests {
             id: "test-model-id".to_string(),
             name: Some("Test Model".to_string()),
             reasoning_effort: Some("high".to_string()),
-            thinking: None,
             temperature: Some(0.7),
             max_tokens: Some(1000),
-            system_prompt: Some("test prompt".to_string()),
             stop_sequences: Some(vec!["STOP".to_string()]),
         };
         let toml = toml::to_string(&model_config).unwrap();
@@ -944,7 +888,6 @@ mod tests {
             "Expected 'reasoning-effort'"
         );
         assert!(toml.contains("max-tokens"), "Expected 'max-tokens'");
-        assert!(toml.contains("system-prompt"), "Expected 'system-prompt'");
         assert!(toml.contains("stop-sequences"), "Expected 'stop-sequences'");
 
         // Test display_name falls back to id when name is None
@@ -952,10 +895,8 @@ mod tests {
             id: "fallback-id".to_string(),
             name: None,
             reasoning_effort: None,
-            thinking: None,
             temperature: None,
             max_tokens: None,
-            system_prompt: None,
             stop_sequences: None,
         };
         assert_eq!(model_config_no_name.display_name(), "fallback-id");
@@ -1067,48 +1008,6 @@ expires-at = 12345
     }
 
     #[test]
-    fn test_ui_default_is_cli() {
-        assert_eq!(UiDefault::default(), UiDefault::Cli);
-        let config = ConfigFile::default();
-        assert_eq!(config.ui.default, UiDefault::Cli);
-    }
-
-    #[test]
-    fn test_ui_layout_mode_default_is_spaced() {
-        assert_eq!(UiLayoutMode::default(), UiLayoutMode::Spaced);
-        let config = ConfigFile::default();
-        assert_eq!(config.ui.layout_mode, UiLayoutMode::Spaced);
-    }
-
-    #[test]
-    fn test_invalid_ui_default_uses_fallback() {
-        // Test that an invalid ui.default value falls back to default, not error
-        let toml_str = r#"
-show-network-stats = false
-show-diffs = true
-
-[ui]
-default = "tui"
-"#;
-
-        // First, verify direct parsing would fail
-        let result: std::result::Result<ConfigFile, _> = toml::from_str(toml_str);
-        assert!(
-            result.is_err(),
-            "Direct parse should fail with invalid ui.default"
-        );
-
-        // Now test the fallback mechanism
-        let config = ConfigFile::load_with_fallback(toml_str).unwrap();
-
-        // The invalid ui.default should fall back to default (Cli)
-        assert_eq!(config.ui.default, UiDefault::Cli);
-        // But other valid fields should be preserved
-        assert!(!config.show_network_stats);
-        assert!(config.show_diffs);
-    }
-
-    #[test]
     fn test_model_config_aliases() {
         // Test that multiple model configs can share the same API id but have different names
         let config = OpenAiCompatProviderConfig {
@@ -1120,20 +1019,16 @@ default = "tui"
                     id: "claude-opus-4-5-thinking".to_string(),
                     name: Some("claude-opus-4-5-thinking#off".to_string()),
                     reasoning_effort: Some("off".to_string()),
-                    thinking: None,
                     temperature: None,
                     max_tokens: None,
-                    system_prompt: None,
                     stop_sequences: None,
                 },
                 ModelConfig {
                     id: "claude-opus-4-5-thinking".to_string(),
                     name: Some("claude-opus-4-5-thinking#high".to_string()),
                     reasoning_effort: Some("high".to_string()),
-                    thinking: None,
                     temperature: None,
                     max_tokens: None,
-                    system_prompt: None,
                     stop_sequences: None,
                 },
             ],

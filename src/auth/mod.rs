@@ -407,10 +407,8 @@ async fn login_openai_compat() -> Result<()> {
             id: model_name.to_string(),
             name: None,
             reasoning_effort,
-            thinking: None,
             temperature: None,
             max_tokens: None,
-            system_prompt: None,
             stop_sequences: None,
         });
 
@@ -534,10 +532,8 @@ async fn login_openrouter() -> Result<()> {
             id: model_name.to_string(),
             name: None,
             reasoning_effort,
-            thinking: None,
             temperature: None,
             max_tokens: None,
-            system_prompt: None,
             stop_sequences: None,
         });
 
@@ -1522,8 +1518,6 @@ async fn login_antigravity() -> Result<()> {
         access_token: token.access_token,
         refresh_token,
         expires_at,
-        email: Some(user_info.email),
-        tier,
         project_id,
     };
 

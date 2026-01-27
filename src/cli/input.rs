@@ -493,6 +493,8 @@ pub(super) struct InputState {
     last_ctrl_c_time: Option<Instant>,
     /// File completion state
     pub file_completer: FileCompleter,
+    /// Whether the current provider is Claude/Anthropic
+    is_claude: bool,
 }
 
 impl InputState {
@@ -508,6 +510,16 @@ impl InputState {
             next_image_id: 1,
             last_ctrl_c_time: None,
             file_completer: FileCompleter::new(working_dir),
+            is_claude: false,
+        }
+    }
+
+    /// Update whether the current provider is Claude/Anthropic
+    pub fn set_is_claude(&mut self, is_claude: bool) {
+        self.is_claude = is_claude;
+        // Also update any active slash menu
+        if let Some(ref mut menu) = self.slash_menu {
+            menu.set_is_claude(is_claude);
         }
     }
 
@@ -643,7 +655,7 @@ impl InputState {
         if let Some(query) = extract_query(&content) {
             // Initialize menu if not already active
             if self.slash_menu.is_none() {
-                self.slash_menu = Some(SlashMenuState::new());
+                self.slash_menu = Some(SlashMenuState::new(self.is_claude));
             }
             if let Some(ref mut menu) = self.slash_menu {
                 menu.update(query);
@@ -1518,7 +1530,7 @@ mod tests {
         state.col_idx = state.lines[0].len();
         state.update_slash_menu();
 
-        let mut menu = SlashMenuState::new();
+        let mut menu = SlashMenuState::new(false);
         menu.items = vec![DynamicSlashCommand {
             command: Command::Custom {
                 name: "review".to_string(),

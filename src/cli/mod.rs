@@ -476,6 +476,11 @@ async fn run_event_loop(
     let mut provider_manager = provider_manager;
     let mut messages: Vec<Message> = messages;
 
+    // Set initial is_claude state for slash menu filtering
+    if let Some(ref pm) = provider_manager {
+        input_state.set_is_claude(pm.current_provider() == ModelProvider::Claude);
+    }
+
     // Active chat task state
     let mut chat_task: Option<ChatTask> = None;
 
@@ -836,6 +841,8 @@ async fn run_event_loop(
                                 default_thinking_state(choice.provider, &choice.model_id);
                             thinking_state.enabled = new_thinking.enabled;
                             thinking_state.mode = new_thinking.mode;
+                            // Update is_claude for slash menu filtering
+                            input_state.set_is_claude(choice.provider == ModelProvider::Claude);
                         }
 
                         chat_task = None;
@@ -1352,6 +1359,10 @@ async fn run_event_loop(
                                     thinking_state.enabled = new_thinking.enabled;
                                     thinking_state.mode = new_thinking.mode;
 
+                                    // Update is_claude for slash menu filtering
+                                    input_state
+                                        .set_is_claude(choice.provider == ModelProvider::Claude);
+
                                     update_prompt_status(
                                         &mut prompt_box,
                                         pm,
@@ -1451,6 +1462,10 @@ async fn run_event_loop(
                                             );
                                         }
                                         pm.set_thinking_enabled(thinking_state.enabled);
+
+                                        // Update is_claude for slash menu filtering
+                                        input_state
+                                            .set_is_claude(provider == ModelProvider::Claude);
 
                                         update_prompt_status(
                                             &mut prompt_box,
@@ -2319,6 +2334,10 @@ async fn run_event_loop(
                                         default_thinking_state(next.provider, &next.model_id);
                                     thinking_state.enabled = new_thinking.enabled;
                                     thinking_state.mode = new_thinking.mode;
+
+                                    // Update is_claude for slash menu filtering
+                                    input_state
+                                        .set_is_claude(next.provider == ModelProvider::Claude);
 
                                     terminal::println_above(&format!(
                                         "Switched to {} / {}",

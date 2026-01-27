@@ -130,10 +130,8 @@ impl ZenProvider {
                 id: "big-pickle".to_string(),
                 name: None,
                 reasoning_effort: None,
-                thinking: None,
                 temperature: None,
                 max_tokens: None,
-                system_prompt: None,
                 stop_sequences: None,
             });
 
@@ -143,10 +141,8 @@ impl ZenProvider {
                 id: "glm-4.6".to_string(),
                 name: None,
                 reasoning_effort: None,
-                thinking: None,
                 temperature: None,
                 max_tokens: None,
-                system_prompt: None,
                 stop_sequences: None,
             });
 
@@ -156,10 +152,8 @@ impl ZenProvider {
                 id: "grok-code".to_string(),
                 name: None,
                 reasoning_effort: None,
-                thinking: None,
                 temperature: None,
                 max_tokens: None,
-                system_prompt: None,
                 stop_sequences: None,
             });
 

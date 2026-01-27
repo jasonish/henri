@@ -354,11 +354,6 @@ impl AntigravityProvider {
                 .map(|p| p.is_enabled())
                 .unwrap_or(true);
 
-            // Get existing config to preserve other fields
-            let existing = config
-                .get_provider(&state.local_id)
-                .and_then(|p| p.as_antigravity().cloned());
-
             config.set_provider(
                 state.local_id.clone(),
                 ProviderConfig::Antigravity(AntigravityProviderConfig {
@@ -366,8 +361,6 @@ impl AntigravityProvider {
                     access_token: state.access_token.clone(),
                     refresh_token: state.refresh_token.clone(),
                     expires_at: state.expires_at,
-                    email: existing.as_ref().and_then(|e| e.email.clone()),
-                    tier: existing.as_ref().and_then(|e| e.tier.clone()),
                     project_id: state.project_id.clone(),
                 }),
             );
