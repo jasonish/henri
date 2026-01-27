@@ -205,7 +205,6 @@ fn build_input(messages: &[Message]) -> Vec<serde_json::Value> {
 pub(super) async fn build_request(
     model: &str,
     messages: &[Message],
-    _thinking_enabled: bool,
     services: &Services,
 ) -> OpenAiResponsesRequest {
     let tools: Vec<OpenAiResponsesTool> = tools::all_definitions(services)
@@ -240,7 +239,7 @@ pub(super) async fn chat(
     output: &crate::output::OutputContext,
 ) -> Result<ChatResponse> {
     let url = format!("{}/responses", ZEN_BASE_URL);
-    let request = build_request(ctx.model, &messages, ctx.thinking_enabled, ctx.services).await;
+    let request = build_request(ctx.model, &messages, ctx.services).await;
 
     // Record TX bytes
     let body_bytes = serde_json::to_vec(&request)?;

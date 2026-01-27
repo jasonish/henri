@@ -23,7 +23,6 @@ pub(super) struct ChatContext<'a> {
     pub client: &'a Client,
     pub api_key: &'a str,
     pub model: &'a str,
-    pub thinking_enabled: bool,
     pub thinking_mode: Option<&'a str>,
     pub services: &'a Services,
 }
@@ -98,7 +97,6 @@ pub(crate) struct ZenProvider {
     client: Client,
     api_key: String,
     model: String,
-    thinking_enabled: bool,
     thinking_mode: Option<String>,
     openai_compat_delegate: Option<OpenAiCompatProvider>,
     services: Services,
@@ -112,7 +110,6 @@ impl ZenProvider {
             client: Client::new(),
             api_key: config.api_key.clone(),
             model: config.model.clone(),
-            thinking_enabled: false,
             thinking_mode: None,
             openai_compat_delegate,
             services,
@@ -175,10 +172,6 @@ impl ZenProvider {
             usage::zen(),
             services,
         ))
-    }
-
-    pub(crate) fn set_thinking_enabled(&mut self, enabled: bool) {
-        self.thinking_enabled = enabled;
     }
 
     pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
@@ -247,7 +240,6 @@ impl Provider for ZenProvider {
             client: &self.client,
             api_key: &self.api_key,
             model: &self.model,
-            thinking_enabled: self.thinking_enabled,
             thinking_mode: self.thinking_mode.as_deref(),
             services: &self.services,
         };
@@ -274,30 +266,19 @@ impl Provider for ZenProvider {
                 None => Err(Error::Auth("Zen provider not configured".to_string())),
             },
             ApiType::OpenAiResponses => {
-                let request = responses::build_request(
-                    &self.model,
-                    &messages,
-                    self.thinking_enabled,
-                    &self.services,
-                )
-                .await;
+                let request =
+                    responses::build_request(&self.model, &messages, &self.services).await;
                 responses::prepare_request_value(&request)
             }
             ApiType::Anthropic => {
-                let request = anthropic::build_request(
-                    &self.model,
-                    &messages,
-                    self.thinking_enabled,
-                    &self.services,
-                )
-                .await;
+                let request =
+                    anthropic::build_request(&self.model, &messages, &self.services).await;
                 anthropic::prepare_request_value(&request)
             }
             ApiType::Gemini => {
                 let request = gemini::build_request(
                     &self.model,
                     &messages,
-                    self.thinking_enabled,
                     self.thinking_mode.as_deref(),
                     &self.services,
                 )

@@ -630,7 +630,9 @@ impl ProviderManager {
 
     pub(crate) fn set_thinking_enabled(&mut self, enabled: bool) {
         match self.current_provider {
-            ModelProvider::OpenCodeZen => self.zen_provider.set_thinking_enabled(enabled),
+            ModelProvider::OpenCodeZen => {
+                // Zen provider doesn't use thinking_enabled
+            }
             ModelProvider::GitHubCopilot => {
                 if let Some(ref mut p) = self.copilot_provider {
                     p.set_thinking_enabled(enabled);

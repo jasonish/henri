@@ -198,7 +198,6 @@ pub(super) fn build_messages(messages: &[Message]) -> Vec<serde_json::Value> {
 pub(super) async fn build_request(
     model: &str,
     messages: &[Message],
-    _thinking_enabled: bool,
     services: &Services,
 ) -> AnthropicRequest {
     let tools: Vec<AnthropicTool> = tools::all_definitions(services)
@@ -230,7 +229,7 @@ pub(super) async fn chat(
     output: &crate::output::OutputContext,
 ) -> Result<ChatResponse> {
     let url = format!("{}/messages", ZEN_BASE_URL);
-    let request = build_request(ctx.model, &messages, ctx.thinking_enabled, ctx.services).await;
+    let request = build_request(ctx.model, &messages, ctx.services).await;
 
     // Record TX bytes
     let body_bytes = serde_json::to_vec(&request)?;

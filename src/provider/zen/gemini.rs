@@ -240,7 +240,6 @@ fn build_contents(messages: &[Message]) -> Vec<GeminiContent> {
 pub(super) async fn build_request(
     _model: &str,
     messages: &[Message],
-    _thinking_enabled: bool,
     _thinking_mode: Option<&str>,
     services: &Services,
 ) -> GeminiRequest {
@@ -303,14 +302,7 @@ pub(super) async fn chat(
         "{}/models/{}:streamGenerateContent?alt=sse",
         ZEN_BASE_URL, ctx.model
     );
-    let request = build_request(
-        ctx.model,
-        &messages,
-        ctx.thinking_enabled,
-        ctx.thinking_mode,
-        ctx.services,
-    )
-    .await;
+    let request = build_request(ctx.model, &messages, ctx.thinking_mode, ctx.services).await;
 
     // Record TX bytes
     let body_bytes = serde_json::to_vec(&request)?;
