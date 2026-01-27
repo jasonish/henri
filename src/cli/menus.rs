@@ -16,7 +16,7 @@ use crossterm::terminal::{self, ClearType};
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::{ConfigFile, DefaultModel};
-use crate::providers::{ModelChoice, ProviderManager, build_model_choices};
+use crate::providers::{ModelChoice, build_model_choices};
 use crate::session::{self, SessionInfo};
 
 /// Maximum number of menu items to display at once
@@ -89,20 +89,8 @@ pub(super) struct ModelMenuState {
 }
 
 impl ModelMenuState {
-    /// Create a new model menu state from a ProviderManager
-    pub fn new(provider_manager: &ProviderManager) -> Self {
-        let current_model = format!(
-            "{}/{}",
-            provider_manager
-                .current_custom_provider()
-                .unwrap_or_else(|| provider_manager.current_provider().id()),
-            provider_manager.current_model_id()
-        );
-        Self::with_current_model(current_model)
-    }
-
     /// Create a new model menu state with an explicit current model string
-    pub fn with_current_model(current_model: String) -> Self {
+    pub(super) fn with_current_model(current_model: String) -> Self {
         let mut choices = build_model_choices();
 
         // Sort: favorites first, then by display name

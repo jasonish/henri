@@ -21,6 +21,9 @@
 
 ### Changed
 
+- CLI: Requires a configured provider/model on startup (no implicit default);
+  prompts entered before configuration now show a helpful error directing users
+  to `henri provider add`.
 - LSP: Servers are now started lazily on-demand when a file with a matching
   extension is edited, rather than all at startup. This improves startup time
   when multiple LSP servers are configured.

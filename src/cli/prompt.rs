@@ -51,12 +51,21 @@ pub(super) struct ThinkingStatus {
 }
 
 /// Security mode status for the status line.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(super) struct SecurityStatus {
     /// True if read-only mode is enabled
     pub read_only: bool,
     /// True if sandbox is enabled (only relevant when not read_only)
     pub sandbox_enabled: bool,
+}
+
+impl Default for SecurityStatus {
+    fn default() -> Self {
+        Self {
+            read_only: false,
+            sandbox_enabled: true,
+        }
+    }
 }
 
 /// Info needed for the status line.

@@ -69,7 +69,7 @@ struct Args {
     #[command(subcommand)]
     command: Option<Command>,
 
-    #[arg(short, long, help = "Model to use (default: claude-sonnet-4)")]
+    #[arg(short, long, help = "Model to use (e.g., claude/claude-sonnet-4-5)")]
     model: Option<String>,
 
     #[arg(short = 'c', long = "continue", help = "Continue previous session")]

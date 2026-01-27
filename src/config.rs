@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{self, Result};
 
-pub(crate) const DEFAULT_MODEL: &str = "zen/grok-code";
 const CONFIG_FILE: &str = "config.toml";
 const CONFIG_DIR: &str = ".config/henri";
 
@@ -125,7 +124,7 @@ pub(crate) struct ConfigFile {
     /// Enable LSP integration for diagnostics (default: true)
     #[serde(default = "default_lsp_enabled", rename = "lsp-enabled")]
     pub lsp_enabled: bool,
-    /// List of favorite model identifiers (e.g., "zen/grok-code", "claude/claude-sonnet-4-5")
+    /// List of favorite model identifiers (e.g., "claude/claude-sonnet-4-5")
     #[serde(
         default,
         rename = "favorite-models",
@@ -800,16 +799,17 @@ impl Config {
 
         // Model resolution priority:
         // 1. CLI --model flag (highest priority)
-        // 2. default-model setting (LastUsed -> state.last_model, Specific -> explicit model)
+        // 2. default-model setting (Specific -> explicit model, LastUsed -> state.last_model)
         // 3. Legacy config.model field (for backward compatibility)
-        // 4. DEFAULT_MODEL constant (fallback)
-        let model = model
+        let Some(model) = model
             .or_else(|| match &config.default_model {
                 DefaultModel::Specific(m) => Some(m.clone()),
                 DefaultModel::LastUsed => config.state.as_ref().and_then(|s| s.last_model.clone()),
             })
             .or_else(|| config.model.clone())
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        else {
+            return Err(error::Error::NoModelConfigured);
+        };
 
         // Try to get API key from a zen provider if one exists
         let api_key = config
@@ -1055,13 +1055,13 @@ expires-at = 12345
 
         // Test that Specific serializes correctly
         let config = ConfigFile {
-            default_model: DefaultModel::Specific("zen/grok-code".to_string()),
+            default_model: DefaultModel::Specific("claude/claude-sonnet-4-5".to_string()),
             ..Default::default()
         };
         let toml = toml::to_string(&config).unwrap();
         assert!(
-            toml.contains("default-model = \"zen/grok-code\""),
-            "Expected 'default-model = \"zen/grok-code\"', got: {}",
+            toml.contains("default-model = \"claude/claude-sonnet-4-5\""),
+            "Expected 'default-model = \"claude/claude-sonnet-4-5\"', got: {}",
             toml
         );
     }

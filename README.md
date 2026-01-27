@@ -65,8 +65,7 @@ mv ~/.cargo/bin/henri ~/.local/bin/henri
 henri
 ```
 
-On first start, a free model will be used; however, connecting to a
-provider is recommended.
+On first start, you must configure a provider/model (see `henri provider add`).
 
 ## Adding a Provider
 

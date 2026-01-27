@@ -69,7 +69,39 @@ use menus::{
 };
 use prompt::{PromptBox, SecurityStatus, ThinkingStatus};
 
-/// A queued prompt waiting for the current chat to complete
+fn echo_user_prompt_to_output(prompt: &str, pasted_images: &[PastedImage]) {
+    if history::has_events() {
+        if terminal::output_has_output() {
+            terminal::ensure_trailing_newlines(2);
+        } else {
+            terminal::print_above("\n");
+        }
+    } else {
+        terminal::ensure_line_break();
+    }
+
+    let image_metas: Vec<history::ImageMeta> = pasted_images
+        .iter()
+        .map(|img| history::ImageMeta {
+            _marker: img.marker.clone(),
+            _mime_type: img.mime_type.clone(),
+            _size_bytes: img.data.len(),
+        })
+        .collect();
+
+    history::push_user_prompt(prompt, image_metas.clone());
+
+    let rendered = render::render_event(
+        &history::HistoryEvent::UserPrompt {
+            text: prompt.to_string(),
+            images: image_metas,
+        },
+        terminal::term_width() as usize,
+    );
+    terminal::print_above(&rendered);
+    listener::CliListener::note_user_prompt_printed();
+}
+
 struct PendingPrompt {
     /// The prompt text to send
     input: String,
@@ -288,6 +320,33 @@ async fn refresh_prompt_status(
     }
 }
 
+const NO_MODEL_CONFIGURED_MESSAGE: &str =
+    "No model configured. Run `henri provider add` to add a provider/model.";
+
+fn show_no_model_configured() {
+    terminal::println_above(&NO_MODEL_CONFIGURED_MESSAGE.red().to_string());
+    history::push(history::HistoryEvent::Error(
+        NO_MODEL_CONFIGURED_MESSAGE.to_string(),
+    ));
+}
+
+fn build_ephemeral_config_for_model(model: &str) -> crate::config::Config {
+    let config = crate::config::ConfigFile::load().unwrap_or_default();
+
+    // Try to get API key from a zen provider if one exists.
+    let api_key = config
+        .providers
+        .entries
+        .values()
+        .find_map(|p| p.as_zen())
+        .map(|c| c.api_key.clone())
+        .unwrap_or_default();
+
+    crate::config::Config {
+        api_key,
+        model: model.to_string(),
+    }
+}
 /// Main entry point for the CLI interface
 pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
     // Create output context for CLI
@@ -299,24 +358,6 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
         OutputContext::new_cli(proxy)
     };
 
-    // If no model specified on CLI, try to use the one from the restored session
-    let model = args.model.clone().or_else(|| {
-        args.restored_session
-            .as_ref()
-            .map(|s| format!("{}/{}", s.provider, s.model_id))
-    });
-
-    let config = match Config::load(model) {
-        Ok(c) => c,
-        Err(e) => {
-            terminal::println_above(&format!("Error: {}", e).red().to_string());
-            std::process::exit(1);
-        }
-    };
-
-    // Initialize MCP and LSP servers
-    crate::config::initialize_servers(&args.working_dir, args.lsp_override).await;
-
     let services = Services::new();
 
     // Enable read-only mode if --read-only was passed
@@ -324,9 +365,38 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
         services.set_read_only(true);
     }
 
-    let provider_manager = ProviderManager::new(&config, services.clone());
+    // Initialize MCP and LSP servers
+    crate::config::initialize_servers(&args.working_dir, args.lsp_override).await;
+
+    // If no model specified on CLI, try to use the one from the restored session
+    let model = args.model.clone().or_else(|| {
+        args.restored_session
+            .as_ref()
+            .map(|s| format!("{}/{}", s.provider, s.model_id))
+    });
+
+    let (provider_manager, thinking_state, welcome_message) = match Config::load(model) {
+        Ok(config) => {
+            let provider_manager = ProviderManager::new(&config, services.clone());
+            let thinking_state = provider_manager.default_thinking();
+            (Some(provider_manager), thinking_state, None)
+        }
+        Err(crate::error::Error::NoModelConfigured) => {
+            let thinking_state = crate::providers::ThinkingState::new(false, None);
+            (
+                None,
+                thinking_state,
+                Some(NO_MODEL_CONFIGURED_MESSAGE.red().to_string()),
+            )
+        }
+        Err(e) => {
+            terminal::println_above(&format!("Error: {}", e).red().to_string());
+            std::process::exit(1);
+        }
+    };
+
     let mut messages: Vec<Message> = Vec::new();
-    let mut thinking_state = provider_manager.default_thinking();
+
     // NOTE: When modifying current_session_id, also call services.set_session_id()
     // to keep the provider's cache key in sync.
     let mut current_session_id: Option<String> = None;
@@ -334,6 +404,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
     let working_dir = args.working_dir;
 
     // Apply restored session if provided
+    let mut thinking_state = thinking_state;
     if let Some(restored) = args.restored_session {
         messages = restored.messages;
         thinking_state.enabled = restored.thinking_enabled;
@@ -373,7 +444,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
         &custom_commands,
         &mut prompt_history,
         initial_prompt,
-        None,
+        welcome_message,
         args.batch,
     )
     .await
@@ -383,7 +454,7 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
 #[allow(clippy::too_many_arguments)]
 async fn run_event_loop(
     output: &OutputContext,
-    provider_manager: ProviderManager,
+    provider_manager: Option<ProviderManager>,
     messages: Vec<Message>,
     thinking_state: &mut crate::providers::ThinkingState,
     current_session_id: &mut Option<String>,
@@ -400,7 +471,7 @@ async fn run_event_loop(
     let mut input_state = InputState::new(working_dir.to_path_buf());
 
     // Wrap in Option for ownership transfer during chat
-    let mut provider_manager: Option<ProviderManager> = Some(provider_manager);
+    let mut provider_manager = provider_manager;
     let mut messages: Vec<Message> = messages;
 
     // Active chat task state
@@ -493,142 +564,148 @@ async fn run_event_loop(
     // Submit initial prompt if provided
     if let Some(prompt) = initial_prompt {
         if provider_manager.is_none() {
-            terminal::println_above(
-                &"No provider available. Use /model to configure."
-                    .red()
-                    .to_string(),
-            );
-            return Ok(());
-        }
-
-        let result = process_input(
-            &prompt,
-            &mut messages,
-            current_session_id,
-            working_dir,
-            &mut prompt_box,
-            &mut input_state,
-            services,
-            custom_commands,
-            provider_manager.as_mut().expect("provider checked"),
-            thinking_state,
-        )
-        .await;
-
-        match result {
-            ProcessResult::Continue => {
-                if batch {
-                    return Ok(());
-                }
+            show_no_model_configured();
+            if batch {
+                return Ok(());
             }
-            ProcessResult::Quit => return Ok(()),
-            ProcessResult::StartChat(prompt, history_entry) => {
-                let history_text = history_entry.as_ref().unwrap_or(&prompt);
-                let _ = prompt_history.add_with_images(history_text, vec![]);
+        } else {
+            let result = process_input(
+                &prompt,
+                &mut messages,
+                current_session_id,
+                working_dir,
+                &mut prompt_box,
+                &mut input_state,
+                services,
+                custom_commands,
+                &mut provider_manager,
+                thinking_state,
+            )
+            .await;
 
-                processing_initial_prompt = batch;
+            match result {
+                ProcessResult::Continue => {
+                    if batch {
+                        return Ok(());
+                    }
+                }
+                ProcessResult::Quit => return Ok(()),
+                ProcessResult::StartChat(prompt, history_entry) => {
+                    let history_text = history_entry.as_ref().unwrap_or(&prompt);
+                    let _ = prompt_history.add_with_images(history_text, vec![]);
 
-                if let Some(pm) = provider_manager.take() {
-                    chat_task = Some(spawn_chat_task(
-                        prompt,
-                        vec![],
-                        &mut messages,
-                        pm,
-                        thinking_state,
-                        output,
+                    processing_initial_prompt = batch;
+
+                    if let Some(pm) = provider_manager.take() {
+                        chat_task = Some(spawn_chat_task(
+                            prompt,
+                            vec![],
+                            &mut messages,
+                            pm,
+                            thinking_state,
+                            output,
+                        ));
+                    }
+                }
+                ProcessResult::OpenModelMenu => {
+                    if batch {
+                        return Ok(());
+                    }
+                    if let Some(pm) = provider_manager.as_mut() {
+                        model_menu = Some(ModelMenuState::with_current_model(format!(
+                            "{}/{}",
+                            pm.current_custom_provider()
+                                .unwrap_or_else(|| pm.current_provider().id()),
+                            pm.current_model_id(),
+                        )));
+                        prompt_box
+                            .draw_with_model_menu(&input_state, model_menu.as_ref().unwrap())?;
+                    }
+                }
+                ProcessResult::OpenSessionsMenu => {
+                    if batch {
+                        return Ok(());
+                    }
+                    session_menu = Some(SessionMenuState::new(
+                        working_dir,
+                        current_session_id.as_deref(),
                     ));
+                    prompt_box
+                        .draw_with_sessions_menu(&input_state, session_menu.as_ref().unwrap())?;
                 }
-            }
-            ProcessResult::OpenModelMenu => {
-                if batch {
-                    return Ok(());
+                ProcessResult::OpenSettings => {
+                    if batch {
+                        return Ok(());
+                    }
+                    settings_menu = Some(SettingsMenuState::new());
+                    prompt_box
+                        .draw_with_settings_menu(&input_state, settings_menu.as_ref().unwrap())?;
                 }
-                if let Some(pm) = provider_manager.as_mut() {
-                    model_menu = Some(ModelMenuState::new(pm));
-                    prompt_box.draw_with_model_menu(&input_state, model_menu.as_ref().unwrap())?;
+                ProcessResult::OpenMcpMenu => {
+                    if batch {
+                        return Ok(());
+                    }
+                    let statuses = services.mcp.server_statuses().await;
+                    mcp_menu = Some(McpMenuState::new(statuses));
+                    prompt_box.draw_with_mcp_menu(&input_state, mcp_menu.as_ref().unwrap())?;
                 }
-            }
-            ProcessResult::OpenSessionsMenu => {
-                if batch {
-                    return Ok(());
-                }
-                session_menu = Some(SessionMenuState::new(
-                    working_dir,
-                    current_session_id.as_deref(),
-                ));
-                prompt_box.draw_with_sessions_menu(&input_state, session_menu.as_ref().unwrap())?;
-            }
-            ProcessResult::OpenSettings => {
-                if batch {
-                    return Ok(());
-                }
-                settings_menu = Some(SettingsMenuState::new());
-                prompt_box
-                    .draw_with_settings_menu(&input_state, settings_menu.as_ref().unwrap())?;
-            }
-            ProcessResult::OpenMcpMenu => {
-                if batch {
-                    return Ok(());
-                }
-                let statuses = services.mcp.server_statuses().await;
-                mcp_menu = Some(McpMenuState::new(statuses));
-                prompt_box.draw_with_mcp_menu(&input_state, mcp_menu.as_ref().unwrap())?;
-            }
-            ProcessResult::OpenLspMenu => {
-                if batch {
-                    return Ok(());
-                }
-                // /lsp behaves like /settings: show status immediately, even during streaming.
-                let config = crate::config::ConfigFile::load().unwrap_or_default();
-                if !config.lsp_enabled {
-                    let msg = "LSP integration is disabled. Enable it in /settings.".to_string();
-                    terminal::println_above(&msg);
-                    history::push(history::HistoryEvent::Info(msg));
-                } else {
-                    let servers = crate::lsp::manager().server_info().await;
-                    if servers.is_empty() {
-                        let msg = "No LSP servers connected.".to_string();
+                ProcessResult::OpenLspMenu => {
+                    if batch {
+                        return Ok(());
+                    }
+                    // /lsp behaves like /settings: show status immediately, even during streaming.
+                    let config = crate::config::ConfigFile::load().unwrap_or_default();
+                    if !config.lsp_enabled {
+                        let msg =
+                            "LSP integration is disabled. Enable it in /settings.".to_string();
                         terminal::println_above(&msg);
                         history::push(history::HistoryEvent::Info(msg));
                     } else {
-                        let msg = format!("LSP servers connected: {}", servers.len());
-                        terminal::println_above(&msg);
-                        history::push(history::HistoryEvent::Info(msg));
-                        for server in servers {
-                            let extensions = if server.file_extensions.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" ({})", server.file_extensions.join(", "))
-                            };
-                            let msg = format!("  • {}{}", server.name, extensions);
+                        let servers = crate::lsp::manager().server_info().await;
+                        if servers.is_empty() {
+                            let msg = "No LSP servers connected.".to_string();
                             terminal::println_above(&msg);
                             history::push(history::HistoryEvent::Info(msg));
+                        } else {
+                            let msg = format!("LSP servers connected: {}", servers.len());
+                            terminal::println_above(&msg);
+                            history::push(history::HistoryEvent::Info(msg));
+                            for server in servers {
+                                let extensions = if server.file_extensions.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" ({})", server.file_extensions.join(", "))
+                                };
+                                let msg = format!("  • {}{}", server.name, extensions);
+                                terminal::println_above(&msg);
+                                history::push(history::HistoryEvent::Info(msg));
+                            }
                         }
                     }
+                    // Ensure the prompt/status reflects any changes in server count.
+                    refresh_prompt_status(
+                        &mut prompt_box,
+                        &provider_manager,
+                        &chat_task,
+                        working_dir,
+                        thinking_state,
+                        services,
+                    )
+                    .await;
+                    prompt_box.draw(&input_state, false)?;
                 }
-                // Ensure the prompt/status reflects any changes in server count.
-                refresh_prompt_status(
-                    &mut prompt_box,
-                    &provider_manager,
-                    &chat_task,
-                    working_dir,
-                    thinking_state,
-                    services,
-                )
-                .await;
-                prompt_box.draw(&input_state, false)?;
-            }
-            ProcessResult::OpenToolsMenu => {
-                if batch {
-                    return Ok(());
+                ProcessResult::OpenToolsMenu => {
+                    if batch {
+                        return Ok(());
+                    }
+                    tools_menu = Some(ToolsMenuState::new(services.is_read_only()));
+                    prompt_box.draw_with_tools_menu(&input_state, tools_menu.as_ref().unwrap())?;
                 }
-                tools_menu = Some(ToolsMenuState::new(services.is_read_only()));
-                prompt_box.draw_with_tools_menu(&input_state, tools_menu.as_ref().unwrap())?;
-            }
-            ProcessResult::StartCompaction(data) => {
-                processing_initial_prompt = batch;
-                if let Some(pm) = provider_manager.take() {
-                    chat_task = Some(spawn_compaction_chat(data, &mut messages, pm, output));
+                ProcessResult::StartCompaction(data) => {
+                    processing_initial_prompt = batch;
+                    if let Some(pm) = provider_manager.take() {
+                        chat_task = Some(spawn_compaction_chat(data, &mut messages, pm, output));
+                    }
                 }
             }
         }
@@ -1003,6 +1080,45 @@ async fn run_event_loop(
                         continue;
                     }
 
+                    // Handle Ctrl+X when no model is configured.
+                    if chat_task.is_none()
+                        && key.code == KeyCode::Char('x')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        services.cycle_sandbox_mode();
+
+                        if let Some(ref pm) = provider_manager {
+                            update_prompt_status(
+                                &mut prompt_box,
+                                pm,
+                                working_dir,
+                                thinking_state,
+                                services,
+                            )
+                            .await;
+                        } else {
+                            let security = SecurityStatus {
+                                read_only: services.is_read_only(),
+                                sandbox_enabled: services.is_sandbox_enabled(),
+                            };
+                            let lsp_server_count = get_lsp_server_count().await;
+                            let mcp_server_count = get_mcp_server_count(services).await;
+
+                            prompt_box.set_status(
+                                String::new(),
+                                String::new(),
+                                shorten_path(working_dir),
+                                ThinkingStatus::default(),
+                                security,
+                                lsp_server_count,
+                                mcp_server_count,
+                            );
+                        }
+
+                        prompt_box.draw(&input_state, false)?;
+                        continue;
+                    }
+
                     // Handle Ctrl+M (via keyboard enhancement) or Ctrl+O to open model menu
                     if ((key.code == KeyCode::Char('m')
                         && key.modifiers.contains(KeyModifiers::CONTROL))
@@ -1166,14 +1282,43 @@ async fn run_event_loop(
                                             &mut messages,
                                         );
                                     }
+
                                     // Update thinking state to new model's default
                                     let new_thinking =
                                         default_thinking_state(choice.provider, &choice.model_id);
                                     thinking_state.enabled = new_thinking.enabled;
                                     thinking_state.mode = new_thinking.mode;
+
                                     update_prompt_status(
                                         &mut prompt_box,
                                         pm,
+                                        working_dir,
+                                        thinking_state,
+                                        services,
+                                    )
+                                    .await;
+                                } else {
+                                    // No provider_manager yet (no model configured at startup)
+                                    let model_spec = format!(
+                                        "{}/{}",
+                                        choice
+                                            .custom_provider
+                                            .clone()
+                                            .unwrap_or_else(|| choice.provider.id().to_string()),
+                                        choice.model_id
+                                    );
+                                    let config = build_ephemeral_config_for_model(&model_spec);
+                                    provider_manager =
+                                        Some(ProviderManager::new(&config, services.clone()));
+
+                                    let new_thinking =
+                                        default_thinking_state(choice.provider, &choice.model_id);
+                                    thinking_state.enabled = new_thinking.enabled;
+                                    thinking_state.mode = new_thinking.mode;
+
+                                    update_prompt_status(
+                                        &mut prompt_box,
+                                        provider_manager.as_ref().expect("provider set"),
                                         working_dir,
                                         thinking_state,
                                         services,
@@ -1729,15 +1874,22 @@ async fn run_event_loop(
                                 continue;
                             }
 
-                            // Skip if provider not available
-                            let Some(ref mut pm) = provider_manager else {
-                                terminal::println_above(
-                                    &"No provider available. Use /model to configure."
-                                        .red()
-                                        .to_string(),
-                                );
+                            // No model configured: allow /quit (and other non-model commands handled in
+                            // process_input) to work; otherwise echo like a normal submit then error.
+                            if provider_manager.is_none() && !content.trim_start().starts_with('/')
+                            {
+                                let images = input_state.active_images();
+                                let prompt = input_state.content();
+
+                                input_state.clear();
+                                prompt_box.draw(&input_state, false)?;
+
+                                echo_user_prompt_to_output(&prompt, &images);
+                                show_no_model_configured();
+
+                                prompt_box.draw(&input_state, true)?;
                                 continue;
-                            };
+                            }
 
                             let content = input_state.content();
                             if !content.trim().is_empty() {
@@ -1750,7 +1902,7 @@ async fn run_event_loop(
                                     &mut input_state,
                                     services,
                                     custom_commands,
-                                    pm,
+                                    &mut provider_manager,
                                     thinking_state,
                                 )
                                 .await;
@@ -1758,14 +1910,16 @@ async fn run_event_loop(
                                 match result {
                                     ProcessResult::Continue => {
                                         input_state.clear();
-                                        update_prompt_status(
-                                            &mut prompt_box,
-                                            pm,
-                                            working_dir,
-                                            thinking_state,
-                                            services,
-                                        )
-                                        .await;
+                                        if let Some(ref pm) = provider_manager {
+                                            update_prompt_status(
+                                                &mut prompt_box,
+                                                pm,
+                                                working_dir,
+                                                thinking_state,
+                                                services,
+                                            )
+                                            .await;
+                                        }
                                         prompt_box.draw(&input_state, true)?;
                                     }
                                     ProcessResult::Quit => {
@@ -1804,7 +1958,28 @@ async fn run_event_loop(
                                     }
                                     ProcessResult::OpenModelMenu => {
                                         input_state.clear();
-                                        model_menu = Some(ModelMenuState::new(pm));
+                                        // Build current model string from available sources
+                                        let current_model = if let Some(ref task) = chat_task {
+                                            format!(
+                                                "{}/{}",
+                                                task.custom_provider
+                                                    .as_deref()
+                                                    .unwrap_or_else(|| task.provider.id()),
+                                                task.model_id
+                                            )
+                                        } else if let Some(ref pm) = provider_manager {
+                                            format!(
+                                                "{}/{}",
+                                                pm.current_custom_provider()
+                                                    .unwrap_or_else(|| pm.current_provider().id()),
+                                                pm.current_model_id()
+                                            )
+                                        } else {
+                                            String::new()
+                                        };
+
+                                        model_menu =
+                                            Some(ModelMenuState::with_current_model(current_model));
                                         prompt_box.draw_with_model_menu(
                                             &input_state,
                                             model_menu.as_ref().unwrap(),
@@ -2035,6 +2210,25 @@ async fn run_event_loop(
                                         services,
                                     )
                                     .await;
+                                } else {
+                                    let provider_spec = next
+                                        .custom_provider
+                                        .clone()
+                                        .unwrap_or_else(|| next.provider.id().to_string());
+                                    let model_spec = format!("{}/{}", provider_spec, next.model_id);
+                                    let config = build_ephemeral_config_for_model(&model_spec);
+                                    provider_manager =
+                                        Some(ProviderManager::new(&config, services.clone()));
+
+                                    let new_thinking =
+                                        default_thinking_state(next.provider, &next.model_id);
+                                    thinking_state.enabled = new_thinking.enabled;
+                                    thinking_state.mode = new_thinking.mode;
+
+                                    terminal::println_above(&format!(
+                                        "Switched to {} / {}",
+                                        display_name, next.model_id
+                                    ));
                                 }
                                 prompt_box.draw(&input_state, false)?;
                             } else {
@@ -2562,7 +2756,7 @@ async fn process_input(
     input_state: &mut InputState,
     services: &Services,
     custom_commands: &[CustomCommand],
-    provider_manager: &mut ProviderManager,
+    provider_manager: &mut Option<ProviderManager>,
     _thinking_state: &mut crate::providers::ThinkingState,
 ) -> ProcessResult {
     let input = input.trim();
@@ -2634,7 +2828,29 @@ async fn process_input(
         if let Some(command) = crate::commands::parse(cmd_input, custom_commands) {
             // Track if this is a custom command for history
             let is_custom = matches!(command, Command::Custom { .. });
-            match handle_command(
+
+            if provider_manager.is_none()
+                && !matches!(
+                    command,
+                    Command::Help
+                        | Command::Echo { .. }
+                        | Command::Quit
+                        | Command::ReadOnly
+                        | Command::ReadWrite
+                        | Command::Yolo
+                        | Command::Model
+                        | Command::Sessions
+                        | Command::Settings
+                        | Command::Mcp
+                        | Command::Lsp
+                        | Command::Tools
+                )
+            {
+                show_no_model_configured();
+                return ProcessResult::Continue;
+            }
+
+            let result = match handle_command(
                 command,
                 messages,
                 current_session_id,
@@ -2647,6 +2863,11 @@ async fn process_input(
             )
             .await
             {
+                Some(r) => r,
+                None => return ProcessResult::Continue,
+            };
+
+            match result {
                 CommandResult::Continue => return ProcessResult::Continue,
                 CommandResult::Quit => return ProcessResult::Quit,
                 CommandResult::SendToModel(prompt) => {
@@ -2727,9 +2948,9 @@ async fn handle_command(
     input_state: &mut InputState,
     services: &Services,
     custom_commands: &[CustomCommand],
-    provider_manager: &mut ProviderManager,
-) -> CommandResult {
-    match command {
+    provider_manager: &mut Option<ProviderManager>,
+) -> Option<CommandResult> {
+    Some(match command {
         Command::Quit => CommandResult::Quit,
 
         Command::Clear => {
@@ -2871,6 +3092,11 @@ async fn handle_command(
         }
 
         Command::DumpPrompt => {
+            let Some(provider_manager) = provider_manager.as_mut() else {
+                show_no_model_configured();
+                return None;
+            };
+
             // Dump the full API request as JSON
             terminal::println_above("Preparing request...");
             let msgs = messages.clone();
@@ -2890,6 +3116,11 @@ async fn handle_command(
         }
 
         Command::ClaudeCountTokens => {
+            let Some(provider_manager) = provider_manager.as_mut() else {
+                show_no_model_configured();
+                return None;
+            };
+
             let is_claude = matches!(
                 provider_manager.current_provider(),
                 crate::providers::ModelProvider::Claude
@@ -2953,7 +3184,7 @@ async fn handle_command(
 
             if messages.is_empty() {
                 terminal::println_above(&"No messages to compact.".yellow().to_string());
-                return CommandResult::Continue;
+                return None;
             }
 
             // Segment messages (compact everything, preserve nothing)
@@ -2961,7 +3192,7 @@ async fn handle_command(
 
             if to_compact.is_empty() {
                 terminal::println_above(&"No messages to compact.".yellow().to_string());
-                return CommandResult::Continue;
+                return None;
             }
 
             let messages_compacted = to_compact.len();
@@ -2999,7 +3230,7 @@ async fn handle_command(
             prompt_box.redraw_history().ok();
             CommandResult::Continue
         }
-    }
+    })
 }
 
 /// Show help with available commands.
