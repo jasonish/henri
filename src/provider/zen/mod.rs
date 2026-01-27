@@ -23,7 +23,6 @@ pub(super) struct ChatContext<'a> {
     pub client: &'a Client,
     pub api_key: &'a str,
     pub model: &'a str,
-    pub thinking_mode: Option<&'a str>,
     pub services: &'a Services,
 }
 
@@ -97,7 +96,6 @@ pub(crate) struct ZenProvider {
     client: Client,
     api_key: String,
     model: String,
-    thinking_mode: Option<String>,
     openai_compat_delegate: Option<OpenAiCompatProvider>,
     services: Services,
 }
@@ -110,7 +108,6 @@ impl ZenProvider {
             client: Client::new(),
             api_key: config.api_key.clone(),
             model: config.model.clone(),
-            thinking_mode: None,
             openai_compat_delegate,
             services,
         }
@@ -176,9 +173,8 @@ impl ZenProvider {
 
     pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
         if let Some(ref mut delegate) = self.openai_compat_delegate {
-            delegate.set_reasoning_effort(mode.clone());
+            delegate.set_reasoning_effort(mode);
         }
-        self.thinking_mode = mode;
     }
 
     pub(crate) fn set_model(&mut self, model: String) {
@@ -240,7 +236,6 @@ impl Provider for ZenProvider {
             client: &self.client,
             api_key: &self.api_key,
             model: &self.model,
-            thinking_mode: self.thinking_mode.as_deref(),
             services: &self.services,
         };
 
@@ -276,13 +271,8 @@ impl Provider for ZenProvider {
                 anthropic::prepare_request_value(&request)
             }
             ApiType::Gemini => {
-                let request = gemini::build_request(
-                    &self.model,
-                    &messages,
-                    self.thinking_mode.as_deref(),
-                    &self.services,
-                )
-                .await;
+                let request =
+                    gemini::build_request(&self.model, &messages, None, &self.services).await;
                 gemini::prepare_request_value(&request)
             }
         }

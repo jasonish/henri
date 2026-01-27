@@ -302,7 +302,7 @@ pub(super) async fn chat(
         "{}/models/{}:streamGenerateContent?alt=sse",
         ZEN_BASE_URL, ctx.model
     );
-    let request = build_request(ctx.model, &messages, ctx.thinking_mode, ctx.services).await;
+    let request = build_request(ctx.model, &messages, None, ctx.services).await;
 
     // Record TX bytes
     let body_bytes = serde_json::to_vec(&request)?;
