@@ -6,13 +6,13 @@
 //! Provides output functions that coordinate with a persistent prompt area
 //! at the bottom of the terminal.
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crossterm::cursor::{Hide, MoveTo, MoveToNextLine, Show};
 use crossterm::execute;
-use crossterm::terminal::{self, Clear, ClearType, ScrollDown, ScrollUp};
+use crossterm::terminal::{self, Clear, ClearType, ScrollDown, ScrollUp, SetTitle};
 
 /// Global state: whether prompt box is visible and where it is
 static PROMPT_STATE: Mutex<PromptState> = Mutex::new(PromptState::new());
@@ -341,6 +341,17 @@ pub(crate) fn ensure_cursor_on_new_line() {
 
     let mut stdout = io::stdout();
     let _ = execute!(stdout, MoveToNextLine(1));
+    let _ = stdout.flush();
+}
+
+pub(crate) fn update_terminal_title(title: &str) {
+    if !io::stdout().is_terminal() {
+        return;
+    }
+
+    let _guard = lock_output();
+    let mut stdout = io::stdout();
+    let _ = execute!(stdout, SetTitle(title));
     let _ = stdout.flush();
 }
 

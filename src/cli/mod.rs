@@ -62,6 +62,8 @@ use crate::services::Services;
 use crate::session;
 use crate::tools::todo::clear_todos;
 
+use crate::cli::terminal::update_terminal_title;
+
 use input::{InputAction, InputState};
 use menus::{
     HistorySearchState, McpMenuState, ModelMenuState, SessionMenuState, SettingsMenuAction,
@@ -516,6 +518,9 @@ async fn run_event_loop(
 
     // Enable raw mode for the entire session (skip in batch mode)
     if !batch {
+        let cwd_for_title = shorten_path(working_dir);
+        update_terminal_title(&format!("🐕 {}", cwd_for_title));
+
         crossterm_terminal::enable_raw_mode()?;
         // Enable keyboard enhancement for Ctrl+M support (to distinguish from Enter)
         // Enable bracketed paste to handle multi-line paste properly
