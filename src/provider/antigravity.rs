@@ -12,6 +12,7 @@ use crate::auth::{GOOGLE_TOKEN_URL, get_antigravity_client_id, get_antigravity_c
 use crate::config::{AntigravityProviderConfig, ConfigFile, ProviderConfig};
 use crate::error::{Error, Result};
 use crate::output;
+use crate::provider::model_utils;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
 };
@@ -46,29 +47,8 @@ const ANTIGRAVITY_MODELS: &[&str] = &[
     "claude-opus-4-5-thinking#xhigh",
 ];
 
-fn split_model(model: &str) -> (&str, Option<&str>) {
-    match model.split_once('#') {
-        Some((base, suffix)) if !suffix.is_empty() => (base, Some(suffix)),
-        _ => (model, None),
-    }
-}
-
 fn thinking_level_from_model(model: &str) -> Option<&str> {
-    split_model(model).1
-}
-
-/// Get the base model name (without variant suffix) from a model string
-fn base_model_name(model: &str) -> &str {
-    split_model(model).0
-}
-
-/// Get all variants for a given base model from the model list
-fn get_model_variants(base: &str) -> Vec<&'static str> {
-    ANTIGRAVITY_MODELS
-        .iter()
-        .filter(|m| base_model_name(m) == base)
-        .copied()
-        .collect()
+    model_utils::model_variant(model)
 }
 
 /// Maximum number of retries for the internal "fast" retry loop.
@@ -221,39 +201,17 @@ impl AntigravityProvider {
     /// Get the available variants (thinking levels) for a given model.
     /// Returns the variant suffixes like "high", "medium", "low".
     pub(crate) fn model_variants(model: &str) -> Vec<&'static str> {
-        let base = base_model_name(model);
-        get_model_variants(base)
+        let base = model_utils::base_model_name(model);
+        model_utils::get_model_variants(base, ANTIGRAVITY_MODELS)
             .iter()
-            .filter_map(|m| split_model(m).1)
+            .filter_map(|m| model_utils::model_variant(m))
             .collect()
     }
 
     /// Cycle to the next variant for the given model.
     /// Returns the new full model string with the next variant.
     pub(crate) fn cycle_model_variant(model: &str) -> String {
-        let base = base_model_name(model);
-        let variants = get_model_variants(base);
-
-        if variants.is_empty() {
-            return model.to_string();
-        }
-
-        // If the model doesn't have a variant, normalize it to include the default variant
-        // This handles cases where users specify a bare model name like "claude-opus-4-5-thinking"
-        let normalized_model = if split_model(model).1.is_none() {
-            // Default to #medium for bare model names (matches default_thinking_state behavior)
-            format!("{}#medium", base)
-        } else {
-            model.to_string()
-        };
-
-        // Find current position and cycle to next
-        let current_idx = variants
-            .iter()
-            .position(|v| *v == normalized_model)
-            .unwrap_or(0);
-        let next_idx = (current_idx + 1) % variants.len();
-        variants[next_idx].to_string()
+        model_utils::cycle_model_variant(model, ANTIGRAVITY_MODELS, Some("medium"))
     }
 
     /// Returns the default thinking state for the given model.
@@ -528,7 +486,7 @@ impl AntigravityProvider {
             ]
         });
 
-        let (base_model, thinking_level) = split_model(&self.model);
+        let (base_model, thinking_level) = model_utils::split_model(&self.model);
 
         if base_model.starts_with("claude-") {
             let budget = match thinking_level {
@@ -582,7 +540,7 @@ impl AntigravityProvider {
         request_id: String,
     ) -> serde_json::Value {
         // Use base model name without the #variant suffix for the API
-        let api_model = base_model_name(&self.model);
+        let api_model = model_utils::base_model_name(&self.model);
         serde_json::json!({
             "project": project_id,
             "userAgent": "antigravity",
@@ -1040,20 +998,6 @@ impl Provider for AntigravityProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_split_model() {
-        assert_eq!(
-            split_model("gemini-3-flash#medium"),
-            ("gemini-3-flash", Some("medium"))
-        );
-        assert_eq!(
-            split_model("claude-sonnet-4-5-thinking#high"),
-            ("claude-sonnet-4-5-thinking", Some("high"))
-        );
-        assert_eq!(split_model("gemini-3-flash"), ("gemini-3-flash", None));
-        assert_eq!(split_model("gemini-3-flash#"), ("gemini-3-flash#", None));
-    }
 
     #[test]
     fn test_model_variants() {

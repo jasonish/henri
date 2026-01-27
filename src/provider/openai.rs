@@ -15,6 +15,7 @@ use crate::config::{ConfigFile, OpenAiProviderConfig, ProviderConfig, ProviderTy
 use crate::error::{Error, Result};
 use crate::output;
 use crate::prompts;
+use crate::provider::model_utils;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
 };
@@ -48,30 +49,8 @@ const CODEX_PROMPT_GPT_5_1_CODEX_MAX: &str = include_str!("openai/gpt-5.1-codex-
 const CODEX_PROMPT_GPT_5_2_CODEX: &str = include_str!("openai/gpt-5.2-codex_prompt.md");
 const CODEX_PROMPT_GPT_5_2: &str = include_str!("openai/gpt_5_2_prompt.md");
 
-fn split_openai_model(model: &str) -> (&str, Option<&str>) {
-    match model.split_once('#') {
-        Some((base, suffix)) if !suffix.is_empty() => (base, Some(suffix)),
-        _ => (model, None),
-    }
-}
-
 fn reasoning_effort_from_model(model: &str) -> &str {
-    let (_, suffix) = split_openai_model(model);
-    suffix.unwrap_or_default()
-}
-
-/// Get the base model name (without variant suffix) from a model string
-fn base_model_name(model: &str) -> &str {
-    split_openai_model(model).0
-}
-
-/// Get all variants for a given base model from the model list
-fn get_model_variants(base: &str) -> Vec<&'static str> {
-    OPENAI_MODELS
-        .iter()
-        .filter(|m| base_model_name(m) == base)
-        .copied()
-        .collect()
+    model_utils::model_variant(model).unwrap_or_default()
 }
 
 #[derive(Debug)]
@@ -192,27 +171,17 @@ impl OpenAiProvider {
     /// Get the available variants (reasoning effort levels) for a given model.
     /// Returns the variant suffixes like "xhigh", "high", "medium", "low".
     pub(crate) fn model_variants(model: &str) -> Vec<&'static str> {
-        let base = base_model_name(model);
-        get_model_variants(base)
+        let base = model_utils::base_model_name(model);
+        model_utils::get_model_variants(base, OPENAI_MODELS)
             .iter()
-            .filter_map(|m| split_openai_model(m).1)
+            .filter_map(|m| model_utils::model_variant(m))
             .collect()
     }
 
     /// Cycle to the next variant for the given model.
     /// Returns the new full model string with the next variant.
     pub(crate) fn cycle_model_variant(model: &str) -> String {
-        let base = base_model_name(model);
-        let variants = get_model_variants(base);
-
-        if variants.is_empty() {
-            return model.to_string();
-        }
-
-        // Find current position and cycle to next
-        let current_idx = variants.iter().position(|v| *v == model).unwrap_or(0);
-        let next_idx = (current_idx + 1) % variants.len();
-        variants[next_idx].to_string()
+        model_utils::cycle_model_variant(model, OPENAI_MODELS, None)
     }
 
     fn build_codex_input(&self, messages: &[Message]) -> Vec<CodexInputItem> {
@@ -396,7 +365,7 @@ impl OpenAiProvider {
     }
 
     async fn codex_instructions(&self) -> String {
-        let (base_model, _) = split_openai_model(&self.model);
+        let base_model = model_utils::base_model_name(&self.model);
         let instructions = match base_model.to_lowercase().as_ref() {
             "gpt-5.2" => CODEX_PROMPT_GPT_5_2,
             "gpt-5.2-codex" => CODEX_PROMPT_GPT_5_2_CODEX,
@@ -507,7 +476,7 @@ impl OpenAiProvider {
             })
             .collect();
 
-        let (model, _) = split_openai_model(&self.model);
+        let model = model_utils::base_model_name(&self.model);
         let reasoning_effort = reasoning_effort_from_model(&self.model);
 
         let reasoning = if reasoning_effort.is_empty() {
@@ -957,20 +926,6 @@ fn chatgpt_account_id(token: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_split_openai_model() {
-        assert_eq!(
-            split_openai_model("gpt-5.2-codex#medium"),
-            ("gpt-5.2-codex", Some("medium"))
-        );
-        assert_eq!(
-            split_openai_model("gpt-5.2#high"),
-            ("gpt-5.2", Some("high"))
-        );
-        assert_eq!(split_openai_model("gpt-5.2-codex"), ("gpt-5.2-codex", None));
-        assert_eq!(split_openai_model("gpt-5.2#"), ("gpt-5.2#", None));
-    }
 
     #[test]
     fn test_model_variants() {

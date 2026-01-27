@@ -155,31 +155,9 @@ impl Tool for FileEdit {
         };
 
         // Notify LSP of the change and get diagnostics immediately
-        let diagnostics = if services.lsp.handles_file(path).await {
-            if let Ok(started_servers) = services.lsp.notify_file_changed(path, &new_contents).await
-            {
-                for server in &started_servers {
-                    let extensions = server.file_extensions.join(", ");
-                    _output.emit(crate::output::OutputEvent::Info(format!(
-                        "[LSP activated: {} ({})]",
-                        server.name, extensions
-                    )));
-                }
-            }
-            services.lsp.get_diagnostics_with_wait(path).await
-        } else {
-            Vec::new()
-        };
-
-        // Include diagnostics in the tool result if any
-        let final_msg = if !diagnostics.is_empty() {
-            if let Some(summary) = crate::lsp::diagnostic_summary(&diagnostics) {
-                _output.emit(crate::output::OutputEvent::Info(summary));
-            }
-            format!("{}{}", msg, crate::lsp::format_diagnostics(&diagnostics))
-        } else {
-            msg
-        };
+        let diagnostics =
+            super::notify_lsp_and_get_diagnostics(path, &new_contents, services, _output).await;
+        let final_msg = super::format_message_with_diagnostics(msg, &diagnostics, _output);
 
         ToolResult::success(tool_use_id, final_msg)
     }

@@ -201,6 +201,60 @@ pub(crate) fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
+/// Notify the LSP about a file change and return diagnostics.
+///
+/// This handles:
+/// 1. Checking if LSP handles this file type
+/// 2. Notifying the LSP of the file change
+/// 3. Emitting info messages when new LSP servers are activated
+/// 4. Waiting for and returning diagnostics
+///
+/// Returns an empty Vec if LSP doesn't handle this file.
+pub(crate) async fn notify_lsp_and_get_diagnostics(
+    path: &std::path::Path,
+    content: &str,
+    services: &crate::services::Services,
+    output: &crate::output::OutputContext,
+) -> Vec<crate::lsp::FileDiagnostic> {
+    if !services.lsp.handles_file(path).await {
+        return Vec::new();
+    }
+
+    if let Ok(started_servers) = services.lsp.notify_file_changed(path, content).await {
+        for server in &started_servers {
+            let extensions = server.file_extensions.join(", ");
+            output.emit(crate::output::OutputEvent::Info(format!(
+                "[LSP activated: {} ({})]",
+                server.name, extensions
+            )));
+        }
+    }
+
+    services.lsp.get_diagnostics_with_wait(path).await
+}
+
+/// Format a message with LSP diagnostics appended.
+///
+/// This handles:
+/// 1. Emitting a diagnostic summary as an info message
+/// 2. Returning the message with diagnostics appended
+///
+/// If there are no diagnostics, returns the original message unchanged.
+pub(crate) fn format_message_with_diagnostics(
+    msg: String,
+    diagnostics: &[crate::lsp::FileDiagnostic],
+    output: &crate::output::OutputContext,
+) -> String {
+    if diagnostics.is_empty() {
+        return msg;
+    }
+
+    if let Some(summary) = crate::lsp::diagnostic_summary(diagnostics) {
+        output.emit(crate::output::OutputEvent::Info(summary));
+    }
+    format!("{}{}", msg, crate::lsp::format_diagnostics(diagnostics))
+}
+
 /// Generates a one-liner description for a tool call (used for UI display)
 pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {

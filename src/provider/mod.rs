@@ -4,6 +4,7 @@
 pub(crate) mod anthropic;
 pub(crate) mod antigravity;
 pub(crate) mod copilot;
+pub(crate) mod model_utils;
 pub(crate) mod openai;
 pub(crate) mod openai_compat;
 pub(crate) mod openrouter;

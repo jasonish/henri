@@ -24,6 +24,9 @@
 
 ### Changed
 
+- Providers: Deduplicate `model#variant` parsing/cycling helpers
+- Tools: Factor shared LSP diagnostics handling for `file_edit`/`file_write`
+
 - CLI: Requires a configured provider/model on startup (no implicit default);
   prompts entered before configuration now show a helpful error directing users
   to `/provider`.

@@ -12,6 +12,7 @@ use crate::config::{ConfigFile, CopilotProviderConfig, ProviderConfig, ProviderT
 use crate::error::{Error, Result};
 use crate::output;
 use crate::prompts;
+use crate::provider::model_utils;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
 };
@@ -47,26 +48,6 @@ const COPILOT_MODELS: &[&str] = &[
     "gpt-5-mini",
     "gemini-3-pro-preview",
 ];
-
-fn split_model(model: &str) -> (&str, Option<&str>) {
-    match model.split_once('#') {
-        Some((base, suffix)) if !suffix.is_empty() => (base, Some(suffix)),
-        _ => (model, None),
-    }
-}
-
-/// Get the base model name (without variant suffix) from a model string
-fn base_model_name(model: &str) -> &str {
-    split_model(model).0
-}
-
-fn get_model_variants(base: &str) -> Vec<&'static str> {
-    COPILOT_MODELS
-        .iter()
-        .filter(|m| base_model_name(m) == base)
-        .copied()
-        .collect()
-}
 
 #[derive(Debug)]
 struct CopilotState {
@@ -227,30 +208,21 @@ impl CopilotProvider {
     /// Get the available variants (suffixes) for a given model.
     /// Returns values like "high", "medium", "low", "off".
     pub(crate) fn model_variants(model: &str) -> Vec<&'static str> {
-        let base = base_model_name(model);
-        get_model_variants(base)
+        let base = model_utils::base_model_name(model);
+        model_utils::get_model_variants(base, COPILOT_MODELS)
             .iter()
-            .filter_map(|m| split_model(m).1)
+            .filter_map(|m| model_utils::model_variant(m))
             .collect()
     }
 
     /// Cycle to the next variant for the given model.
     /// Returns the new full model string with the next variant.
     pub(crate) fn cycle_model_variant(model: &str) -> String {
-        let base = base_model_name(model);
-        let variants = get_model_variants(base);
-
-        if variants.is_empty() {
-            return model.to_string();
-        }
-
-        let current_idx = variants.iter().position(|v| *v == model).unwrap_or(0);
-        let next_idx = (current_idx + 1) % variants.len();
-        variants[next_idx].to_string()
+        model_utils::cycle_model_variant(model, COPILOT_MODELS, None)
     }
 
     fn use_responses_api(&self) -> bool {
-        let base = base_model_name(&self.model);
+        let base = model_utils::base_model_name(&self.model);
         base.starts_with("gpt-5") || base.starts_with("o1") || base.starts_with("o3")
     }
 
@@ -548,7 +520,7 @@ impl CopilotProvider {
             .collect();
 
         CopilotChatRequest {
-            model: base_model_name(&self.model).to_string(),
+            model: model_utils::base_model_name(&self.model).to_string(),
             messages: self.build_messages(messages.to_vec()),
             stream: true,
             tools: openai_tools,
@@ -567,9 +539,9 @@ impl CopilotProvider {
             })
             .collect();
 
-        let base_model = base_model_name(&self.model);
+        let base_model = model_utils::base_model_name(&self.model);
         let reasoning = if base_model.starts_with("gpt-5") {
-            let effort = split_model(&self.model).1.unwrap_or("medium");
+            let effort = model_utils::model_variant(&self.model).unwrap_or("medium");
             Some(CopilotReasoningConfig {
                 effort: Some(effort.to_string()),
                 summary: "concise".to_string(),
@@ -592,7 +564,7 @@ impl CopilotProvider {
 
     /// Get the context limit for a given model name
     pub(crate) fn context_limit(model: &str) -> Option<u64> {
-        let base = base_model_name(model);
+        let base = model_utils::base_model_name(model);
         if base.starts_with("gpt-5") {
             Some(400_000)
         } else if base.starts_with("o1") || base.starts_with("o3") {
