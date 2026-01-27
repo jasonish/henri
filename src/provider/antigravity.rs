@@ -189,7 +189,7 @@ impl AntigravityProvider {
             .and_then(|p| p.as_antigravity())
             .ok_or_else(|| {
                 Error::Auth(format!(
-                    "Antigravity provider '{}' not configured. Run 'henri provider add'.",
+                    "Antigravity provider '{}' not configured. Enter `/provider` to add a provider/model.",
                     provider_name
                 ))
             })?;
@@ -611,7 +611,7 @@ impl AntigravityProvider {
             let state = self.state.lock().await;
             state.project_id.clone().ok_or_else(|| {
                 Error::Config(
-                    "antigravity project_id not set. Run `henri provider add` to re-authenticate."
+                    "antigravity project_id not set. Enter `/provider` to re-authenticate."
                         .to_string(),
                 )
             })?
@@ -1028,7 +1028,7 @@ impl Provider for AntigravityProvider {
             let state = self.state.lock().await;
             state.project_id.clone().ok_or_else(|| {
                 Error::Config(
-                    "antigravity project_id not set. Run `henri provider add` to re-authenticate."
+                    "antigravity project_id not set. Enter `/provider` to re-authenticate."
                         .to_string(),
                 )
             })?

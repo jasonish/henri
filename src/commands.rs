@@ -32,6 +32,7 @@ pub(crate) enum Command {
     Lsp,
     Mcp,
     Model,
+    Provider,
     Quit,
     ReadOnly,
     ReadWrite,
@@ -141,6 +142,12 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         command: Command::Model,
         name: "model",
         description: "Select a model",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Provider,
+        name: "provider",
+        description: "Manage AI providers (add/remove)",
         availability: Availability::Always,
     },
     SlashCommand {

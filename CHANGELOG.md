@@ -6,6 +6,7 @@
 
 - CLI: Set terminal title to show 🐕 and current directory
 - Zen: Add support for kimi-k2.5 model
+- CLI: `/provider` slash command to add/remove providers via interactive menu
 - CLI: Bash command output now streams in real-time to a viewport above the
   prompt, showing the last 10 lines with a subtle background for distinction
 - CLI: `file_read` now previews the first 3 lines in the tool output viewport
@@ -25,7 +26,7 @@
 
 - CLI: Requires a configured provider/model on startup (no implicit default);
   prompts entered before configuration now show a helpful error directing users
-  to `henri provider add`.
+  to `/provider`.
 - LSP: Servers are now started lazily on-demand when a file with a matching
   extension is edited, rather than all at startup. This improves startup time
   when multiple LSP servers are configured.

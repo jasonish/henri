@@ -142,6 +142,119 @@ pub(crate) async fn login() -> Result<Option<LoginProvider>> {
     }
 }
 
+/// Result of provider management action
+#[derive(Debug)]
+pub(crate) enum ProviderAction {
+    /// A provider was added or updated
+    Added,
+    /// A provider was removed
+    Removed,
+    /// User cancelled
+    Cancelled,
+}
+
+/// Top-level provider management menu
+pub(crate) async fn manage_providers() -> Result<ProviderAction> {
+    let options = vec!["Add/Update a Provider", "Remove a Provider"];
+
+    let selection = match Select::new("Provider Management:", options)
+        .with_page_size(crate::output::menu_page_size())
+        .prompt()
+    {
+        Ok(selection) => selection,
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+            return Ok(ProviderAction::Cancelled);
+        }
+        Err(e) => return Err(Error::Prompt(e.to_string())),
+    };
+
+    match selection {
+        "Add/Update a Provider" => match login().await? {
+            Some(_provider) => Ok(ProviderAction::Added),
+            None => Ok(ProviderAction::Cancelled),
+        },
+        "Remove a Provider" => remove_provider(),
+        _ => Ok(ProviderAction::Cancelled),
+    }
+}
+
+/// Remove an existing provider
+fn remove_provider() -> Result<ProviderAction> {
+    let mut config = ConfigFile::load()?;
+
+    // Get all providers
+    let providers: Vec<(String, String)> = config
+        .providers
+        .entries
+        .iter()
+        .map(|(id, provider_config)| {
+            let provider_type = provider_config.provider_type();
+            let display = format!("{} ({})", id, provider_type.display_name());
+            (id.clone(), display)
+        })
+        .collect();
+
+    if providers.is_empty() {
+        println!("{}", "No providers configured.".yellow());
+        return Ok(ProviderAction::Cancelled);
+    }
+
+    // Create display list for inquire
+    let display_options: Vec<String> = providers
+        .iter()
+        .map(|(_, display)| display.clone())
+        .collect();
+
+    // Let user select a provider
+    let selection = match Select::new("Select a provider to remove:", display_options)
+        .with_page_size(crate::output::menu_page_size())
+        .prompt()
+    {
+        Ok(selected) => selected,
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+            return Ok(ProviderAction::Cancelled);
+        }
+        Err(e) => return Err(Error::Prompt(e.to_string())),
+    };
+
+    // Find the provider ID from the selection
+    let provider_id = providers
+        .iter()
+        .find(|(_, display)| display == &selection)
+        .map(|(id, _)| id.clone())
+        .expect("Selected provider not found in list");
+
+    // Confirm removal
+    let confirm = match inquire::Confirm::new(&format!("Remove provider '{}'?", provider_id))
+        .with_default(false)
+        .prompt()
+    {
+        Ok(confirmed) => confirmed,
+        Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => {
+            return Ok(ProviderAction::Cancelled);
+        }
+        Err(e) => return Err(Error::Prompt(e.to_string())),
+    };
+
+    if !confirm {
+        println!("Cancelled.");
+        return Ok(ProviderAction::Cancelled);
+    }
+
+    // Remove the provider
+    config.remove_provider(&provider_id);
+    config.save()?;
+
+    println!(
+        "{}",
+        format!("✓ Provider '{}' removed successfully.", provider_id)
+            .green()
+            .bold()
+    );
+
+    Ok(ProviderAction::Removed)
+}
+
 async fn login_opencode_zen() -> Result<()> {
     println!("\n{}", "OpenCode Zen Authentication".cyan().bold());
     println!("{}", "═".repeat(50).cyan());

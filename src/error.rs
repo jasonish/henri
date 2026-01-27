@@ -47,9 +47,7 @@ pub(crate) enum Error {
     #[error("Authentication error: {0}")]
     Auth(String),
 
-    #[error(
-        "Refresh token expired or revoked. Please run `henri provider add` to re-authenticate."
-    )]
+    #[error("Refresh token expired or revoked. Please enter `/provider` to re-authenticate.")]
     RefreshTokenExpired,
 
     #[error("Unauthorized: {0}")]
@@ -58,7 +56,7 @@ pub(crate) enum Error {
     #[error("Prompt error: {0}")]
     Prompt(String),
 
-    #[error("No model configured. Run `henri provider add` to add a provider/model.")]
+    #[error("No model configured. Enter `/provider` to add a provider/model.")]
     NoModelConfigured,
 
     #[error("Config error: {0}")]

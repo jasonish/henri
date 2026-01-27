@@ -323,7 +323,7 @@ async fn refresh_prompt_status(
 }
 
 const NO_MODEL_CONFIGURED_MESSAGE: &str =
-    "No model configured. Run `henri provider add` to add a provider/model.";
+    "No model configured. Enter `/provider` to add a provider/model.";
 
 fn show_no_model_configured() {
     terminal::println_above(&NO_MODEL_CONFIGURED_MESSAGE.red().to_string());
@@ -711,6 +711,64 @@ async fn run_event_loop(
                     if let Some(pm) = provider_manager.take() {
                         chat_task = Some(spawn_compaction_chat(data, &mut messages, pm, output));
                     }
+                }
+                ProcessResult::RunProviderFlow => {
+                    if batch {
+                        return Ok(());
+                    }
+                    // Run provider flow in hybrid mode:
+                    // - disable raw mode (Henri prompt)
+                    // - disable bracketed paste / keyboard enhancement (inquire doesn't expect them)
+                    // - run inquire prompts
+                    // - restore terminal modes
+                    let _ = crossterm_terminal::disable_raw_mode();
+                    let _ = execute!(
+                        std::io::stdout(),
+                        PopKeyboardEnhancementFlags,
+                        DisableBracketedPaste
+                    );
+                    let _ = prompt_box.hide_and_clear();
+
+                    // Run the provider management flow
+                    match crate::auth::manage_providers().await {
+                        Ok(crate::auth::ProviderAction::Added)
+                        | Ok(crate::auth::ProviderAction::Removed) => {
+                            // Reinitialize provider manager with new config
+                            if let Ok(new_config) = Config::load(None) {
+                                let new_pm = ProviderManager::new(&new_config, services.clone());
+                                provider_manager = Some(new_pm);
+                            }
+                        }
+                        Ok(crate::auth::ProviderAction::Cancelled) => {
+                            // User cancelled
+                        }
+                        Err(e) => {
+                            eprintln!("{}", format!("Error: {}", e).red());
+                        }
+                    }
+
+                    // Restore terminal state without full redraw
+                    println!();
+                    let _ = execute!(
+                        std::io::stdout(),
+                        PushKeyboardEnhancementFlags(
+                            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                        ),
+                        EnableBracketedPaste
+                    );
+                    let _ = crossterm_terminal::enable_raw_mode();
+
+                    // Refresh prompt status with potentially new provider
+                    refresh_prompt_status(
+                        &mut prompt_box,
+                        &provider_manager,
+                        &chat_task,
+                        working_dir,
+                        thinking_state,
+                        services,
+                    )
+                    .await;
+                    prompt_box.draw(&input_state, true)?;
                 }
             }
         }
@@ -2093,6 +2151,66 @@ async fn run_event_loop(
                                             ));
                                         }
                                     }
+                                    ProcessResult::RunProviderFlow => {
+                                        input_state.clear();
+
+                                        // Run provider flow in hybrid mode:
+                                        // - disable raw mode (Henri prompt)
+                                        // - disable bracketed paste / keyboard enhancement (inquire doesn't expect them)
+                                        // - run inquire prompts
+                                        // - restore terminal modes
+                                        let _ = crossterm_terminal::disable_raw_mode();
+                                        let _ = execute!(
+                                            std::io::stdout(),
+                                            PopKeyboardEnhancementFlags,
+                                            DisableBracketedPaste
+                                        );
+                                        let _ = prompt_box.hide_and_clear();
+
+                                        // Run the provider management flow
+                                        match crate::auth::manage_providers().await {
+                                            Ok(crate::auth::ProviderAction::Added)
+                                            | Ok(crate::auth::ProviderAction::Removed) => {
+                                                // Reinitialize provider manager with new config
+                                                if let Ok(new_config) = Config::load(None) {
+                                                    let new_pm = ProviderManager::new(
+                                                        &new_config,
+                                                        services.clone(),
+                                                    );
+                                                    provider_manager = Some(new_pm);
+                                                }
+                                            }
+                                            Ok(crate::auth::ProviderAction::Cancelled) => {
+                                                // User cancelled
+                                            }
+                                            Err(e) => {
+                                                eprintln!("{}", format!("Error: {}", e).red());
+                                            }
+                                        }
+
+                                        // Restore terminal state without full redraw
+                                        println!();
+                                        let _ = execute!(
+                                            std::io::stdout(),
+                                            PushKeyboardEnhancementFlags(
+                                                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                                            ),
+                                            EnableBracketedPaste
+                                        );
+                                        let _ = crossterm_terminal::enable_raw_mode();
+
+                                        // Refresh prompt status with potentially new provider
+                                        refresh_prompt_status(
+                                            &mut prompt_box,
+                                            &provider_manager,
+                                            &chat_task,
+                                            working_dir,
+                                            thinking_state,
+                                            services,
+                                        )
+                                        .await;
+                                        prompt_box.draw(&input_state, true)?;
+                                    }
                                 }
                             }
                         }
@@ -2752,6 +2870,8 @@ enum ProcessResult {
     OpenSettings,
     /// Open the tools menu
     OpenToolsMenu,
+    /// Run the provider management flow (add/remove)
+    RunProviderFlow,
     /// Start compaction
     StartCompaction(CompactionData),
 }
@@ -2850,6 +2970,7 @@ async fn process_input(
                         | Command::ReadWrite
                         | Command::Yolo
                         | Command::Model
+                        | Command::Provider
                         | Command::Sessions
                         | Command::Settings
                         | Command::Mcp
@@ -2896,6 +3017,7 @@ async fn process_input(
                 CommandResult::OpenLspMenu => return ProcessResult::OpenLspMenu,
                 CommandResult::OpenSettings => return ProcessResult::OpenSettings,
                 CommandResult::OpenToolsMenu => return ProcessResult::OpenToolsMenu,
+                CommandResult::RunProviderFlow => return ProcessResult::RunProviderFlow,
                 CommandResult::StartCompaction(data) => {
                     return ProcessResult::StartCompaction(data);
                 }
@@ -2932,6 +3054,8 @@ enum CommandResult {
     OpenSettings,
     /// Open the tools menu
     OpenToolsMenu,
+    /// Run the provider management flow (add/remove)
+    RunProviderFlow,
     /// Start compaction with the given data
     StartCompaction(CompactionData),
 }
@@ -3067,6 +3191,11 @@ async fn handle_command(
         Command::Model => {
             // Return to event loop to open the model menu
             CommandResult::OpenModelMenu
+        }
+
+        Command::Provider => {
+            // Run the provider management flow
+            CommandResult::RunProviderFlow
         }
 
         Command::Tools => {
