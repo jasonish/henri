@@ -1514,9 +1514,22 @@ impl CliListener {
                     OutputState::Thinking { has_output: false }
                 ) && !state.thinking.has_content
                 {
-                    terminal::println_above("\x1b[90m[thinking with no data]\x1b[0m");
-                    history::append_thinking("[thinking with no data]");
+                    // Ensure the placeholder becomes its own visual block instead of
+                    // appearing adjacent to the user prompt/tool line.
+                    if matches!(
+                        state.last_block,
+                        Some(LastBlock::Tool) | Some(LastBlock::UserPrompt)
+                    ) {
+                        terminal::ensure_trailing_newlines(2);
+                    } else {
+                        terminal::ensure_line_break();
+                    }
+
+                    terminal::println_above("\x1b[90mThinking...\x1b[0m");
+                    history::append_thinking("Thinking...");
+                    state.thinking_pending_newlines = 0;
                     state.output_state.mark_thinking_output();
+                    state.last_block = Some(LastBlock::Thinking);
                 }
 
                 history::finish_thinking();
@@ -1599,8 +1612,20 @@ impl CliListener {
                 // If a text block ended without writing any output, render a visible
                 // placeholder so we can see it existed.
                 if !state.text_output_written {
+                    // Ensure the placeholder becomes its own visual block instead of
+                    // appearing adjacent to the user prompt/tool line.
+                    if matches!(
+                        state.last_block,
+                        Some(LastBlock::Tool) | Some(LastBlock::UserPrompt)
+                    ) {
+                        terminal::ensure_trailing_newlines(2);
+                    } else {
+                        terminal::ensure_line_break();
+                    }
+
                     terminal::println_above("[text with no data]");
                     history::append_assistant_text("[text with no data]");
+                    state.last_block = Some(LastBlock::Text);
                 }
 
                 // Flush any remaining word buffer
