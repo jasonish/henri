@@ -41,6 +41,7 @@
   and avoids overlapping the prompt status line
 - CLI: After switching models and running `/clear`, auto-compaction no longer
   triggers immediately due to stale usage data
+- CLI: Ctrl+D now behaves like Delete when input is not empty
 
 ### Changed
 

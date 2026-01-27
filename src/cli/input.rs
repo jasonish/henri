@@ -541,6 +541,24 @@ impl InputState {
         self.current_line().chars().count()
     }
 
+    fn delete_forward(&mut self) -> InputAction {
+        if self.col_idx < self.current_line_char_len() {
+            // Get byte range for the character at cursor
+            let curr_char_start = self.char_to_byte_idx(self.col_idx);
+            let next_char_start = self.char_to_byte_idx(self.col_idx + 1);
+            self.lines[self.line_idx].replace_range(curr_char_start..next_char_start, "");
+            self.update_slash_menu();
+            InputAction::Redraw
+        } else if self.line_idx < self.total_lines() - 1 {
+            let next_line = self.lines.remove(self.line_idx + 1);
+            self.lines[self.line_idx].push_str(&next_line);
+            self.update_slash_menu();
+            InputAction::Redraw
+        } else {
+            InputAction::None
+        }
+    }
+
     /// Get the number of characters in a specific line
     fn line_char_len(&self, line_idx: usize) -> usize {
         self.lines[line_idx].chars().count()
@@ -837,12 +855,12 @@ impl InputState {
                 }
             }
 
-            // Ctrl+D - quit if empty
+            // Ctrl+D - quit if empty, otherwise act like Delete
             (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                 if self.is_empty() {
                     InputAction::Quit
                 } else {
-                    InputAction::None
+                    self.delete_forward()
                 }
             }
 
@@ -1035,23 +1053,7 @@ impl InputState {
             }
 
             // Delete
-            (KeyCode::Delete, _) => {
-                if self.col_idx < self.current_line_char_len() {
-                    // Get byte range for the character at cursor
-                    let curr_char_start = self.char_to_byte_idx(self.col_idx);
-                    let next_char_start = self.char_to_byte_idx(self.col_idx + 1);
-                    self.lines[self.line_idx].replace_range(curr_char_start..next_char_start, "");
-                    self.update_slash_menu();
-                    InputAction::Redraw
-                } else if self.line_idx < self.total_lines() - 1 {
-                    let next_line = self.lines.remove(self.line_idx + 1);
-                    self.lines[self.line_idx].push_str(&next_line);
-                    self.update_slash_menu();
-                    InputAction::Redraw
-                } else {
-                    InputAction::None
-                }
-            }
+            (KeyCode::Delete, _) => self.delete_forward(),
 
             // Left arrow
             (KeyCode::Left, _) => {
@@ -1631,6 +1633,53 @@ mod tests {
         state.handle_key(key(KeyCode::Delete, KeyModifiers::NONE));
         assert_eq!(state.lines[0], "hllo");
         assert_eq!(state.col_idx, 1);
+    }
+
+    #[test]
+    fn test_ctrl_d_quits_if_empty() {
+        let mut state = test_state();
+
+        let action = state.handle_key(key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert!(matches!(action, InputAction::Quit));
+    }
+
+    #[test]
+    fn test_ctrl_d_deletes_char_at_cursor() {
+        let mut state = test_state();
+        state.lines[0] = "abc".to_string();
+        state.col_idx = 1;
+
+        let action = state.handle_key(key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(state.lines[0], "ac");
+        assert_eq!(state.col_idx, 1);
+        assert!(matches!(action, InputAction::Redraw));
+    }
+
+    #[test]
+    fn test_ctrl_d_joins_with_next_line_at_eol() {
+        let mut state = test_state();
+        state.lines = vec!["abc".to_string(), "def".to_string()];
+        state.line_idx = 0;
+        state.col_idx = 3;
+
+        let action = state.handle_key(key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(state.lines.len(), 1);
+        assert_eq!(state.lines[0], "abcdef");
+        assert_eq!(state.line_idx, 0);
+        assert_eq!(state.col_idx, 3);
+        assert!(matches!(action, InputAction::Redraw));
+    }
+
+    #[test]
+    fn test_ctrl_d_at_end_of_last_line_is_noop() {
+        let mut state = test_state();
+        state.lines[0] = "abc".to_string();
+        state.col_idx = 3;
+
+        let action = state.handle_key(key(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(state.lines[0], "abc");
+        assert_eq!(state.col_idx, 3);
+        assert!(matches!(action, InputAction::None));
     }
 
     #[test]
