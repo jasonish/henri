@@ -571,6 +571,9 @@ async fn run_event_loop(
         listener::init_spinner();
     }
 
+    // Load show_diffs setting (needed for both interactive and batch mode)
+    listener::reload_show_diffs();
+
     // Submit initial prompt if provided
     if let Some(prompt) = initial_prompt {
         if provider_manager.is_none() {
@@ -1509,6 +1512,7 @@ async fn run_event_loop(
                                 // Reload settings after changes
                                 prompt_box.reload_settings();
                                 listener::reload_show_network_stats();
+                                listener::reload_show_diffs();
                                 refresh_prompt_status(
                                     &mut prompt_box,
                                     &provider_manager,

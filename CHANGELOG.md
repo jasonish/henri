@@ -37,6 +37,8 @@
 
 ### Fixed
 
+- CLI: The `show-diffs` config setting is now respected; file diffs are only
+  rendered when enabled (works in both interactive and batch modes)
 - Antigravity provider: Strip unsupported JSON Schema fields (like `$schema`) from
   tool parameter schemas to prevent 400 errors when using MCP tools.
 - CLI: Queued prompts now remain visible after terminal resize

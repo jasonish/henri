@@ -35,6 +35,9 @@ static BANDWIDTH_TX_DISPLAY: AtomicU64 = AtomicU64::new(0);
 // Whether to show network stats (loaded from config)
 static SHOW_NETWORK_STATS: AtomicBool = AtomicBool::new(false);
 
+// Whether to show file diffs (loaded from config)
+static SHOW_DIFFS: AtomicBool = AtomicBool::new(true);
+
 // Context/token tracking state for status line display
 static CONTEXT_TOKENS: AtomicU64 = AtomicU64::new(0);
 static CONTEXT_LIMIT: AtomicU64 = AtomicU64::new(0); // 0 = unknown
@@ -52,6 +55,14 @@ pub(crate) fn reload_show_network_stats() {
         .map(|c| c.show_network_stats)
         .unwrap_or(false);
     SHOW_NETWORK_STATS.store(enabled, Ordering::Relaxed);
+}
+
+/// Reload the show_diffs setting from config
+pub(crate) fn reload_show_diffs() {
+    let enabled = crate::config::ConfigFile::load()
+        .map(|c| c.show_diffs)
+        .unwrap_or(true);
+    SHOW_DIFFS.store(enabled, Ordering::Relaxed);
 }
 
 /// Render a single diff line with syntax highlighting.
@@ -2118,18 +2129,21 @@ impl CliListener {
                     terminal::println_above(&format!(" {}", "✓".green()));
                 }
 
-                // Track line numbers across the diff
-                let mut old_line_num = 0usize;
-                let mut new_line_num = 0usize;
+                // Only render the diff if show_diffs is enabled
+                if SHOW_DIFFS.load(Ordering::Relaxed) {
+                    // Track line numbers across the diff
+                    let mut old_line_num = 0usize;
+                    let mut new_line_num = 0usize;
 
-                for line in diff.lines() {
-                    if let Some(styled) = render_diff_line(
-                        line,
-                        language.as_deref(),
-                        &mut old_line_num,
-                        &mut new_line_num,
-                    ) {
-                        terminal::println_above(&styled);
+                    for line in diff.lines() {
+                        if let Some(styled) = render_diff_line(
+                            line,
+                            language.as_deref(),
+                            &mut old_line_num,
+                            &mut new_line_num,
+                        ) {
+                            terminal::println_above(&styled);
+                        }
                     }
                 }
                 history::push(HistoryEvent::FileDiff {
