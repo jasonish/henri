@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2025 Jason Ish
+// Copyright (c) 2026 Jason Ish
 
 //! Prompt rendering for CLI mode.
 //!
