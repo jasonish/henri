@@ -633,8 +633,6 @@ fn build_messages(messages: &[Message]) -> Vec<serde_json::Value> {
 pub(crate) struct OpenAiCompatProvider {
     config: OpenAiChatConfig,
     provider_config: crate::config::OpenAiCompatProviderConfig,
-    /// Dynamic override for reasoning_effort (takes precedence over model config)
-    reasoning_effort: Option<String>,
 }
 
 impl OpenAiCompatProvider {
@@ -693,7 +691,6 @@ impl OpenAiCompatProvider {
         Ok(Self {
             config: chat_config,
             provider_config,
-            reasoning_effort: None,
         })
     }
 
@@ -717,16 +714,11 @@ impl OpenAiCompatProvider {
         Self {
             config: chat_config,
             provider_config: config,
-            reasoning_effort: None,
         }
     }
 
     pub(crate) fn set_model(&mut self, model: String) {
         self.config.model = model;
-    }
-
-    pub(crate) fn set_reasoning_effort(&mut self, effort: Option<String>) {
-        self.reasoning_effort = effort;
     }
 
     /// Get context limit for a given model name
@@ -742,24 +734,11 @@ impl Provider for OpenAiCompatProvider {
         messages: Vec<Message>,
         output: &crate::output::OutputContext,
     ) -> Result<ChatResponse> {
-        execute_chat(
-            &self.config,
-            &self.provider_config,
-            &messages,
-            output,
-            self.reasoning_effort.as_deref(),
-        )
-        .await
+        execute_chat(&self.config, &self.provider_config, &messages, output, None).await
     }
 
     async fn prepare_request(&self, messages: Vec<Message>) -> Result<serde_json::Value> {
-        let request = build_request(
-            &self.config,
-            &self.provider_config,
-            &messages,
-            self.reasoning_effort.as_deref(),
-        )
-        .await?;
+        let request = build_request(&self.config, &self.provider_config, &messages, None).await?;
         Ok(serde_json::to_value(&request)?)
     }
 

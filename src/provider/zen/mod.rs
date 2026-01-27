@@ -171,12 +171,6 @@ impl ZenProvider {
         ))
     }
 
-    pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
-        if let Some(ref mut delegate) = self.openai_compat_delegate {
-            delegate.set_reasoning_effort(mode);
-        }
-    }
-
     pub(crate) fn set_model(&mut self, model: String) {
         self.model = model.clone();
 

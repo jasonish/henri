@@ -656,13 +656,6 @@ impl ProviderManager {
     /// mode should be one of: "off", "minimal", "low", "medium", "high", or None for default
     pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
         match self.current_provider {
-            ModelProvider::OpenCodeZen => self.zen_provider.set_thinking_mode(mode),
-            ModelProvider::Claude => {
-                if let Some(ref mut p) = self.anthropic_provider {
-                    p.set_thinking_mode(mode.clone());
-                    self.current_model_id = p.current_model().to_string();
-                }
-            }
             ModelProvider::Antigravity | ModelProvider::OpenAi => {
                 if let Some(mode) = mode {
                     let base = self

@@ -392,23 +392,9 @@ impl AnthropicProvider {
         })
     }
 
-    pub(crate) fn set_thinking_mode(&mut self, mode: Option<String>) {
-        if let Some(mode) = mode.clone() {
-            let base = base_model_name(&self.model);
-            self.model = format!("{}#{}", base, mode);
-            self.thinking_mode = Some(mode);
-        } else {
-            self.thinking_mode = None;
-        }
-    }
-
     pub(crate) fn set_model(&mut self, model: String) {
         self.model = model;
         self.thinking_mode = thinking_level_from_model(&self.model).map(|s| s.to_string());
-    }
-
-    pub(crate) fn current_model(&self) -> &str {
-        &self.model
     }
 
     /// Returns the available thinking modes for Claude models.
