@@ -5,7 +5,7 @@
 ### Added
 
 - CLI: Set terminal title to show 🐕 and current directory
-
+- Zen: Add support for kimi-k2.5 model
 - CLI: Bash command output now streams in real-time to a viewport above the
   prompt, showing the last 10 lines with a subtle background for distinction
 - CLI: `file_read` now previews the first 3 lines in the tool output viewport
