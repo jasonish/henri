@@ -2387,6 +2387,12 @@ fn spawn_chat_task(
     // Reset streaming stats for this new turn
     listener::reset_turn_stats();
 
+    // Ensure the streaming status-line rows are reserved before streaming begins.
+    // This prevents late activation from scrolling/clearing over the prompt block.
+    terminal::set_streaming_status_line_active(true);
+    // Prime the status line immediately so the newly-reserved rows aren't blank.
+    listener::spinner_working();
+
     // Capture provider info before moving provider_manager
     let provider = provider_manager.current_provider();
     let model_id = provider_manager.current_model_id().to_string();

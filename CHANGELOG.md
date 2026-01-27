@@ -41,6 +41,8 @@
 - CLI: Queued prompts now remain visible after terminal resize
 - CLI: Bandwidth display updates in real time again during streaming responses
   and avoids overlapping the prompt status line
+- CLI: Reserve streaming status-line rows before streaming begins to avoid shifting
+  or scrolling over the prompt block
 - CLI: After switching models and running `/clear`, auto-compaction no longer
   triggers immediately due to stale usage data
 - CLI: Ctrl+D now behaves like Delete when input is not empty
