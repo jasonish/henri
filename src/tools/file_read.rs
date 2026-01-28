@@ -221,7 +221,7 @@ impl Tool for FileRead {
         output_buf.push_str(&summary);
 
         let tool_summary = format!(
-            "(read {} lines, {} bytes)",
+            "[read {} lines, {} bytes]",
             output_lines.len(),
             output_buf.len()
         );

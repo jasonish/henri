@@ -181,6 +181,20 @@ enum ToolCommand {
         #[arg(long)]
         include_hidden: bool,
     },
+    /// Test the bash tool to execute shell commands
+    Bash {
+        /// Command to execute (everything after `bash` is treated as the command)
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+
+        /// Timeout in seconds
+        #[arg(short, long)]
+        timeout: Option<u64>,
+
+        /// Working directory for the command
+        #[arg(short, long)]
+        cwd: Option<String>,
+    },
     /// Test the file_read tool to read file contents
     #[command(alias = "file_read")]
     FileRead {
@@ -248,6 +262,13 @@ async fn main() -> std::io::Result<()> {
                         *include_hidden,
                     )
                     .await;
+                }
+                ToolCommand::Bash {
+                    command,
+                    timeout,
+                    cwd,
+                } => {
+                    return handle_bash_command(command.clone(), *timeout, cwd.clone()).await;
                 }
                 ToolCommand::FileRead {
                     filename,
@@ -380,7 +401,48 @@ async fn handle_file_read_command(
         .execute("file-read-test", input, &output, &services)
         .await;
 
-    println!("{}", serde_json::to_string(&result).unwrap());
+    match serde_json::to_string(&result) {
+        Ok(json) => println!("{}", json),
+        Err(e) => {
+            eprintln!("Failed to serialize tool result: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    if result.is_error {
+        std::process::exit(result.exit_code.unwrap_or(1));
+    }
+
+    Ok(())
+}
+
+async fn handle_bash_command(
+    command: Vec<String>,
+    timeout: Option<u64>,
+    cwd: Option<String>,
+) -> std::io::Result<()> {
+    use tools::Tool;
+
+    let bash_tool = tools::Bash;
+    let input = serde_json::json!({
+        "command": command.join(" "),
+        "timeout": timeout,
+        "cwd": cwd,
+    });
+
+    let output = output::OutputContext::new_quiet();
+    let services = services::Services::new();
+    let result = bash_tool
+        .execute("bash-test", input, &output, &services)
+        .await;
+
+    match serde_json::to_string(&result) {
+        Ok(json) => println!("{}", json),
+        Err(e) => {
+            eprintln!("Failed to serialize tool result: {}", e);
+            std::process::exit(1);
+        }
+    }
 
     if result.is_error {
         std::process::exit(result.exit_code.unwrap_or(1));
@@ -550,7 +612,10 @@ fn handle_mcp_add_command(name: String, command: Vec<String>) -> std::io::Result
     }
 
     // Split command into command and args
-    let (cmd, args) = command.split_first().unwrap();
+    let Some((cmd, args)) = command.split_first() else {
+        eprintln!("Error: command is required");
+        std::process::exit(1);
+    };
 
     // Add the new server
     mcp_config.servers.push(config::McpServerConfig {

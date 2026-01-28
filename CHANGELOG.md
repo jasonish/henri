@@ -4,7 +4,7 @@
 
 ### Added
 
-- CLI: `henri tool file_read` subcommand for testing the file_read tool
+- CLI: `henri tool-call file_read` subcommand for testing the file_read tool
 - CLI: Set terminal title to show 🐕 and current directory
 - Zen: Add support for kimi-k2.5 model
 - CLI: `/provider` slash command to add/remove providers via interactive menu
@@ -16,6 +16,7 @@
   file extension, colorizing only the file content (not line numbers)
 - CLI: Tool result indicators can include a short summary (e.g. `file_read` and `bash`
   show lines/bytes read)
+- CLI: `henri tool-call bash` subcommand for testing the bash tool (prints raw JSON tool results)
 - CLI: LSP server activation is now visible during tool execution with a cyan
   info message (e.g. `[LSP activated: rust-analyzer (rs)]`) and prompt border
   updates within 50ms to show the current server count
@@ -27,6 +28,7 @@
 
 - Tools: Refactor `file_read` to remove per-line truncation; output limited by
   total size (50KB) and line count (2000) only
+- Tools: `bash` tool output is now tail-truncated for the model and bounded by 2000 lines and 32KiB, with an in-band truncation notice
 - Providers: Deduplicate `model#variant` parsing/cycling helpers
 - Tools: Factor shared LSP diagnostics handling for `file_edit`/`file_write`
 - Tools: Render full multi-line `bash` commands in tool-call banners (newlines shown as `\\n`)
