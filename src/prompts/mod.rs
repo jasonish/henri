@@ -127,12 +127,12 @@ pub(crate) fn system_prompt_with_services(services: Option<&Services>) -> Vec<St
         prompt.push(READ_ONLY_NOTICE.to_string());
     }
 
-    // Timestamp goes last so it doesn't invalidate prompt caching.
+    // Date goes last so it doesn't invalidate prompt caching too frequently.
     // The cache_control marker is placed on the previous block (agent files),
-    // so the static content gets cached while the dynamic timestamp comes after.
+    // so the static content gets cached while the dynamic date comes after.
     prompt.push(format!(
-        "Current date and time is {}",
-        Local::now().format("%Y-%m-%d %H:%M:%S %Z")
+        "Current date: {}",
+        Local::now().format("%Y-%m-%d %Z")
     ));
 
     prompt

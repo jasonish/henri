@@ -27,6 +27,7 @@
 - Providers: Deduplicate `model#variant` parsing/cycling helpers
 - Tools: Factor shared LSP diagnostics handling for `file_edit`/`file_write`
 - Tools: Render full multi-line `bash` commands in tool-call banners (newlines shown as `\\n`)
+- Prompts: Include only current date (no time) to improve prompt caching
 
 - CLI: Requires a configured provider/model on startup (no implicit default);
   prompts entered before configuration now show a helpful error directing users

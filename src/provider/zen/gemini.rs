@@ -266,10 +266,7 @@ pub(super) async fn build_request(
         .unwrap_or_else(|_| "unknown".to_string());
 
     let now = chrono::Local::now();
-    let datetime_str = format!(
-        "Current date and time: {}",
-        now.format("%Y-%m-%d %H:%M:%S %Z")
-    );
+    let date_str = format!("Current date: {}", now.format("%Y-%m-%d %Z"));
 
     GeminiRequest {
         system_instruction: Some(GeminiSystemInstruction {
@@ -277,7 +274,7 @@ pub(super) async fn build_request(
                 GeminiPart::Text {
                     text: prompts::default_system_prompt().to_string(),
                 },
-                GeminiPart::Text { text: datetime_str },
+                GeminiPart::Text { text: date_str },
                 GeminiPart::Text {
                     text: format!("Current working directory: {}", cwd),
                 },
