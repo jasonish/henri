@@ -58,6 +58,8 @@
 - CLI: Ctrl+D now behaves like Delete when input is not empty
 - CLI: Thinking blocks with no emitted content now render as "Thinking..." on their own line
   (no stray "[thinking with no data]" in the prompt area, and no extra blank lines before text)
+- OpenAI provider: Retry transient errors from Codex API with exponential backoff
+  (includes additional "server_error"/"server had an error" message matching)
 - CLI: Claude-only slash commands (like `/claude-count-tokens`) now appear in
   slash menu autocomplete when using a Claude provider
 

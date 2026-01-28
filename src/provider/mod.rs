@@ -292,6 +292,8 @@ pub(crate) fn is_retryable_message(message: &str) -> bool {
         || msg_lower.contains("rate limit")
         || msg_lower.contains("service unavailable")
         || msg_lower.contains("bad gateway")
+        || msg_lower.contains("server_error")
+        || msg_lower.contains("server had an error")
 }
 
 /// Create the appropriate error for an API response based on status and message.

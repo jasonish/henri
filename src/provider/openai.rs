@@ -49,6 +49,12 @@ const CODEX_PROMPT_GPT_5_1_CODEX_MAX: &str = include_str!("openai/gpt-5.1-codex-
 const CODEX_PROMPT_GPT_5_2_CODEX: &str = include_str!("openai/gpt-5.2-codex_prompt.md");
 const CODEX_PROMPT_GPT_5_2: &str = include_str!("openai/gpt_5_2_prompt.md");
 
+/// Maximum number of retries for transient errors.
+const MAX_RETRIES: u32 = 3;
+
+/// Initial retry delay (exponential backoff: 1s, 2s, 4s)
+const INITIAL_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+
 fn reasoning_effort_from_model(model: &str) -> &str {
     model_utils::model_variant(model).unwrap_or_default()
 }
@@ -872,8 +878,33 @@ impl OpenAiProvider {
         messages: Vec<Message>,
         output: &crate::output::OutputContext,
     ) -> Result<ChatResponse> {
-        let request = self.build_request(&messages).await;
-        self.execute_chat_with_request(request, output).await
+        let mut attempts = 0;
+        let mut delay = INITIAL_RETRY_DELAY;
+
+        loop {
+            let request = self.build_request(&messages).await;
+            let result = self.execute_chat_with_request(request, output).await;
+
+            match result {
+                Ok(response) => return Ok(response),
+                Err(ref e) if e.is_retryable() && attempts < MAX_RETRIES => {
+                    attempts += 1;
+                    output::emit_warning(
+                        output,
+                        &format!(
+                            "{} (retrying in {}s, attempt {}/{})",
+                            e.display_message(),
+                            delay.as_secs(),
+                            attempts,
+                            MAX_RETRIES
+                        ),
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// Get the context limit for a given model name
