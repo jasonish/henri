@@ -371,11 +371,16 @@ async fn handle_grep_command(
         .execute("grep-test", input, &output, &services)
         .await;
 
+    match serde_json::to_string(&result) {
+        Ok(json) => println!("{}", json),
+        Err(e) => {
+            eprintln!("Failed to serialize tool result: {}", e);
+            std::process::exit(1);
+        }
+    }
+
     if result.is_error {
-        eprintln!("Error: {}", result.content);
-        std::process::exit(1);
-    } else {
-        print!("{}", result.content);
+        std::process::exit(result.exit_code.unwrap_or(1));
     }
 
     Ok(())

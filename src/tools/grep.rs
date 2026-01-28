@@ -1,16 +1,28 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2025 Jason Ish
 
+//! Search tool wrapper around `rg` (preferred) or `grep` (fallback).
+//!
+//! ## Limitations
+//! - Hard timeout: 60 seconds.
+//! - Output caps: 32 KiB and 2,000 lines (stdout); output is truncated with a summary.
+//!   Once the cap is reached, additional output is drained and discarded to avoid
+//!   blocking the child process.
+//! - Binary files are ignored.
+//! - Hidden/ignored files are excluded by default (with `include_hidden=true`, more is searched).
+
 use std::path::Path;
 use std::process::Stdio;
 
 use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use super::{Tool, ToolDefinition, ToolResult};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
-const MAX_OUTPUT_BYTES: usize = 30_000;
+const MAX_OUTPUT_BYTES: usize = 32 * 1024;
+const MAX_OUTPUT_LINES: usize = 2_000;
 
 pub(crate) struct Grep;
 
@@ -130,23 +142,66 @@ impl Grep {
 
         let stdout_task = tokio::spawn(async move {
             let mut output = String::new();
-            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut truncated_lines = false;
+            let mut truncated_bytes = false;
+            let mut line_count = 0usize;
+
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                output.push_str(&line);
-                output.push('\n');
+                let mut can_capture = true;
+
+                if line_count >= MAX_OUTPUT_LINES {
+                    truncated_lines = true;
+                    can_capture = false;
+                }
+
+                let additional_bytes = line.len() + 1;
+                if output.len().saturating_add(additional_bytes) > MAX_OUTPUT_BYTES {
+                    truncated_bytes = true;
+                    can_capture = false;
+                }
+
+                if can_capture {
+                    output.push_str(&line);
+                    output.push('\n');
+                    line_count += 1;
+                }
             }
-            output
+
+            let byte_count = output.len();
+            (
+                output,
+                truncated_lines,
+                truncated_bytes,
+                line_count,
+                byte_count,
+            )
         });
 
         let stderr_task = tokio::spawn(async move {
             let mut output = String::new();
-            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut line_count = 0usize;
+
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                output.push_str(&line);
-                output.push('\n');
+                let mut can_capture = true;
+
+                if line_count >= MAX_OUTPUT_LINES {
+                    can_capture = false;
+                }
+
+                let additional_bytes = line.len() + 1;
+                if output.len().saturating_add(additional_bytes) > MAX_OUTPUT_BYTES {
+                    can_capture = false;
+                }
+
+                if can_capture {
+                    output.push_str(&line);
+                    output.push('\n');
+                    line_count += 1;
+                }
             }
+
             output
         });
 
@@ -157,7 +212,8 @@ impl Grep {
 
         match stream_result {
             Ok((stdout_res, stderr_res, status_res)) => {
-                let stdout_output = stdout_res.unwrap_or_default();
+                let (stdout_output, truncated_lines, truncated_bytes, line_count, byte_count) =
+                    stdout_res.unwrap_or_else(|_| (String::new(), false, false, 0, 0));
                 let stderr_output = stderr_res.unwrap_or_default();
 
                 // Use ExitStatusExt to construct a default status if needed, but here we just need to check codes
@@ -184,18 +240,27 @@ impl Grep {
                     return Ok(ToolResult::error(tool_use_id, error_msg));
                 }
 
-                let truncated = if stdout_output.len() > MAX_OUTPUT_BYTES {
-                    let truncated_content = &stdout_output[..MAX_OUTPUT_BYTES];
-                    format!(
-                        "{}\n\n[Output truncated: {} bytes total]",
-                        truncated_content,
-                        stdout_output.len()
-                    )
-                } else {
-                    stdout_output
-                };
+                let mut output = stdout_output;
+                if truncated_lines || truncated_bytes {
+                    let mut reasons = Vec::new();
+                    if truncated_lines {
+                        reasons.push(format!(
+                            "{} lines shown (max {})",
+                            line_count, MAX_OUTPUT_LINES
+                        ));
+                    }
+                    if truncated_bytes {
+                        reasons.push(format!(
+                            "{} bytes shown (max {})",
+                            byte_count, MAX_OUTPUT_BYTES
+                        ));
+                    }
+                    output.push_str("\n\n[Output truncated: ");
+                    output.push_str(&reasons.join(", "));
+                    output.push(']');
+                }
 
-                Ok(ToolResult::success(tool_use_id, truncated))
+                Ok(ToolResult::success(tool_use_id, output))
             }
             Err(_) => {
                 let _ = child.kill().await;

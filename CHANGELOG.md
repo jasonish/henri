@@ -4,6 +4,7 @@
 
 ### Added
 
+- CLI: `henri tool-call grep` now prints raw JSON tool results
 - CLI: `henri tool-call file_read` subcommand for testing the file_read tool
 - CLI: Set terminal title to show 🐕 and current directory
 - Zen: Add support for kimi-k2.5 model
