@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,52 @@ use crate::error::{self, Result};
 
 const CONFIG_FILE: &str = "config.toml";
 const CONFIG_DIR: &str = ".config/henri";
+
+static CONFIG_DIR_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+
+fn config_dir_override() -> Option<PathBuf> {
+    CONFIG_DIR_OVERRIDE
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+pub(crate) fn set_config_dir_override(dir: Option<PathBuf>) {
+    let lock = CONFIG_DIR_OVERRIDE.get_or_init(|| RwLock::new(None));
+    *lock.write().expect("config dir override lock poisoned") = dir;
+}
+
+fn resolve_config_dir(override_dir: Option<&Path>) -> PathBuf {
+    if let Some(dir) = override_dir {
+        return dir.to_path_buf();
+    }
+
+    home_dir()
+        .map(|home| home.join(CONFIG_DIR))
+        .unwrap_or_else(|| PathBuf::from(CONFIG_DIR))
+}
+
+pub(crate) fn config_dir() -> PathBuf {
+    let override_dir = config_dir_override();
+    resolve_config_dir(override_dir.as_deref())
+}
+
+pub(crate) fn persist_last_used_model(model: &str) {
+    if model.trim().is_empty() {
+        return;
+    }
+
+    let Ok(mut config) = ConfigFile::load() else {
+        return;
+    };
+
+    let mut state = config.state.unwrap_or_default();
+    state.last_model = Some(model.to_string());
+    config.state = Some(state);
+
+    let _ = config.save();
+}
 
 /// Default model selection strategy on startup.
 ///
@@ -68,7 +115,7 @@ fn default_auto_compact_preserve_turns() -> usize {
     2
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ConfigFile {
     #[serde(default)]
     pub providers: Providers,
@@ -108,6 +155,26 @@ pub(crate) struct ConfigFile {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub disabled_tools: Vec<String>,
+}
+
+impl Default for ConfigFile {
+    fn default() -> Self {
+        Self {
+            providers: Providers::default(),
+            model: None,
+            default_model: DefaultModel::LastUsed,
+            state: None,
+            mcp: None,
+            lsp: None,
+            show_network_stats: default_show_network_stats(),
+            show_diffs: default_show_diffs(),
+            lsp_enabled: default_lsp_enabled(),
+            favorite_models: Vec::new(),
+            auto_compact: AutoCompactConfig::default(),
+            todo_enabled: default_todo_enabled(),
+            disabled_tools: Vec::new(),
+        }
+    }
 }
 
 fn default_show_network_stats() -> bool {
@@ -513,9 +580,7 @@ fn default_openai_audience() -> String {
 
 impl ConfigFile {
     fn config_dir() -> PathBuf {
-        home_dir()
-            .map(|home| home.join(CONFIG_DIR))
-            .unwrap_or_else(|| PathBuf::from(CONFIG_DIR))
+        crate::config::config_dir()
     }
 
     fn config_file_path() -> PathBuf {

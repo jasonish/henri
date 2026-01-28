@@ -48,6 +48,9 @@
 
 ### Fixed
 
+- CLI: Persist last-used model so `default-model = ":last-used"` works on restart
+- CLI: Network stats now default to enabled on fresh configs
+- CLI: Startup error message now distinguishes "no providers" vs "no model"
 - CLI: Wrapped output no longer starts a new line with whitespace when wrapping occurs at a space/tab boundary
 - CLI: The `show-diffs` config setting is now respected; file diffs are only
   rendered when enabled (works in both interactive and batch modes)

@@ -56,7 +56,7 @@ pub(crate) enum Error {
     #[error("Prompt error: {0}")]
     Prompt(String),
 
-    #[error("No model configured. Enter `/provider` to add a provider/model.")]
+    #[error("No model configured. Enter `/model` to select a model.")]
     NoModelConfigured,
 
     #[error("Config error: {0}")]

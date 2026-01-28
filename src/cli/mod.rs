@@ -337,14 +337,25 @@ async fn refresh_prompt_status(
     }
 }
 
-const NO_MODEL_CONFIGURED_MESSAGE: &str =
-    "No model configured. Enter `/provider` to add a provider/model.";
+const NO_PROVIDERS_CONFIGURED_MESSAGE: &str =
+    "No providers configured. Enter `/provider` to add a provider/model.";
 
-fn show_no_model_configured() {
-    terminal::println_above(&NO_MODEL_CONFIGURED_MESSAGE.red().to_string());
-    history::push(history::HistoryEvent::Error(
-        NO_MODEL_CONFIGURED_MESSAGE.to_string(),
-    ));
+const NO_MODEL_CONFIGURED_MESSAGE: &str = "No model set, enter `/model` to select a model.";
+
+fn show_no_providers_or_model_configured() -> &'static str {
+    let config = crate::config::ConfigFile::load().unwrap_or_default();
+    let any_enabled_provider = config.providers.entries.values().any(|p| p.is_enabled());
+    if any_enabled_provider {
+        NO_MODEL_CONFIGURED_MESSAGE
+    } else {
+        NO_PROVIDERS_CONFIGURED_MESSAGE
+    }
+}
+
+fn print_no_providers_or_model_configured() {
+    let msg = show_no_providers_or_model_configured();
+    terminal::println_above(&msg.red().to_string());
+    history::push(history::HistoryEvent::Error(msg.to_string()));
 }
 
 fn build_ephemeral_config_for_model(model: &str) -> crate::config::Config {
@@ -400,11 +411,8 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
         }
         Err(crate::error::Error::NoModelConfigured) => {
             let thinking_state = crate::providers::ThinkingState::new(false, None);
-            (
-                None,
-                thinking_state,
-                Some(NO_MODEL_CONFIGURED_MESSAGE.red().to_string()),
-            )
+            let msg = show_no_providers_or_model_configured();
+            (None, thinking_state, Some(msg.red().to_string()))
         }
         Err(e) => {
             terminal::println_above(&format!("Error: {}", e).red().to_string());
@@ -592,7 +600,7 @@ async fn run_event_loop(
     // Submit initial prompt if provided
     if let Some(prompt) = initial_prompt {
         if provider_manager.is_none() {
-            show_no_model_configured();
+            print_no_providers_or_model_configured();
             if batch {
                 return Ok(());
             }
@@ -2004,7 +2012,7 @@ async fn run_event_loop(
                                 prompt_box.draw(&input_state, false)?;
 
                                 echo_user_prompt_to_output(&prompt, &images);
-                                show_no_model_configured();
+                                print_no_providers_or_model_configured();
 
                                 prompt_box.draw(&input_state, true)?;
                                 continue;
@@ -3038,7 +3046,7 @@ async fn process_input(
                         | Command::Tools
                 )
             {
-                show_no_model_configured();
+                print_no_providers_or_model_configured();
                 return ProcessResult::Continue;
             }
 
@@ -3293,7 +3301,7 @@ async fn handle_command(
 
         Command::DumpPrompt => {
             let Some(provider_manager) = provider_manager.as_mut() else {
-                show_no_model_configured();
+                print_no_providers_or_model_configured();
                 return None;
             };
 
@@ -3317,7 +3325,7 @@ async fn handle_command(
 
         Command::ClaudeCountTokens => {
             let Some(provider_manager) = provider_manager.as_mut() else {
-                show_no_model_configured();
+                print_no_providers_or_model_configured();
                 return None;
             };
 

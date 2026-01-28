@@ -13,6 +13,8 @@ use std::path::Path;
 use serde_json::Value as JsonValue;
 use walkdir::WalkDir;
 
+use crate::config;
+
 /// A custom command loaded from a markdown file.
 #[derive(Debug, Clone)]
 pub(crate) struct CustomCommand {
@@ -55,11 +57,9 @@ pub(crate) fn load_custom_commands() -> io::Result<Vec<CustomCommand>> {
     }
 
     // 4. Config directory ~/.config/henri/commands
-    if let Some(home) = std::env::var_os("HOME") {
-        let mut config_dir = std::path::PathBuf::from(home);
-        config_dir.push(".config/henri/commands");
-        search_dirs.push((config_dir, "(~/.config/henri)"));
-    }
+    let mut config_dir = config::config_dir();
+    config_dir.push("commands");
+    search_dirs.push((config_dir, "(config-dir)"));
 
     // 5. OpenCode directory ~/.config/opencode/command
     if let Some(home) = std::env::var_os("HOME") {

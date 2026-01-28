@@ -69,6 +69,13 @@ struct Args {
     #[command(subcommand)]
     command: Option<Command>,
 
+    #[arg(
+        long = "config-dir",
+        value_name = "DIR",
+        help = "Alternate configuration directory (default: ~/.config/henri)"
+    )]
+    config_dir: Option<PathBuf>,
+
     #[arg(short, long, help = "Model to use (e.g., claude/claude-sonnet-4-5)")]
     model: Option<String>,
 
@@ -214,6 +221,8 @@ enum ToolCommand {
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
+
+    config::set_config_dir_override(args.config_dir.clone());
 
     // Handle subcommands first
     if let Some(command) = &args.command {

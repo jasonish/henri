@@ -520,6 +520,8 @@ impl ProviderManager {
         let (current_provider, current_model_id, current_custom_provider) =
             parse_model_spec(&config.model);
 
+        crate::config::persist_last_used_model(&config.model);
+
         Self {
             zen_provider,
             antigravity_providers,
