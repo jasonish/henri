@@ -266,28 +266,22 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
                 .trim();
 
             // Tool-call banners render best as a single line. If the model provides a multi-line
-            // script, summarize it to avoid newlines breaking the UI layout.
+            // script, render the full command while keeping it on one line by replacing
+            // newlines with a visible separator.
             if command.contains('\n') {
-                let mut lines = command.lines().map(str::trim).filter(|l| !l.is_empty());
-                let first_line = lines.next().unwrap_or("command");
-                let line_count = command.lines().count();
+                let lines: Vec<&str> = command
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .collect();
 
-                let mut preview = first_line.to_string();
-                const MAX_PREVIEW: usize = 120;
-                if preview.len() > MAX_PREVIEW {
-                    preview.truncate(MAX_PREVIEW);
-                    preview.push('…');
-                }
+                // Keep the banner to a single terminal line by making newlines explicit.
+                // Use an ASCII-friendly marker so it renders everywhere.
+                let preview = lines.join(" \\n ");
 
-                format!("Running bash ({} lines): {}", line_count, preview)
+                format!("Running bash: {}", preview)
             } else {
-                let mut preview = command.to_string();
-                const MAX_PREVIEW: usize = 160;
-                if preview.len() > MAX_PREVIEW {
-                    preview.truncate(MAX_PREVIEW);
-                    preview.push('…');
-                }
-                format!("Running: {}", preview)
+                format!("Running: {}", command)
             }
         }
         "file_read" => {
