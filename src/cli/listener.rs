@@ -1699,7 +1699,13 @@ impl CliListener {
                         state.in_tool_block = true;
                     } else {
                         // Subsequent tool call: ensure it starts on its own line.
-                        terminal::ensure_line_break();
+                        // If an info message was printed in between tool calls (e.g. LSP activated),
+                        // add a blank line for readability.
+                        if matches!(state.last_block, Some(LastBlock::Info)) {
+                            terminal::ensure_trailing_newlines(2);
+                        } else {
+                            terminal::ensure_line_break();
+                        }
                     }
 
                     let text = format!("▶ {}", description);
