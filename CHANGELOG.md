@@ -62,6 +62,7 @@
 - CLI: After switching models and running `/clear`, auto-compaction no longer
   triggers immediately due to stale usage data
 - CLI: Ctrl+D now behaves like Delete when input is not empty
+- CLI: Ctrl+R search deduplicates history and includes queued prompts immediately
 - CLI: Thinking blocks with no emitted content now render as "Thinking..." on their own line
   (no stray "[thinking with no data]" in the prompt area, and no extra blank lines before text)
 - OpenAI provider: Retry transient errors from Codex API with exponential backoff

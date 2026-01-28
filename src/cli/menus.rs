@@ -1682,9 +1682,17 @@ pub(super) struct HistorySearchState {
 
 impl HistorySearchState {
     /// Create a new history search state from a FileHistory
-    pub fn new(history: &crate::history::FileHistory) -> Self {
-        // Get entries in reverse order (most recent first)
-        let entries: Vec<String> = history.entries().iter().rev().cloned().collect();
+    pub(super) fn new(history: &crate::history::FileHistory) -> Self {
+        // Get entries in reverse order (most recent first) and deduplicate
+        // while preserving order (keeps most recent occurrence of each entry)
+        let mut seen = std::collections::HashSet::new();
+        let entries: Vec<String> = history
+            .entries()
+            .iter()
+            .rev()
+            .filter(|entry| seen.insert(entry.as_str()))
+            .cloned()
+            .collect();
         Self {
             entries,
             selected_index: 0,

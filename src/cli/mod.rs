@@ -29,6 +29,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use colored::Colorize;
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -102,6 +104,19 @@ fn echo_user_prompt_to_output(prompt: &str, pasted_images: &[PastedImage]) {
     );
     terminal::print_above(&rendered);
     listener::CliListener::note_user_prompt_printed();
+}
+
+fn pasted_images_to_history_images(
+    pasted_images: &[PastedImage],
+) -> Vec<crate::history::HistoryImage> {
+    pasted_images
+        .iter()
+        .map(|img| crate::history::HistoryImage {
+            marker: img.marker.clone(),
+            mime_type: img.mime_type.clone(),
+            data: STANDARD.encode(&img.data),
+        })
+        .collect()
 }
 
 struct PendingPrompt {
@@ -904,7 +919,11 @@ async fn run_event_loop(
                                     .to_string(),
                                 );
 
-                                prompt_box.draw(&input_state, true)?;
+                                if let Some(ref menu) = history_search {
+                                    prompt_box.draw_with_history_search(&input_state, menu)?;
+                                } else {
+                                    prompt_box.draw(&input_state, true)?;
+                                }
 
                                 if let Some(ref pm) = provider_manager {
                                     update_prompt_status(
@@ -924,8 +943,7 @@ async fn run_event_loop(
                     if let Some(next) = pending_prompts.pop_front()
                         && let Some(pm) = provider_manager.take()
                     {
-                        // Save to history
-                        let _ = prompt_history.add_with_images(&next.input, vec![]);
+                        // Note: prompt was already added to history when queued
 
                         // Draw prompt first so it's visible for spawn_chat_task's println_above
                         prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
@@ -938,6 +956,8 @@ async fn run_event_loop(
                             thinking_state,
                             output,
                         ));
+                    } else if let Some(ref menu) = history_search {
+                        prompt_box.draw_with_history_search(&input_state, menu)?;
                     } else {
                         prompt_box.draw(&input_state, true)?;
                     }
@@ -950,7 +970,11 @@ async fn run_event_loop(
                         output,
                         "Chat task failed unexpectedly and did not return. Please retry.",
                     );
-                    prompt_box.draw(&input_state, true)?;
+                    if let Some(ref menu) = history_search {
+                        prompt_box.draw_with_history_search(&input_state, menu)?;
+                    } else {
+                        prompt_box.draw(&input_state, true)?;
+                    }
                 }
                 Err(oneshot::error::TryRecvError::Empty) => {
                     // Still running, continue
@@ -1884,9 +1908,17 @@ async fn run_event_loop(
                             if chatting && editing_pending_prompt.is_some() {
                                 // Replace the original with the edited version.
                                 editing_pending_prompt = None;
+
+                                let pasted_images = input_state.active_images();
+
+                                // Add edited prompt to history immediately
+                                let history_images =
+                                    pasted_images_to_history_images(&pasted_images);
+                                let _ = prompt_history.add_with_images(&content, history_images);
+
                                 pending_prompts.push_back(PendingPrompt {
                                     input: content,
-                                    images: input_state.active_images(),
+                                    images: pasted_images,
                                 });
                                 input_state.clear();
                                 prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
@@ -1943,6 +1975,11 @@ async fn run_event_loop(
                                 }
 
                                 let pasted_images = input_state.active_images();
+
+                                // Add to history immediately so it's available for Ctrl+R
+                                let history_images =
+                                    pasted_images_to_history_images(&pasted_images);
+                                let _ = prompt_history.add_with_images(&content, history_images);
 
                                 pending_prompts.push_back(PendingPrompt {
                                     input: content,
