@@ -48,6 +48,7 @@
 
 ### Fixed
 
+- CLI: Wrapped output no longer starts a new line with whitespace when wrapping occurs at a space/tab boundary
 - CLI: The `show-diffs` config setting is now respected; file diffs are only
   rendered when enabled (works in both interactive and batch modes)
 - Antigravity provider: Strip unsupported JSON Schema fields (like `$schema`) from

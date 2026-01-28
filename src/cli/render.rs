@@ -926,6 +926,7 @@ pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
         }
     };
 
+    let mut skipping_leading_ws_after_wrap = false;
     for ch in text.chars() {
         match ch {
             '\n' => {
@@ -938,6 +939,7 @@ pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
                 );
                 lines.push(std::mem::take(&mut current_line));
                 current_width = 0;
+                skipping_leading_ws_after_wrap = false;
             }
             ' ' | '\t' => {
                 flush_word(
@@ -947,15 +949,26 @@ pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
                     &mut word,
                     &mut word_width,
                 );
+
                 let ch_width = display_width(&ch.to_string());
+
                 if current_width + ch_width > width {
                     lines.push(std::mem::take(&mut current_line));
                     current_width = 0;
+                    skipping_leading_ws_after_wrap = true;
+                    continue;
                 }
+
+                if skipping_leading_ws_after_wrap && current_width == 0 && current_line.is_empty() {
+                    continue;
+                }
+
                 current_line.push(ch);
                 current_width += ch_width;
+                skipping_leading_ws_after_wrap = false;
             }
             _ => {
+                skipping_leading_ws_after_wrap = false;
                 word.push(ch);
                 word_width += char_width(ch);
             }
@@ -996,6 +1009,15 @@ mod tests {
     fn test_wrap_text_break() {
         let result = wrap_text("hello world", 8);
         assert_eq!(result, vec!["hello ", "world"]);
+    }
+
+    #[test]
+    fn test_wrap_text_does_not_start_wrapped_line_with_spaces() {
+        let result = wrap_text("abcd ef", 4);
+        assert_eq!(result, vec!["abcd", "ef"]);
+
+        let result = wrap_text("abcd  ef", 4);
+        assert_eq!(result, vec!["abcd", "ef"]);
     }
 
     #[test]
