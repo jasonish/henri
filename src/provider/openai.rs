@@ -304,6 +304,8 @@ impl OpenAiProvider {
                             ContentBlock::ToolResult {
                                 tool_use_id,
                                 content,
+                                data,
+                                mime_type,
                                 ..
                             } => {
                                 if !content_parts.is_empty() {
@@ -314,10 +316,27 @@ impl OpenAiProvider {
                                     });
                                     content_parts.clear();
                                 }
+
+                                // Build output with text content and optional image.
+                                let mut output_parts: Vec<serde_json::Value> =
+                                    vec![serde_json::json!({
+                                        "type": "input_text",
+                                        "text": content
+                                    })];
+
+                                // If there's image data, include it as an input_image part.
+                                if let (Some(image_data), Some(mime)) = (data, mime_type) {
+                                    output_parts.push(serde_json::json!({
+                                        "type": "input_image",
+                                        "detail": "auto",
+                                        "image_url": format!("data:{};base64,{}", mime, image_data)
+                                    }));
+                                }
+
                                 input_items.push(CodexInputItem {
                                     kind: "function_call_output".to_string(),
                                     call_id: Some(tool_use_id.clone()),
-                                    output: Some(serde_json::json!(content)),
+                                    output: Some(serde_json::json!(output_parts)),
                                     ..Default::default()
                                 });
                             }

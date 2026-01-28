@@ -167,6 +167,10 @@ pub(crate) enum SerializableContentBlock {
         #[serde(default)]
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
     },
     Summary {
         summary: String,
@@ -225,10 +229,14 @@ impl From<&ContentBlock> for SerializableContentBlock {
                 tool_use_id,
                 content,
                 is_error,
+                data,
+                mime_type,
             } => SerializableContentBlock::ToolResult {
                 tool_use_id: tool_use_id.clone(),
                 content: content.clone(),
                 is_error: *is_error,
+                data: data.clone(),
+                mime_type: mime_type.clone(),
             },
             ContentBlock::Summary {
                 summary,
@@ -306,10 +314,14 @@ impl From<&SerializableContentBlock> for ContentBlock {
                 tool_use_id,
                 content,
                 is_error,
+                data,
+                mime_type,
             } => ContentBlock::ToolResult {
                 tool_use_id: tool_use_id.clone(),
                 content: content.clone(),
                 is_error: *is_error,
+                data: data.clone(),
+                mime_type: mime_type.clone(),
             },
             SerializableContentBlock::Summary {
                 summary,
@@ -856,6 +868,7 @@ fn collect_tool_results(
                 tool_use_id,
                 is_error,
                 content,
+                ..
             } = block
             {
                 results.insert(tool_use_id.clone(), (*is_error, content.clone()));
@@ -1016,6 +1029,8 @@ mod tests {
                             tool_use_id: "tool1".to_string(),
                             content: "hi\n".to_string(),
                             is_error: false,
+                            data: None,
+                            mime_type: None,
                         },
                         SerializableContentBlock::Text {
                             text: "Done".to_string(),
@@ -1258,6 +1273,7 @@ mod tests {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } => {
                 assert_eq!(tool_use_id, "toolu_123");
                 assert_eq!(content, "success");
@@ -1289,6 +1305,8 @@ mod tests {
                     tool_use_id: "toolu_123".to_string(),
                     content: "file1.txt\nfile2.txt".to_string(),
                     is_error: false,
+                    data: None,
+                    mime_type: None,
                 }]),
             },
             Message::assistant_blocks(vec![ContentBlock::Text {
@@ -1324,6 +1342,7 @@ mod tests {
                     tool_use_id,
                     content,
                     is_error,
+                    ..
                 } => {
                     assert_eq!(tool_use_id, "toolu_123");
                     assert_eq!(content, "file1.txt\nfile2.txt");

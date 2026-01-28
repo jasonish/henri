@@ -400,19 +400,38 @@ impl AntigravityProvider {
                                 tool_use_id,
                                 content,
                                 is_error,
+                                data,
+                                mime_type,
                             } => {
                                 // Use Gemini-style functionResponse for all models
                                 // Include id field for Claude model translation
-                                parts.push(serde_json::json!({
+                                let mut func_response = serde_json::json!({
                                     "functionResponse": {
                                         "id": tool_use_id,
                                         "name": tool_use_id,
                                         "response": {
-                                            "result": content,
-                                            "error": is_error
+                                            "output": content
                                         }
                                     }
-                                }));
+                                });
+
+                                // For image results, add the inlineData parts.
+                                if let (Some(image_data), Some(mime)) = (data, mime_type) {
+                                    func_response["functionResponse"]["parts"] = serde_json::json!([{
+                                        "inlineData": {
+                                            "mimeType": mime,
+                                            "data": image_data
+                                        }
+                                    }]);
+                                }
+
+                                // Add error field if this is an error result.
+                                if *is_error {
+                                    func_response["functionResponse"]["response"]["error"] =
+                                        serde_json::json!(true);
+                                }
+
+                                parts.push(func_response);
                             }
                             ContentBlock::Summary {
                                 summary,

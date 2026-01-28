@@ -182,6 +182,8 @@ pub(crate) async fn run_chat_iteration<P: Provider>(
                     tool_use_id: tool_call.id.clone(),
                     content: tool_result.content,
                     is_error: tool_result.is_error,
+                    data: tool_result.data,
+                    mime_type: tool_result.mime_type,
                 });
             }
             None => {
@@ -199,6 +201,8 @@ pub(crate) async fn run_chat_iteration<P: Provider>(
                     tool_use_id: tool_call.id.clone(),
                     content: error_msg,
                     is_error: true,
+                    data: None,
+                    mime_type: None,
                 });
             }
         }

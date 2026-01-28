@@ -66,7 +66,7 @@ impl Tool for FileEdit {
 
         let input: FileEditInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return e,
+            Err(e) => return *e,
         };
 
         // Validate that old_string != new_string
@@ -83,10 +83,10 @@ impl Tool for FileEdit {
         let path = Path::new(&expanded_path);
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &input.file_path) {
-            return e;
+            return *e;
         }
         if let Err(e) = super::validate_is_file(tool_use_id, path, &input.file_path) {
-            return e;
+            return *e;
         }
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));

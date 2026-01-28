@@ -76,7 +76,7 @@ impl Tool for FileWrite {
 
         let input: FileWriteInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return e,
+            Err(e) => return *e,
         };
 
         let expanded_path = super::expand_tilde(&input.file_path);

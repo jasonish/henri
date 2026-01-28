@@ -47,7 +47,7 @@ impl Tool for FileDelete {
 
         let input: FileDeleteInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return e,
+            Err(e) => return *e,
         };
 
         let expanded_path = super::expand_tilde(&input.file_path);
@@ -60,7 +60,7 @@ impl Tool for FileDelete {
         }
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &input.file_path) {
-            return e;
+            return *e;
         }
 
         if path.is_dir() {

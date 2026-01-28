@@ -48,17 +48,17 @@ impl Tool for ListDir {
     ) -> ToolResult {
         let input: ListDirInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return e,
+            Err(e) => return *e,
         };
 
         let dir_path = super::expand_tilde(input.path.as_deref().unwrap_or("."));
         let path = Path::new(&dir_path);
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &dir_path) {
-            return e;
+            return *e;
         }
         if let Err(e) = super::validate_is_directory(tool_use_id, path, &dir_path) {
-            return e;
+            return *e;
         }
 
         let entries = match fs::read_dir(path) {

@@ -64,6 +64,7 @@ fn extract_tool_results(msg: &Message) -> HashMap<String, ToolResultInfo> {
                 tool_use_id,
                 content,
                 is_error,
+                ..
             } = block
             {
                 results.insert(
@@ -413,6 +414,8 @@ mod tests {
                     tool_use_id: "tool_123".to_string(),
                     content: "file1.rs\nfile2.rs".to_string(),
                     is_error: false,
+                    data: None,
+                    mime_type: None,
                 }]),
             },
         ];
@@ -450,6 +453,8 @@ mod tests {
                     tool_use_id: "tool_456".to_string(),
                     content: "File not found".to_string(),
                     is_error: true,
+                    data: None,
+                    mime_type: None,
                 }]),
             },
         ];
@@ -570,11 +575,15 @@ mod tests {
                         tool_use_id: "tool_1".to_string(),
                         content: "Content of a.txt".to_string(),
                         is_error: false,
+                        data: None,
+                        mime_type: None,
                     },
                     ContentBlock::ToolResult {
                         tool_use_id: "tool_2".to_string(),
                         content: "Content of b.txt".to_string(),
                         is_error: false,
+                        data: None,
+                        mime_type: None,
                     },
                 ]),
             },

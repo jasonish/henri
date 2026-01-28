@@ -58,7 +58,7 @@ impl Tool for Fetch {
     ) -> ToolResult {
         let input: FetchInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return e,
+            Err(e) => return *e,
         };
 
         if url::Url::parse(&input.url).is_err() {

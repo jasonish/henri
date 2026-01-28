@@ -248,7 +248,7 @@ Web content fetching:
     ) -> ToolResult {
         let input: BashInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return e,
+            Err(e) => return *e,
         };
 
         let timeout_secs = input.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
@@ -423,6 +423,8 @@ Web content fetching:
                         is_error: false,
                         exit_code: Some(exit_code),
                         summary,
+                        data: None,
+                        mime_type: None,
                     }
                 } else if content.is_empty() {
                     ToolResult {
@@ -432,6 +434,8 @@ Web content fetching:
                         is_error: true,
                         exit_code: Some(exit_code),
                         summary,
+                        data: None,
+                        mime_type: None,
                     }
                 } else {
                     let error_output = format!("{}\n[Exit code: {}]", content, exit_code);
@@ -442,6 +446,8 @@ Web content fetching:
                         is_error: true,
                         exit_code: Some(exit_code),
                         summary,
+                        data: None,
+                        mime_type: None,
                     }
                 }
             }

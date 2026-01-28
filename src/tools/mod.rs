@@ -61,6 +61,10 @@ pub(crate) struct ToolResult {
     #[serde(rename = "type")]
     pub kind: String,
     pub content: String,
+    /// Optional base64-encoded binary data (e.g., for images).
+    pub data: Option<String>,
+    /// MIME type for the data field (e.g., "image/png").
+    pub mime_type: Option<String>,
     pub is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
@@ -77,6 +81,8 @@ impl ToolResult {
             is_error: false,
             exit_code: None,
             summary: None,
+            data: None,
+            mime_type: None,
         }
     }
 
@@ -88,11 +94,23 @@ impl ToolResult {
             is_error: true,
             exit_code: None,
             summary: None,
+            data: None,
+            mime_type: None,
         }
     }
 
     pub(crate) fn with_summary(mut self, summary: impl Into<String>) -> Self {
         self.summary = Some(summary.into());
+        self
+    }
+
+    pub(crate) fn with_data(mut self, data: impl Into<String>) -> Self {
+        self.data = Some(data.into());
+        self
+    }
+
+    pub(crate) fn with_mime_type(mut self, mime_type: impl Into<String>) -> Self {
+        self.mime_type = Some(mime_type.into());
         self
     }
 }
@@ -116,9 +134,13 @@ pub(crate) trait Tool: Send + Sync {
 pub(crate) fn deserialize_input<T: serde::de::DeserializeOwned>(
     tool_use_id: &str,
     input: serde_json::Value,
-) -> Result<T, ToolResult> {
-    serde_json::from_value(input)
-        .map_err(|e| ToolResult::error(tool_use_id, format!("Invalid input: {}", e)))
+) -> Result<T, Box<ToolResult>> {
+    serde_json::from_value(input).map_err(|e| {
+        Box::new(ToolResult::error(
+            tool_use_id,
+            format!("Invalid input: {}", e),
+        ))
+    })
 }
 
 /// Validate that a path exists, returning an error ToolResult if not
@@ -126,12 +148,12 @@ pub(crate) fn validate_path_exists(
     tool_use_id: &str,
     path: &std::path::Path,
     path_str: &str,
-) -> Result<(), ToolResult> {
+) -> Result<(), Box<ToolResult>> {
     if !path.exists() {
-        Err(ToolResult::error(
+        Err(Box::new(ToolResult::error(
             tool_use_id,
             format!("Path not found: {}", path_str),
-        ))
+        )))
     } else {
         Ok(())
     }
@@ -142,12 +164,12 @@ pub(crate) fn validate_is_directory(
     tool_use_id: &str,
     path: &std::path::Path,
     path_str: &str,
-) -> Result<(), ToolResult> {
+) -> Result<(), Box<ToolResult>> {
     if !path.is_dir() {
-        Err(ToolResult::error(
+        Err(Box::new(ToolResult::error(
             tool_use_id,
             format!("Path is not a directory: {}", path_str),
-        ))
+        )))
     } else {
         Ok(())
     }
@@ -158,12 +180,12 @@ pub(crate) fn validate_is_file(
     tool_use_id: &str,
     path: &std::path::Path,
     path_str: &str,
-) -> Result<(), ToolResult> {
+) -> Result<(), Box<ToolResult>> {
     if !path.is_file() {
-        Err(ToolResult::error(
+        Err(Box::new(ToolResult::error(
             tool_use_id,
             format!("Path is not a file: {}", path_str),
-        ))
+        )))
     } else {
         Ok(())
     }

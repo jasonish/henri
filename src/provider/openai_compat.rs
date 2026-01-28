@@ -519,7 +519,9 @@ fn build_messages(messages: &[Message]) -> Vec<serde_json::Value> {
                 }
                 MessageContent::Blocks(blocks) => {
                     let mut tool_calls = Vec::new();
-                    let mut tool_results = Vec::new();
+                    // (tool_use_id, content, data, mime_type)
+                    let mut tool_results: Vec<(String, String, Option<String>, Option<String>)> =
+                        Vec::new();
                     let mut content_parts = Vec::new();
 
                     for block in blocks {
@@ -553,9 +555,16 @@ fn build_messages(messages: &[Message]) -> Vec<serde_json::Value> {
                             ContentBlock::ToolResult {
                                 tool_use_id,
                                 content,
+                                data,
+                                mime_type,
                                 ..
                             } => {
-                                tool_results.push((tool_use_id.clone(), content.clone()));
+                                tool_results.push((
+                                    tool_use_id.clone(),
+                                    content.clone(),
+                                    data.clone(),
+                                    mime_type.clone(),
+                                ));
                             }
                             ContentBlock::Summary {
                                 summary,
@@ -573,7 +582,27 @@ fn build_messages(messages: &[Message]) -> Vec<serde_json::Value> {
                     if !tool_results.is_empty() {
                         return tool_results
                             .into_iter()
-                            .map(|(id, content)| {
+                            .map(|(id, text_content, data, mime_type)| {
+                                // Build content with text and optional image.
+                                let content = if let (Some(image_data), Some(mime)) =
+                                    (data, mime_type)
+                                {
+                                    serde_json::json!([
+                                        {
+                                            "type": "text",
+                                            "text": text_content
+                                        },
+                                        {
+                                            "type": "image_url",
+                                            "image_url": {
+                                                "url": format!("data:{};base64,{}", mime, image_data),
+                                                "detail": "auto"
+                                            }
+                                        }
+                                    ])
+                                } else {
+                                    serde_json::json!(text_content)
+                                };
                                 serde_json::json!({
                                     "role": "tool",
                                     "tool_call_id": id,

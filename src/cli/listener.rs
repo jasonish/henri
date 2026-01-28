@@ -1798,8 +1798,12 @@ impl CliListener {
                 // We intentionally avoid printing a trailing newline here.
                 // Leaving the cursor at end-of-line prevents a "dangling" empty line
                 // above the prompt when a turn ends with just a tool call.
+                // If there's a summary and we're still on the tool header line,
+                // force a newline so the summary appears on its own line.
+                let force_newline = pending_tool_line && summary.is_some();
+
                 let text = if *is_error {
-                    if pending_tool_line {
+                    if pending_tool_line && !force_newline {
                         format!(" {}{}{}", "✗".red(), exit_code_suffix, summary_suffix)
                     } else {
                         format!("{}{}{}", "✗".red(), exit_code_suffix, summary_suffix)
@@ -1807,17 +1811,19 @@ impl CliListener {
                 } else if diff_shown {
                     // Diff already showed checkmark.
                     String::new()
-                } else if pending_tool_line {
+                } else if pending_tool_line && !force_newline {
                     format!(" {}{}", "✓".green(), summary_suffix)
                 } else {
                     format!("{}{}", "✓".green(), summary_suffix)
                 };
 
                 if !text.is_empty() {
-                    if !pending_tool_line {
+                    if !pending_tool_line || force_newline {
                         if terminal::prompt_visible() {
                             if tool_output_active {
                                 terminal::ensure_line_break();
+                            } else if force_newline {
+                                terminal::print_above("\n");
                             }
                         } else {
                             // In batch mode, tool output is printed directly. Make sure the

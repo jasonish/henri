@@ -55,6 +55,12 @@ pub(crate) enum ContentBlock {
         content: String,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
+        /// Optional base64-encoded binary data (e.g., for images).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
+        /// MIME type for the data field (e.g., "image/png").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mime_type: Option<String>,
     },
     Summary {
         summary: String,
@@ -323,6 +329,8 @@ mod tests {
                 tool_use_id: "id".to_string(),
                 content: "result".to_string(),
                 is_error: false,
+                data: None,
+                mime_type: None,
             }]),
         };
         assert!(tool_result_msg.is_tool_result_only());
@@ -338,6 +346,8 @@ mod tests {
                     tool_use_id: "id".to_string(),
                     content: "result".to_string(),
                     is_error: false,
+                    data: None,
+                    mime_type: None,
                 },
             ]),
         };
@@ -357,6 +367,8 @@ mod tests {
                 tool_use_id: "id".to_string(),
                 content: "result".to_string(),
                 is_error: false,
+                data: None,
+                mime_type: None,
             }]),
         };
         assert!(!assistant_tool_result.is_tool_result_only());
@@ -388,6 +400,8 @@ mod tests {
                     tool_use_id: "1".into(),
                     content: "file.txt".into(),
                     is_error: false,
+                    data: None,
+                    mime_type: None,
                 }]),
             },
             Message::assistant_text("Found file.txt"),
@@ -462,6 +476,8 @@ mod tests {
                     tool_use_id: "1".into(),
                     content: "file.txt".into(),
                     is_error: false,
+                    data: None,
+                    mime_type: None,
                 }]),
             },
             Message::assistant_text("Found file.txt"),

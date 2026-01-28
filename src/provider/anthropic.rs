@@ -439,6 +439,8 @@ impl AnthropicProvider {
                             tool_use_id,
                             content,
                             is_error,
+                            data,
+                            mime_type,
                         } = block
                         {
                             let api_content = if *is_error && content.is_empty() {
@@ -447,10 +449,31 @@ impl AnthropicProvider {
                                 content.as_str()
                             };
 
+                            // Build content - either a string or an array with text + image
+                            let content_value =
+                                if let (Some(image_data), Some(mime)) = (data, mime_type) {
+                                    serde_json::json!([
+                                        {
+                                            "type": "text",
+                                            "text": api_content
+                                        },
+                                        {
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": mime,
+                                                "data": image_data
+                                            }
+                                        }
+                                    ])
+                                } else {
+                                    serde_json::json!(api_content)
+                                };
+
                             let mut obj = serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": tool_use_id,
-                                "content": api_content
+                                "content": content_value
                             });
                             if *is_error {
                                 obj["is_error"] = serde_json::json!(true);
@@ -469,6 +492,8 @@ impl AnthropicProvider {
                                 tool_use_id,
                                 content,
                                 is_error,
+                                data,
+                                mime_type,
                             } = block
                             {
                                 let api_content = if *is_error && content.is_empty() {
@@ -477,10 +502,31 @@ impl AnthropicProvider {
                                     content.as_str()
                                 };
 
+                                // Build content - either a string or an array with text + image
+                                let content_value =
+                                    if let (Some(image_data), Some(mime)) = (data, mime_type) {
+                                        serde_json::json!([
+                                            {
+                                                "type": "text",
+                                                "text": api_content
+                                            },
+                                            {
+                                                "type": "image",
+                                                "source": {
+                                                    "type": "base64",
+                                                    "media_type": mime,
+                                                    "data": image_data
+                                                }
+                                            }
+                                        ])
+                                    } else {
+                                        serde_json::json!(api_content)
+                                    };
+
                                 let mut obj = serde_json::json!({
                                     "type": "tool_result",
                                     "tool_use_id": tool_use_id,
-                                    "content": api_content
+                                    "content": content_value
                                 });
                                 if *is_error {
                                     obj["is_error"] = serde_json::json!(true);
@@ -559,6 +605,8 @@ impl AnthropicProvider {
                                 tool_use_id,
                                 content,
                                 is_error,
+                                data,
+                                mime_type,
                             } => {
                                 // Anthropic API requires non-empty content when is_error is true
                                 let api_content = if *is_error && content.is_empty() {
@@ -567,10 +615,33 @@ impl AnthropicProvider {
                                     content.as_str()
                                 };
 
+                                // Build content - either a string or an array with text + image
+                                let content_value = if let (Some(image_data), Some(mime)) =
+                                    (data, mime_type)
+                                {
+                                    // Include both text and image in content array
+                                    serde_json::json!([
+                                        {
+                                            "type": "text",
+                                            "text": api_content
+                                        },
+                                        {
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": mime,
+                                                "data": image_data
+                                            }
+                                        }
+                                    ])
+                                } else {
+                                    serde_json::json!(api_content)
+                                };
+
                                 let mut obj = serde_json::json!({
                                     "type": "tool_result",
                                     "tool_use_id": tool_use_id,
-                                    "content": api_content
+                                    "content": content_value
                                 });
                                 if *is_error {
                                     obj["is_error"] = serde_json::json!(true);

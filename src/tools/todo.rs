@@ -129,7 +129,7 @@ impl Tool for TodoWrite {
     ) -> ToolResult {
         let input: TodoWriteInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return e,
+            Err(e) => return *e,
         };
 
         // Update the global state

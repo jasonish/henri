@@ -58,7 +58,7 @@ impl Tool for Glob {
     ) -> ToolResult {
         let input: GlobInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return e,
+            Err(e) => return *e,
         };
 
         let base_path = super::expand_tilde(input.path.as_deref().unwrap_or("."));
@@ -66,10 +66,10 @@ impl Tool for Glob {
         let limit = input.limit.unwrap_or(DEFAULT_LIMIT);
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &base_path) {
-            return e;
+            return *e;
         }
         if let Err(e) = super::validate_is_directory(tool_use_id, path, &base_path) {
-            return e;
+            return *e;
         }
 
         // Build the full pattern by combining path and pattern
