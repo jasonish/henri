@@ -181,6 +181,20 @@ enum ToolCommand {
         #[arg(long)]
         include_hidden: bool,
     },
+    /// Test the file_read tool to read file contents
+    #[command(alias = "file_read")]
+    FileRead {
+        /// The path to the file to read
+        filename: String,
+
+        /// 0-based line number to start reading from
+        #[arg(short, long)]
+        offset: Option<usize>,
+
+        /// Maximum number of lines to read
+        #[arg(short, long)]
+        limit: Option<usize>,
+    },
 }
 
 #[tokio::main]
@@ -234,6 +248,13 @@ async fn main() -> std::io::Result<()> {
                         *include_hidden,
                     )
                     .await;
+                }
+                ToolCommand::FileRead {
+                    filename,
+                    offset,
+                    limit,
+                } => {
+                    return handle_file_read_command(filename.clone(), *offset, *limit).await;
                 }
             },
             Command::Upgrade => {
@@ -334,6 +355,35 @@ async fn handle_grep_command(
         std::process::exit(1);
     } else {
         print!("{}", result.content);
+    }
+
+    Ok(())
+}
+
+async fn handle_file_read_command(
+    filename: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> std::io::Result<()> {
+    use tools::Tool;
+
+    let file_read_tool = tools::FileRead;
+    let input = serde_json::json!({
+        "filename": filename,
+        "offset": offset,
+        "limit": limit,
+    });
+
+    let output = output::OutputContext::new_quiet();
+    let services = services::Services::new();
+    let result = file_read_tool
+        .execute("file-read-test", input, &output, &services)
+        .await;
+
+    println!("{}", serde_json::to_string(&result).unwrap());
+
+    if result.is_error {
+        std::process::exit(result.exit_code.unwrap_or(1));
     }
 
     Ok(())

@@ -4,6 +4,7 @@
 
 ### Added
 
+- CLI: `henri tool file_read` subcommand for testing the file_read tool
 - CLI: Set terminal title to show 🐕 and current directory
 - Zen: Add support for kimi-k2.5 model
 - CLI: `/provider` slash command to add/remove providers via interactive menu
@@ -24,6 +25,8 @@
 
 ### Changed
 
+- Tools: Refactor `file_read` to remove per-line truncation; output limited by
+  total size (50KB) and line count (2000) only
 - Providers: Deduplicate `model#variant` parsing/cycling helpers
 - Tools: Factor shared LSP diagnostics handling for `file_edit`/`file_write`
 - Tools: Render full multi-line `bash` commands in tool-call banners (newlines shown as `\\n`)
