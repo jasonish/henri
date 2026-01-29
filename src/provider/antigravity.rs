@@ -557,7 +557,7 @@ impl AntigravityProvider {
         );
         headers.insert(
             "User-Agent".to_string(),
-            "antigravity/1.11.5 windows/amd64".to_string(),
+            "antigravity/1.15.8 windows/amd64".to_string(),
         );
         headers.insert(
             "X-Goog-Api-Client".to_string(),
