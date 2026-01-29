@@ -604,7 +604,6 @@ impl OpenAiProvider {
         let mut thinking = output::ThinkingState::new(output);
         let mut raw_events: Vec<serde_json::Value> = Vec::new();
         let streaming_start = std::time::Instant::now();
-        let mut char_count = 0usize;
         let mut reasoning_summary = String::new();
         let mut encrypted_content: Option<String> = None;
 
@@ -687,41 +686,12 @@ impl OpenAiProvider {
                     thinking.end();
                     output::print_text(output, delta);
                     full_text.push_str(delta);
-                    char_count += delta.chars().count();
-
-                    // Emit progress every ~50 chars
-                    if char_count.is_multiple_of(50) {
-                        let duration = streaming_start.elapsed().as_secs_f64();
-                        let estimated_tokens = (char_count / 4) as u64;
-                        if duration > 0.0 && estimated_tokens > 0 {
-                            let tokens_per_sec = estimated_tokens as f64 / duration;
-                            output::emit_working_progress(
-                                output,
-                                estimated_tokens,
-                                duration,
-                                tokens_per_sec,
-                            );
-                        }
-                    }
                 }
             } else if event_type.contains("output_text.done") {
                 if let Some(text) = event.get("output_text").and_then(|d| d.as_str()) {
                     thinking.end();
                     output::print_text(output, text);
                     full_text.push_str(text);
-                    char_count += text.chars().count();
-
-                    let duration = streaming_start.elapsed().as_secs_f64();
-                    let estimated_tokens = (char_count / 4) as u64;
-                    if duration > 0.0 && estimated_tokens > 0 {
-                        let tokens_per_sec = estimated_tokens as f64 / duration;
-                        output::emit_working_progress(
-                            output,
-                            estimated_tokens,
-                            duration,
-                            tokens_per_sec,
-                        );
-                    }
                 }
             } else if event_type.contains("function_call_arguments.delta")
                 || event_type.contains("output_tool_call")
@@ -788,7 +758,14 @@ impl OpenAiProvider {
 
                     // Extract actual usage data from the response
                     if let Some(usage) = resp.get("usage") {
+                        let mut input_tokens = 0;
+                        let mut output_tokens_value = 0;
+                        let mut cache_read_tokens = 0;
+                        let mut saw_usage = false;
+
                         if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
+                            saw_usage = true;
+                            input_tokens = input;
                             self.usage_tracker.record_input(input);
                             let limit = Self::context_limit(&self.model);
                             output::emit_context_update(output, input, limit);
@@ -796,6 +773,8 @@ impl OpenAiProvider {
                         if let Some(output_tokens) =
                             usage.get("output_tokens").and_then(|v| v.as_u64())
                         {
+                            saw_usage = true;
+                            output_tokens_value = output_tokens;
                             self.usage_tracker.record_output(output_tokens);
                             // Emit final progress update with turn total (accumulated across all API calls)
                             let duration = streaming_start.elapsed().as_secs_f64();
@@ -815,7 +794,18 @@ impl OpenAiProvider {
                             && let Some(cached) =
                                 details.get("cached_tokens").and_then(|v| v.as_u64())
                         {
+                            saw_usage = true;
+                            cache_read_tokens = cached;
                             self.usage_tracker.add_cache_read(cached);
+                        }
+
+                        if saw_usage {
+                            output::emit_usage_update(
+                                output,
+                                input_tokens,
+                                output_tokens_value,
+                                cache_read_tokens,
+                            );
                         }
                     }
 

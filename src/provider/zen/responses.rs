@@ -295,9 +295,6 @@ pub(super) async fn chat(
     let mut pending_tools: Vec<PendingToolCall> = Vec::new();
     let mut thinking = output::ThinkingState::new(output);
     let mut streaming_start: Option<Instant> = None;
-    let mut char_count = 0usize;
-    let mut last_progress_update = Instant::now();
-    let mut has_seen_usage = false;
 
     // Use custom SSE parser for event: + data: format
     let mut sse = ResponsesSseStream::new(response.bytes_stream().map(|chunk| {
@@ -319,28 +316,8 @@ pub(super) async fn chat(
                 {
                     if streaming_start.is_none() {
                         streaming_start = Some(Instant::now());
-                        last_progress_update = Instant::now();
                     }
-                    char_count += delta.len();
                     thinking.emit(delta);
-
-                    // Emit progress update every 0.5 seconds
-                    if !has_seen_usage && last_progress_update.elapsed().as_secs_f64() >= 0.5 {
-                        if let Some(start) = streaming_start {
-                            let duration = start.elapsed().as_secs_f64();
-                            let estimated_tokens = (char_count / 4) as u64;
-                            if duration > 0.0 && estimated_tokens > 0 {
-                                let tokens_per_sec = estimated_tokens as f64 / duration;
-                                output::emit_working_progress(
-                                    output,
-                                    estimated_tokens,
-                                    duration,
-                                    tokens_per_sec,
-                                );
-                            }
-                        }
-                        last_progress_update = Instant::now();
-                    }
                 }
             }
             "response.reasoning_summary_part.added" => {
@@ -352,9 +329,7 @@ pub(super) async fn chat(
                 {
                     if streaming_start.is_none() {
                         streaming_start = Some(Instant::now());
-                        last_progress_update = Instant::now();
                     }
-                    char_count += text.len();
                     thinking.emit(text);
                 }
             }
@@ -376,9 +351,7 @@ pub(super) async fn chat(
                         {
                             if streaming_start.is_none() {
                                 streaming_start = Some(Instant::now());
-                                last_progress_update = Instant::now();
                             }
-                            char_count += text.len();
                             thinking.emit(text);
                         }
                     }
@@ -392,29 +365,9 @@ pub(super) async fn chat(
                 {
                     if streaming_start.is_none() {
                         streaming_start = Some(Instant::now());
-                        last_progress_update = Instant::now();
                     }
-                    char_count += delta.len();
                     output::print_text(output, delta);
                     full_text.push_str(delta);
-
-                    // Emit progress update every 0.5 seconds
-                    if !has_seen_usage && last_progress_update.elapsed().as_secs_f64() >= 0.5 {
-                        if let Some(start) = streaming_start {
-                            let duration = start.elapsed().as_secs_f64();
-                            let estimated_tokens = (char_count / 4) as u64;
-                            if duration > 0.0 && estimated_tokens > 0 {
-                                let tokens_per_sec = estimated_tokens as f64 / duration;
-                                output::emit_working_progress(
-                                    output,
-                                    estimated_tokens,
-                                    duration,
-                                    tokens_per_sec,
-                                );
-                            }
-                        }
-                        last_progress_update = Instant::now();
-                    }
                 }
             }
             "response.output_item.added" => {
@@ -477,7 +430,6 @@ pub(super) async fn chat(
                             usage::zen().record_output(output_tokens);
 
                             // Emit final progress with turn total (accumulated across all API calls)
-                            has_seen_usage = true;
                             if let Some(start) = streaming_start {
                                 let duration = start.elapsed().as_secs_f64();
                                 if duration > 0.0 {

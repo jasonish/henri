@@ -26,7 +26,7 @@ This project uses **Rust Edition 2024** and requires **Rust 1.88.0** or later. T
 ## Code Style
 
 ### File Headers
-All Rust source files must start with:
+All **new** Rust source files must start with:
 ```rust
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Jason Ish

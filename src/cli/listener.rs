@@ -47,6 +47,9 @@ static CONTEXT_TOKENS: AtomicU64 = AtomicU64::new(0);
 static CONTEXT_LIMIT: AtomicU64 = AtomicU64::new(0); // 0 = unknown
 static TOTAL_TOKENS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_TOKENS_DISPLAY: AtomicU64 = AtomicU64::new(0);
+static INPUT_TOKENS: AtomicU64 = AtomicU64::new(0);
+static OUTPUT_TOKENS: AtomicU64 = AtomicU64::new(0);
+static CACHE_READ_TOKENS: AtomicU64 = AtomicU64::new(0);
 static STREAMING_START: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 // Accumulated duration from previous API calls in this turn (in milliseconds)
 static ACCUMULATED_DURATION_MS: AtomicU64 = AtomicU64::new(0);
@@ -251,11 +254,43 @@ pub(crate) fn spinner_ready() {
     }
 }
 
-fn write_ready_status_line() {
+fn write_status_line_for_spinner_state(state: u8, frame: Option<&str>) {
     update_total_tokens_display();
     let stats = build_stats_string();
-    let line = format_status_line(&"✓ Done".green().to_string(), stats.as_deref());
-    terminal::write_status_line(&line);
+
+    match state {
+        0 => {
+            let line = format_status_line(&"✓ Done".green().to_string(), stats.as_deref());
+            terminal::write_status_line(&line);
+        }
+        1 => {
+            let spinner = frame.unwrap_or("⠿");
+            let left = format!("{} Working...", spinner.cyan());
+            let line = format_status_line(&left, stats.as_deref());
+            terminal::write_status_line(&line);
+        }
+        2 => {
+            let spinner = frame.unwrap_or("⠿");
+            let left = format!("{} {}", spinner.cyan(), "Thinking...".bright_black());
+            let line = format_status_line(&left, stats.as_deref());
+            terminal::write_status_line(&line);
+        }
+        _ => {}
+    }
+}
+
+fn write_ready_status_line() {
+    write_status_line_for_spinner_state(0, None);
+}
+
+/// Repaint the status line after a prompt/history redraw (e.g. resize).
+pub(crate) fn redraw_status_line() {
+    if terminal::streaming_status_line_reserved_rows() == 0 {
+        return;
+    }
+
+    let state = SPINNER_STATE.load(Ordering::Acquire);
+    write_status_line_for_spinner_state(state, None);
 }
 
 /// Set spinner to "Working" state
@@ -320,6 +355,23 @@ fn update_total_tokens(total: u64) {
     TOTAL_TOKENS.store(total, Ordering::Relaxed);
 }
 
+/// Update usage stats during streaming
+fn update_usage_stats(input_tokens: u64, output_tokens: u64, cache_read_tokens: u64) {
+    if input_tokens > 0 {
+        INPUT_TOKENS.fetch_add(input_tokens, Ordering::Relaxed);
+    }
+    if output_tokens > 0 {
+        OUTPUT_TOKENS.fetch_add(output_tokens, Ordering::Relaxed);
+    }
+    if cache_read_tokens > 0 {
+        CACHE_READ_TOKENS.fetch_add(cache_read_tokens, Ordering::Relaxed);
+    }
+
+    let input_total = INPUT_TOKENS.load(Ordering::Relaxed);
+    let output_total = OUTPUT_TOKENS.load(Ordering::Relaxed);
+    TOTAL_TOKENS.store(input_total + output_total, Ordering::Relaxed);
+}
+
 /// Reset streaming state completely - call at the start of a new turn
 pub(crate) fn reset_turn_stats() {
     if let Ok(mut start) = STREAMING_START.lock() {
@@ -329,6 +381,9 @@ pub(crate) fn reset_turn_stats() {
     CONTEXT_LIMIT.store(0, Ordering::Relaxed);
     TOTAL_TOKENS.store(0, Ordering::Relaxed);
     TOTAL_TOKENS_DISPLAY.store(0, Ordering::Relaxed);
+    INPUT_TOKENS.store(0, Ordering::Relaxed);
+    OUTPUT_TOKENS.store(0, Ordering::Relaxed);
+    CACHE_READ_TOKENS.store(0, Ordering::Relaxed);
     ACCUMULATED_DURATION_MS.store(0, Ordering::Relaxed);
     FINAL_DURATION_MS.store(0, Ordering::Relaxed);
 }
@@ -381,7 +436,7 @@ fn get_streaming_duration() -> Option<f64> {
 fn build_stats_string() -> Option<String> {
     let duration = get_streaming_duration()?;
 
-    let mut stats = format!("[{:.1}s", duration);
+    let mut parts = vec![format!("{:.1}s", duration)];
 
     let ctx_tokens = CONTEXT_TOKENS.load(Ordering::Relaxed);
     let ctx_limit = CONTEXT_LIMIT.load(Ordering::Relaxed);
@@ -390,20 +445,45 @@ fn build_stats_string() -> Option<String> {
         let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
         let limit_k = ctx_limit / 1000;
         let pct = (ctx_tokens as f64 / ctx_limit as f64) * 100.0;
-        stats.push_str(&format!(" • ctx: {}k/{}k ({:.0}%)", ctx_k, limit_k, pct));
+        parts.push(format!("ctx:{}k/{}k ({:.0}%)", ctx_k, limit_k, pct));
     } else if ctx_tokens > 0 {
         let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
-        stats.push_str(&format!(" • ctx: {}k", ctx_k));
+        parts.push(format!("ctx:{}k", ctx_k));
     }
 
+    let input_tokens = INPUT_TOKENS.load(Ordering::Relaxed);
+    let output_tokens = OUTPUT_TOKENS.load(Ordering::Relaxed);
+    let cache_read_tokens = CACHE_READ_TOKENS.load(Ordering::Relaxed);
     let total_display = TOTAL_TOKENS_DISPLAY.load(Ordering::Relaxed);
+    let mut usage_parts = Vec::new();
+    if input_tokens > 0 {
+        usage_parts.push(format!("i:{}", format_tokens(input_tokens)));
+    }
+    if output_tokens > 0 {
+        usage_parts.push(format!("o:{}", format_tokens(output_tokens)));
+    }
+    if cache_read_tokens > 0 {
+        usage_parts.push(format!("c:{}", format_tokens(cache_read_tokens)));
+    }
     if total_display > 0 {
-        stats.push_str(&format!(" • total: {}", total_display));
+        usage_parts.push(format!("t:{}", format_tokens(total_display)));
+    }
+    if !usage_parts.is_empty() {
+        parts.push(usage_parts.join(" "));
     }
 
-    stats.push(']');
+    Some(format!("[{}]", parts.join(" | ")))
+}
 
-    Some(stats)
+/// Format token counts as compact strings (e.g. 1.2k)
+fn format_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}m", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        tokens.to_string()
+    }
 }
 
 /// Format bytes as human-readable string (B, KB, MB)
@@ -540,29 +620,8 @@ async fn spinner_task(mut rx: watch::Receiver<u8>) {
                 if result.is_err() {
                     break;
                 }
-                // State changed - immediately update display
                 let state = *rx.borrow_and_update();
-                update_total_tokens_display();
-                let stats = build_stats_string();
-                match state {
-                    0 => {
-                        let line = format_status_line(&"✓ Done".green().to_string(), stats.as_deref());
-                        terminal::write_status_line(&line);
-                    }
-                    1 => {
-                        let frame = FRAMES[frame_idx % FRAMES.len()];
-                        let left = format!("{} Working...", frame.cyan());
-                        let line = format_status_line(&left, stats.as_deref());
-                        terminal::write_status_line(&line);
-                    }
-                    2 => {
-                        let frame = FRAMES[frame_idx % FRAMES.len()];
-                        let left = format!("{} {}", frame.cyan(), "Thinking...".bright_black());
-                        let line = format_status_line(&left, stats.as_deref());
-                        terminal::write_status_line(&line);
-                    }
-                    _ => {}
-                }
+                write_status_line_for_spinner_state(state, Some(FRAMES[frame_idx % FRAMES.len()]));
                 update_bandwidth();
             }
             _ = interval.tick() => {
@@ -570,23 +629,9 @@ async fn spinner_task(mut rx: watch::Receiver<u8>) {
                 let state = SPINNER_STATE.load(Ordering::Acquire);
                 if state != 0 {
                     frame_idx = frame_idx.wrapping_add(1);
-                    update_total_tokens_display();
-                    let stats = build_stats_string();
-                    let frame = FRAMES[frame_idx % FRAMES.len()];
-                    match state {
-                        1 => {
-                            let left = format!("{} Working...", frame.cyan());
-                            let line = format_status_line(&left, stats.as_deref());
-                            terminal::write_status_line(&line);
-                        }
-                        2 => {
-                            let left = format!("{} {}", frame.cyan(), "Thinking...".bright_black());
-                            let line = format_status_line(&left, stats.as_deref());
-                            terminal::write_status_line(&line);
-                        }
-                        _ => {}
-                    }
+                    write_status_line_for_spinner_state(state, Some(FRAMES[frame_idx % FRAMES.len()]));
                 }
+
                 // Always update bandwidth on tick
                 update_bandwidth();
             }
@@ -2261,6 +2306,14 @@ impl CliListener {
             OutputEvent::WorkingProgress { total_tokens } => {
                 update_total_tokens(*total_tokens);
                 spinner_working();
+            }
+
+            OutputEvent::UsageUpdate {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+            } => {
+                update_usage_stats(*input_tokens, *output_tokens, *cache_read_tokens);
             }
 
             OutputEvent::Done => {

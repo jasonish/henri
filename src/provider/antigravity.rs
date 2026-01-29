@@ -99,61 +99,6 @@ fn strip_unsupported_schema_fields(schema: serde_json::Value) -> serde_json::Val
     }
 }
 
-/// Tracks streaming progress for periodic updates
-struct ProgressTracker {
-    start: Option<Instant>,
-    last_update: Instant,
-    char_count: usize,
-}
-
-impl ProgressTracker {
-    fn new() -> Self {
-        Self {
-            start: None,
-            last_update: Instant::now(),
-            char_count: 0,
-        }
-    }
-
-    fn add_chars(&mut self, count: usize) {
-        if self.start.is_none() {
-            self.start = Some(Instant::now());
-            self.last_update = Instant::now();
-        }
-        self.char_count += count;
-    }
-
-    fn maybe_emit(&mut self, output: &output::OutputContext) {
-        if self.last_update.elapsed().as_secs_f64() >= 0.5 {
-            if let Some(start) = self.start {
-                let duration = start.elapsed().as_secs_f64();
-                let estimated_tokens = (self.char_count / 4) as u64;
-                if duration > 0.0 && estimated_tokens > 0 {
-                    let tokens_per_sec = estimated_tokens as f64 / duration;
-                    output::emit_working_progress(
-                        output,
-                        estimated_tokens,
-                        duration,
-                        tokens_per_sec,
-                    );
-                }
-            }
-            self.last_update = Instant::now();
-        }
-    }
-
-    fn final_emit(&self, output: &output::OutputContext, output_tokens: u64) {
-        if let Some(start) = self.start {
-            let duration = start.elapsed().as_secs_f64();
-            if duration > 0.0 {
-                let turn_total = usage::antigravity().turn_total();
-                let tokens_per_sec = output_tokens as f64 / duration;
-                output::emit_working_progress(output, turn_total, duration, tokens_per_sec);
-            }
-        }
-    }
-}
-
 pub(crate) struct AntigravityProvider {
     state: Mutex<AuthState>,
     model: String,
@@ -734,10 +679,12 @@ impl AntigravityProvider {
         let mut current_thinking = String::new();
         let mut current_thought_signature: Option<String> = None;
         let mut thinking = output::ThinkingState::new(output);
-        let mut progress = ProgressTracker::new();
+        let mut streaming_start: Option<Instant> = None;
         // Track usage metadata - only record final values (API sends cumulative counts with each chunk)
         let mut final_prompt_tokens: Option<u64> = None;
         let mut final_output_tokens: Option<u64> = None;
+        let mut final_cached_tokens: Option<u64> = None;
+        let mut final_thought_tokens: Option<u64> = None;
 
         let mut sse = sse::SseStream::new(response.bytes_stream().map(|chunk| {
             if let Ok(ref bytes) = chunk {
@@ -774,10 +721,11 @@ impl AntigravityProvider {
                                 }
 
                                 if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                                    progress.add_chars(text.len());
+                                    if streaming_start.is_none() {
+                                        streaming_start = Some(Instant::now());
+                                    }
                                     current_thinking.push_str(text);
                                     thinking.emit(text);
-                                    progress.maybe_emit(output);
                                 }
                             }
                             // Handle regular text
@@ -794,10 +742,11 @@ impl AntigravityProvider {
                                     current_thinking.clear();
                                 }
 
-                                progress.add_chars(text.len());
+                                if streaming_start.is_none() {
+                                    streaming_start = Some(Instant::now());
+                                }
                                 current_text.push_str(text);
                                 output::print_text(output, text);
-                                progress.maybe_emit(output);
                             }
                             // Handle function calls
                             else if let Some(fc) = part.get("functionCall") {
@@ -892,18 +841,57 @@ impl AntigravityProvider {
                 {
                     final_output_tokens = Some(output_tokens);
                 }
+                if let Some(cached) = usage_meta
+                    .get("cachedContentTokenCount")
+                    .and_then(|t| t.as_u64())
+                {
+                    final_cached_tokens = Some(cached);
+                }
+                if let Some(thoughts) = usage_meta
+                    .get("thoughtsTokenCount")
+                    .and_then(|t| t.as_u64())
+                {
+                    final_thought_tokens = Some(thoughts);
+                }
             }
         }
 
         // Record final usage (only once, after streaming completes)
+        let mut usage_input = None;
+        let mut usage_output = None;
+        let mut usage_cache = None;
         if let Some(input) = final_prompt_tokens {
             usage::antigravity().record_input(input);
             let limit = Self::context_limit(&self.model);
             output::emit_context_update(output, input, limit);
+            usage_input = Some(input);
+        }
+        if let Some(cached) = final_cached_tokens {
+            usage::antigravity().add_cache_read(cached);
+            usage_cache = Some(cached);
         }
         if let Some(output_tokens) = final_output_tokens {
-            usage::antigravity().record_output(output_tokens);
-            progress.final_emit(output, output_tokens);
+            let thought_tokens = final_thought_tokens.unwrap_or(0);
+            let combined_output = output_tokens + thought_tokens;
+            usage::antigravity().record_output(combined_output);
+            usage_output = Some(combined_output);
+
+            if let Some(start) = streaming_start {
+                let duration = start.elapsed().as_secs_f64();
+                if duration > 0.0 {
+                    let turn_total = usage::antigravity().turn_total();
+                    let tokens_per_sec = combined_output as f64 / duration;
+                    output::emit_working_progress(output, turn_total, duration, tokens_per_sec);
+                }
+            }
+        }
+        if usage_input.is_some() || usage_output.is_some() || usage_cache.is_some() {
+            output::emit_usage_update(
+                output,
+                usage_input.unwrap_or(0),
+                usage_output.unwrap_or(0),
+                usage_cache.unwrap_or(0),
+            );
         }
 
         // Finalize any remaining content

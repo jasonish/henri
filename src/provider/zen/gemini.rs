@@ -360,9 +360,6 @@ pub(super) async fn chat(
     let mut stop_reason = StopReason::Unknown;
     let mut thinking = output::ThinkingState::new(output);
     let mut streaming_start: Option<Instant> = None;
-    let mut char_count = 0usize;
-    let mut last_progress_update = Instant::now();
-    let mut has_seen_usage = false;
 
     let mut sse = sse::SseStream::new(response.bytes_stream().map(|chunk| {
         if let Ok(ref bytes) = chunk {
@@ -382,57 +379,15 @@ pub(super) async fn chat(
                 if part.thought && !part.text.is_empty() {
                     if streaming_start.is_none() {
                         streaming_start = Some(Instant::now());
-                        last_progress_update = Instant::now();
                     }
-                    char_count += part.text.len();
                     thinking.emit(&part.text);
-
-                    // Emit progress update every 0.5 seconds
-                    if !has_seen_usage && last_progress_update.elapsed().as_secs_f64() >= 0.5 {
-                        if let Some(start) = streaming_start {
-                            let duration = start.elapsed().as_secs_f64();
-                            // Rough estimate: 4 characters per token
-                            let estimated_tokens = (char_count / 4) as u64;
-                            if duration > 0.0 && estimated_tokens > 0 {
-                                let tokens_per_sec = estimated_tokens as f64 / duration;
-                                output::emit_working_progress(
-                                    output,
-                                    estimated_tokens,
-                                    duration,
-                                    tokens_per_sec,
-                                );
-                            }
-                        }
-                        last_progress_update = Instant::now();
-                    }
                 } else if part.thought_signature.is_none() && !part.text.is_empty() {
                     if streaming_start.is_none() {
                         streaming_start = Some(Instant::now());
-                        last_progress_update = Instant::now();
                     }
                     thinking.end();
-                    char_count += part.text.len();
                     output::print_text(output, &part.text);
                     full_text.push_str(&part.text);
-
-                    // Emit progress update every 0.5 seconds
-                    if !has_seen_usage && last_progress_update.elapsed().as_secs_f64() >= 0.5 {
-                        if let Some(start) = streaming_start {
-                            let duration = start.elapsed().as_secs_f64();
-                            // Rough estimate: 4 characters per token
-                            let estimated_tokens = (char_count / 4) as u64;
-                            if duration > 0.0 && estimated_tokens > 0 {
-                                let tokens_per_sec = estimated_tokens as f64 / duration;
-                                output::emit_working_progress(
-                                    output,
-                                    estimated_tokens,
-                                    duration,
-                                    tokens_per_sec,
-                                );
-                            }
-                        }
-                        last_progress_update = Instant::now();
-                    }
                 }
 
                 if let Some(fc) = &part.function_call {
@@ -476,7 +431,6 @@ pub(super) async fn chat(
             if let Some(completion_tokens) = u.candidates_token_count {
                 usage::zen().record_output(completion_tokens);
 
-                has_seen_usage = true;
                 if let Some(start) = streaming_start {
                     let duration = start.elapsed().as_secs_f64();
                     if duration > 0.0 {

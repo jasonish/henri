@@ -37,6 +37,8 @@
 - Tools: Render full multi-line `bash` commands in tool-call banners (newlines shown as `\\n`)
 - Prompts: Include only current date (no time) to improve prompt caching
 - OpenAI provider: Move system prompt into Codex `instructions` payload
+- Providers: Remove heuristic streaming progress estimates; emit progress only when usage is known
+- CLI: Streaming status line now shows per-turn input/output/cache/total tokens
 
 - CLI: Requires a configured provider/model on startup (no implicit default);
   prompts entered before configuration now show a helpful error directing users
@@ -65,6 +67,7 @@
   and avoids overlapping the prompt status line
 - CLI: Reserve streaming status-line rows before streaming begins to avoid shifting
   or scrolling over the prompt block
+- CLI: Redraw the streaming status line after terminal resize
 - CLI: Keep info/warning/error spacing consistent between live output and session replay
   and render info messages with consistent styling
 - CLI: Insert a blank line between an in-tool info message (e.g. LSP activation) and the

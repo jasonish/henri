@@ -1096,12 +1096,14 @@ impl PromptBox {
         } else {
             drop(_output_guard);
             self.draw_with_pending(state, pending_prompts)?;
+            super::listener::redraw_status_line();
             super::listener::CliListener::flush_buffered();
             drop(_buffer_guard);
             super::listener::CliListener::flush_buffered();
             return Ok(());
         }
         drop(_output_guard);
+        super::listener::redraw_status_line();
         super::listener::CliListener::flush_buffered();
         drop(_buffer_guard);
         super::listener::CliListener::flush_buffered();

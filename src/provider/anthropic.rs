@@ -873,8 +873,6 @@ impl AnthropicProvider {
         let mut pending_block: Option<PendingBlock> = None;
         let mut thinking = output::ThinkingState::new(output);
         let mut streaming_start: Option<Instant> = None;
-        let mut char_count = 0usize;
-        let mut last_progress_update = Instant::now();
 
         let mut sse = sse::SseStream::new(response.bytes_stream().map(|chunk| {
             if let Ok(ref bytes) = chunk {
@@ -897,16 +895,23 @@ impl AnthropicProvider {
                         && let Some(u) = &msg.usage
                     {
                         let mut total_context = 0u64;
+                        let mut input_tokens = 0u64;
+                        let mut cache_read_tokens = 0u64;
                         if let Some(input) = u.input_tokens {
-                            usage::anthropic().record_input(input);
-                            total_context += input;
+                            input_tokens = input;
                         }
                         if let Some(cache_create) = u.cache_creation_input_tokens {
                             usage::anthropic().add_cache_creation(cache_create);
                         }
                         if let Some(cache_read) = u.cache_read_input_tokens {
                             usage::anthropic().add_cache_read(cache_read);
-                            total_context += cache_read;
+                            cache_read_tokens = cache_read;
+                        }
+                        let input_total = input_tokens + cache_read_tokens;
+                        if input_total > 0 {
+                            usage::anthropic().record_input(input_total);
+                            total_context += input_total;
+                            output::emit_usage_update(output, input_total, 0, cache_read_tokens);
                         }
                         if total_context > 0 {
                             let limit = Self::context_limit(&self.model);
@@ -945,30 +950,9 @@ impl AnthropicProvider {
                             if let Some(thinking_text) = &delta.thinking {
                                 if streaming_start.is_none() {
                                     streaming_start = Some(Instant::now());
-                                    last_progress_update = Instant::now();
                                 }
-                                char_count += thinking_text.len();
                                 pending.text.push_str(thinking_text);
                                 thinking.emit(thinking_text);
-
-                                // Emit progress update every 0.5 seconds
-                                if last_progress_update.elapsed().as_secs_f64() >= 0.5 {
-                                    if let Some(start) = streaming_start {
-                                        let duration = start.elapsed().as_secs_f64();
-                                        // Rough estimate: 4 characters per token
-                                        let estimated_tokens = (char_count / 4) as u64;
-                                        if duration > 0.0 && estimated_tokens > 0 {
-                                            let tokens_per_sec = estimated_tokens as f64 / duration;
-                                            output::emit_working_progress(
-                                                output,
-                                                estimated_tokens,
-                                                duration,
-                                                tokens_per_sec,
-                                            );
-                                        }
-                                    }
-                                    last_progress_update = Instant::now();
-                                }
                             }
                             if let Some(sig) = &delta.signature {
                                 pending.signature = sig.clone();
@@ -982,29 +966,8 @@ impl AnthropicProvider {
                         if let Some(text) = &delta.text {
                             if streaming_start.is_none() {
                                 streaming_start = Some(Instant::now());
-                                last_progress_update = Instant::now();
                             }
-                            char_count += text.len();
                             output::print_text(output, text);
-
-                            // Emit progress update every 0.5 seconds
-                            if last_progress_update.elapsed().as_secs_f64() >= 0.5 {
-                                if let Some(start) = streaming_start {
-                                    let duration = start.elapsed().as_secs_f64();
-                                    // Rough estimate: 4 characters per token
-                                    let estimated_tokens = (char_count / 4) as u64;
-                                    if duration > 0.0 && estimated_tokens > 0 {
-                                        let tokens_per_sec = estimated_tokens as f64 / duration;
-                                        output::emit_working_progress(
-                                            output,
-                                            estimated_tokens,
-                                            duration,
-                                            tokens_per_sec,
-                                        );
-                                    }
-                                }
-                                last_progress_update = Instant::now();
-                            }
                         }
                         if let Some(partial_json) = &delta.partial_json
                             && let Some(PendingBlock::ToolUse(ref mut tool)) = pending_block
@@ -1071,6 +1034,7 @@ impl AnthropicProvider {
                         && let Some(output_tokens) = u.output_tokens
                     {
                         usage::anthropic().record_output(output_tokens);
+                        output::emit_usage_update(output, 0, output_tokens, 0);
 
                         // Emit final progress with turn total (accumulated across all API calls)
                         if let Some(start) = streaming_start {

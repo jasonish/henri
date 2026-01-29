@@ -222,7 +222,6 @@ async fn execute_chat_inner(
     let mut pending_tools: HashMap<usize, PendingToolCall> = HashMap::new();
     let mut thinking = output::ThinkingState::new(output);
     let streaming_start = std::time::Instant::now();
-    let mut char_count = 0usize;
     let mut received_reasoning = false;
     let mut usage_recorded = false;
     let mut raw_events: Vec<serde_json::Value> = Vec::new();
@@ -293,23 +292,6 @@ async fn execute_chat_inner(
                 thinking.end();
                 output::print_text(output, content);
                 full_text.push_str(content);
-                char_count += content.chars().count();
-
-                // Emit progress every ~50 chars (roughly every 12-13 tokens)
-                if char_count.is_multiple_of(50) {
-                    let duration = streaming_start.elapsed().as_secs_f64();
-                    // Rough estimate: 4 characters per token
-                    let estimated_tokens = (char_count / 4) as u64;
-                    if duration > 0.0 && estimated_tokens > 0 {
-                        let tokens_per_sec = estimated_tokens as f64 / duration;
-                        output::emit_working_progress(
-                            output,
-                            estimated_tokens,
-                            duration,
-                            tokens_per_sec,
-                        );
-                    }
-                }
             }
 
             if let Some(tool_call_deltas) = &choice.delta.tool_calls {
