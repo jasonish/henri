@@ -496,6 +496,10 @@ pub(crate) fn style_tool_output_line(line: &str) -> String {
         return format!("{}\x1b[2K{}", BG, RESET);
     }
 
+    // Strip carriage returns (CR) so cursor rewinds don't interact with our
+    // line-clearing sequences (e.g. `\x1b[K`) and erase the rendered content.
+    let line = line.replace('\r', "");
+
     let line = line.replace("\x1b[0m", "\x1b[0m\x1b[48;5;233m");
     let line = line.replace("\x1b[m", "\x1b[m\x1b[48;5;233m");
 
@@ -577,19 +581,27 @@ pub(crate) fn style_file_read_line(line: &str, language: Option<&str>) -> String
         return format!("{}\x1b[2K{}", BG, RESET);
     }
 
-    // Split at the first tab to separate line number prefix from content
+    // Strip carriage returns (CR) so cursor rewinds don't interact with our
+    // line-clearing sequences (e.g. `\x1b[K`) and erase the rendered content.
+    let line = line.replace('\r', "");
+
+    // Split at the first tab to separate line number prefix from content.
+    // Keep both as owned Strings so we can safely pass `&str` slices around.
     let (prefix, content) = if let Some(tab_pos) = line.find('\t') {
-        (&line[..=tab_pos], &line[tab_pos + 1..])
+        (
+            line[..=tab_pos].to_string(),
+            line[tab_pos + 1..].to_string(),
+        )
     } else {
         // No tab found - treat entire line as content
-        ("", line)
+        (String::new(), line)
     };
 
     // Apply syntax highlighting only to the content portion
     let highlighted_content = if let Some(lang) = language {
-        highlight_line_content(content, lang)
+        highlight_line_content(&content, lang)
     } else {
-        content.to_string()
+        content
     };
 
     // Re-apply background after any reset sequences from syntax highlighting
@@ -604,10 +616,14 @@ pub(crate) fn style_file_read_line(line: &str, language: Option<&str>) -> String
 
 /// Highlight a single line of code content (used for file read output).
 pub(crate) fn highlight_line_content(line: &str, language: &str) -> String {
-    let spans = syntax::highlight_code(line, Some(language));
+    // Strip carriage returns (CR) so cursor rewinds don't interact with our
+    // line-clearing sequences (e.g. `\x1b[K`) and erase the rendered content.
+    let line = line.replace('\r', "");
+
+    let spans = syntax::highlight_code(&line, Some(language));
 
     if spans.is_empty() {
-        return line.to_string();
+        return line;
     }
 
     let mut result = String::new();
@@ -1111,6 +1127,13 @@ mod tests {
         assert!(result.contains("\x1b["));
         // Error preview is no longer displayed inline
         assert!(!result.contains("File not found"));
+    }
+
+    #[test]
+    fn test_style_tool_output_line_strips_carriage_returns() {
+        enable_colors();
+        let styled = style_tool_output_line("hello\r");
+        assert!(!styled.contains('\r'));
     }
 
     #[test]

@@ -47,6 +47,7 @@
   the todo tools are enabled
 
 ### Fixed
+- CLI: Strip carriage returns from tool output to avoid erase glitches
 
 - CLI: Persist last-used model so `default-model = ":last-used"` works on restart
 - CLI: Network stats now default to enabled on fresh configs
