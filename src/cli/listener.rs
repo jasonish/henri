@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use base64::Engine;
 use colored::{Color, ColoredString, Colorize};
 use tokio::sync::watch;
 use unicode_width::UnicodeWidthChar;
@@ -38,6 +39,9 @@ static SHOW_NETWORK_STATS: AtomicBool = AtomicBool::new(false);
 // Whether to show file diffs (loaded from config)
 static SHOW_DIFFS: AtomicBool = AtomicBool::new(true);
 
+// Whether to show image previews (loaded from config)
+static SHOW_IMAGE_PREVIEWS: AtomicBool = AtomicBool::new(true);
+
 // Context/token tracking state for status line display
 static CONTEXT_TOKENS: AtomicU64 = AtomicU64::new(0);
 static CONTEXT_LIMIT: AtomicU64 = AtomicU64::new(0); // 0 = unknown
@@ -63,6 +67,14 @@ pub(crate) fn reload_show_diffs() {
         .map(|c| c.show_diffs)
         .unwrap_or(true);
     SHOW_DIFFS.store(enabled, Ordering::Relaxed);
+}
+
+/// Reload the show_image_previews setting from config
+pub(crate) fn reload_show_image_previews() {
+    let enabled = crate::config::ConfigFile::load()
+        .map(|c| c.show_image_previews)
+        .unwrap_or(true);
+    SHOW_IMAGE_PREVIEWS.store(enabled, Ordering::Relaxed);
 }
 
 /// Render a single diff line with syntax highlighting.
@@ -2186,6 +2198,35 @@ impl CliListener {
                 // Mark that diff was shown so ToolResult skips its checkmark
                 if let Ok(mut state) = self.state.lock() {
                     state.diff_shown = true;
+                }
+            }
+
+            OutputEvent::ImagePreview { data, mime_type } => {
+                // Display image preview for terminals that support it (e.g., Kitty)
+                if SHOW_IMAGE_PREVIEWS.load(Ordering::Relaxed)
+                    && let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(data)
+                    && let Some(preview) =
+                        super::image_preview::get_image_preview(&decoded, mime_type)
+                {
+                    // Ensure the image preview starts on its own line below the tool header.
+                    terminal::ensure_line_break();
+
+                    // Transmit the image data and create a virtual placement for placeholders.
+                    terminal::print_above(&preview.escape_sequence);
+
+                    // Print Unicode placeholders so the image persists in scrollback.
+                    for line in &preview.placeholder_lines {
+                        terminal::println_above(line);
+                    }
+
+                    history::push(HistoryEvent::ImagePreview {
+                        data: decoded,
+                        mime_type: preview.mime_type.clone(),
+                    });
+
+                    if let Ok(mut state) = self.state.lock() {
+                        state.last_tool_call_open = false;
+                    }
                 }
             }
 

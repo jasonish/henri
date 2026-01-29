@@ -458,6 +458,7 @@ impl ModelMenuState {
 pub(super) enum SettingOption {
     ShowNetworkStats(bool),
     ShowDiffs(bool),
+    ShowImagePreviews(bool),
     LspEnabled(bool),
 }
 
@@ -466,6 +467,7 @@ impl SettingOption {
         match self {
             SettingOption::ShowNetworkStats(_) => "Network Stats",
             SettingOption::ShowDiffs(_) => "Show Diffs",
+            SettingOption::ShowImagePreviews(_) => "Image Previews",
             SettingOption::LspEnabled(_) => "LSP Integration",
         }
     }
@@ -474,6 +476,7 @@ impl SettingOption {
         match self {
             SettingOption::ShowNetworkStats(enabled)
             | SettingOption::ShowDiffs(enabled)
+            | SettingOption::ShowImagePreviews(enabled)
             | SettingOption::LspEnabled(enabled) => {
                 if *enabled { "Enabled" } else { "Disabled" }.to_string()
             }
@@ -484,6 +487,7 @@ impl SettingOption {
         match self {
             SettingOption::ShowNetworkStats(enabled)
             | SettingOption::ShowDiffs(enabled)
+            | SettingOption::ShowImagePreviews(enabled)
             | SettingOption::LspEnabled(enabled) => {
                 *enabled = !*enabled;
             }
@@ -498,6 +502,9 @@ impl SettingOption {
                 }
                 SettingOption::ShowDiffs(enabled) => {
                     config.show_diffs = *enabled;
+                }
+                SettingOption::ShowImagePreviews(enabled) => {
+                    config.show_image_previews = *enabled;
                 }
                 SettingOption::LspEnabled(enabled) => {
                     config.lsp_enabled = *enabled;
@@ -613,6 +620,7 @@ impl SettingsMenuState {
             options: vec![
                 SettingOption::ShowNetworkStats(config.show_network_stats),
                 SettingOption::ShowDiffs(config.show_diffs),
+                SettingOption::ShowImagePreviews(config.show_image_previews),
                 SettingOption::LspEnabled(config.lsp_enabled),
             ],
             selected_index: 0,

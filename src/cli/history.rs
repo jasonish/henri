@@ -51,6 +51,8 @@ pub(crate) enum HistoryEvent {
     ToolOutput { text: String },
     /// File read output with filename for syntax highlighting
     FileReadOutput { filename: String, text: String },
+    /// Image preview (for terminals that support inline images)
+    ImagePreview { data: Vec<u8>, mime_type: String },
     /// An error occurred
     Error(String),
     /// Warning message

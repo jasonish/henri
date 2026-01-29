@@ -11,6 +11,7 @@ use unicode_width::UnicodeWidthChar;
 
 use super::history::{HistoryEvent, ImageMeta, TodoStatus};
 use super::markdown::{align_markdown_tables, render_markdown_line};
+use crate::cli::image_preview;
 use crate::syntax;
 
 // Shared color constants for consistent styling
@@ -49,6 +50,7 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
         HistoryEvent::FileReadOutput { filename, text } => {
             render_file_read_output(filename, text, width)
         }
+        HistoryEvent::ImagePreview { data, mime_type } => render_image_preview(data, mime_type),
         HistoryEvent::Error(msg) => render_error(msg),
         HistoryEvent::Warning(msg) => render_warning(msg),
         HistoryEvent::Info(msg) => render_info(msg),
@@ -80,11 +82,13 @@ fn needs_blank_line_before(prev: Option<&HistoryEvent>, current: &HistoryEvent) 
         (HistoryEvent::ToolResult { .. }, HistoryEvent::AssistantText { .. }) => true,
         (HistoryEvent::ToolOutput { .. }, HistoryEvent::AssistantText { .. }) => true,
         (HistoryEvent::FileReadOutput { .. }, HistoryEvent::AssistantText { .. }) => true,
+        (HistoryEvent::ImagePreview { .. }, HistoryEvent::AssistantText { .. }) => true,
         (HistoryEvent::ToolEnd, HistoryEvent::AssistantText { .. }) => true,
         // Tool -> Thinking: blank line
         (HistoryEvent::ToolResult { .. }, HistoryEvent::Thinking { .. }) => true,
         (HistoryEvent::ToolOutput { .. }, HistoryEvent::Thinking { .. }) => true,
         (HistoryEvent::FileReadOutput { .. }, HistoryEvent::Thinking { .. }) => true,
+        (HistoryEvent::ImagePreview { .. }, HistoryEvent::Thinking { .. }) => true,
         (HistoryEvent::ToolEnd, HistoryEvent::Thinking { .. }) => true,
         // Thinking/Text -> ToolStart: blank line
         (HistoryEvent::Thinking { .. }, HistoryEvent::ToolStart) => true,
@@ -452,6 +456,26 @@ fn render_tool_result_with_context(
     } else {
         format!("{}{}\n", symbol, summary_suffix)
     }
+}
+
+/// Render image preview using Kitty placeholders.
+fn render_image_preview(data: &[u8], mime_type: &str) -> String {
+    let Some(preview) = image_preview::get_image_preview(data, mime_type) else {
+        return String::new();
+    };
+
+    if preview.placeholder_lines.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::new();
+    output.push_str(&preview.escape_sequence);
+    for line in preview.placeholder_lines {
+        output.push_str(&line);
+        output.push('\n');
+    }
+
+    output
 }
 
 /// Render error message - red styled

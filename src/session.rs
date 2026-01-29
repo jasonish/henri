@@ -17,7 +17,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use base64::Engine;
+use base64::{Engine, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Utc};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -704,14 +704,14 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
             }
             Role::Assistant => {
                 // Look ahead for a tool-result-only user message to match results with uses.
-                let tool_results: HashMap<String, (bool, String)> = if let Some(next_msg) =
-                    state.messages.get(idx + 1)
-                    && is_tool_result_only_serializable(next_msg)
-                {
-                    collect_tool_results(next_msg)
-                } else {
-                    HashMap::new()
-                };
+                let tool_results: HashMap<String, (bool, String, Option<String>, Option<String>)> =
+                    if let Some(next_msg) = state.messages.get(idx + 1)
+                        && is_tool_result_only_serializable(next_msg)
+                    {
+                        collect_tool_results(next_msg)
+                    } else {
+                        HashMap::new()
+                    };
 
                 // Render blocks in the same order as live output.
                 match &msg.content {
@@ -761,7 +761,9 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
                                     history::push(HistoryEvent::ToolUse { description });
 
                                     // Push matching ToolResult from the lookahead if available.
-                                    if let Some((is_error, content)) = tool_results.get(id) {
+                                    if let Some((is_error, content, data, mime_type)) =
+                                        tool_results.get(id)
+                                    {
                                         let output = if *is_error {
                                             content.lines().next().unwrap_or("").to_string()
                                         } else {
@@ -772,10 +774,24 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
                                             is_error: *is_error,
                                             summary: None,
                                         });
+
+                                        if let (Some(data), Some(mime_type)) = (data, mime_type)
+                                            && mime_type.starts_with("image/")
+                                            && let Ok(decoded) = STANDARD.decode(data)
+                                        {
+                                            history::push(HistoryEvent::ImagePreview {
+                                                data: decoded,
+                                                mime_type: mime_type.clone(),
+                                            });
+                                        }
                                     }
                                 }
                                 SerializableContentBlock::ToolResult {
-                                    is_error, content, ..
+                                    is_error,
+                                    content,
+                                    data,
+                                    mime_type,
+                                    ..
                                 } => {
                                     // Tool results in saved sessions include full content; live UI only shows
                                     // the ✓/✗ indicator. Store just the first line for error previews.
@@ -789,6 +805,15 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
                                         is_error: *is_error,
                                         summary: None,
                                     });
+                                    if let (Some(data), Some(mime_type)) = (data, mime_type)
+                                        && mime_type.starts_with("image/")
+                                        && let Ok(decoded) = STANDARD.decode(data)
+                                    {
+                                        history::push(HistoryEvent::ImagePreview {
+                                            data: decoded,
+                                            mime_type: mime_type.clone(),
+                                        });
+                                    }
                                 }
                                 SerializableContentBlock::Summary {
                                     summary,
@@ -860,7 +885,7 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
 /// Collect tool results from a tool-result-only user message into a map of tool_use_id -> (is_error, content).
 fn collect_tool_results(
     msg: &SerializableMessage,
-) -> std::collections::HashMap<String, (bool, String)> {
+) -> std::collections::HashMap<String, (bool, String, Option<String>, Option<String>)> {
     let mut results = std::collections::HashMap::new();
     if let SerializableContent::Blocks(blocks) = &msg.content {
         for block in blocks {
@@ -868,10 +893,14 @@ fn collect_tool_results(
                 tool_use_id,
                 is_error,
                 content,
-                ..
+                data,
+                mime_type,
             } = block
             {
-                results.insert(tool_use_id.clone(), (*is_error, content.clone()));
+                results.insert(
+                    tool_use_id.clone(),
+                    (*is_error, content.clone(), data.clone(), mime_type.clone()),
+                );
             }
         }
     }

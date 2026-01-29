@@ -540,13 +540,31 @@ fn calculate_output_size(mut col: u16, text: &str, width: u16) -> (u16, u16) {
 
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
-            if matches!(chars.peek(), Some('[')) {
-                chars.next();
-                for code in chars.by_ref() {
-                    if ('@'..='~').contains(&code) {
-                        break;
+            match chars.peek().copied() {
+                // CSI: ESC [ ... <final byte>
+                Some('[') => {
+                    chars.next();
+                    for code in chars.by_ref() {
+                        if ('@'..='~').contains(&code) {
+                            break;
+                        }
                     }
                 }
+                // OSC / APC / DCS: ESC ] / ESC _ / ESC P ... terminated by BEL or ST (ESC \\)
+                Some(']') | Some('_') | Some('P') | Some('^') => {
+                    let introducer = chars.next().unwrap_or('\0');
+                    let mut prev_esc = false;
+                    for code in chars.by_ref() {
+                        if introducer == ']' && code == '\x07' {
+                            break;
+                        }
+                        if prev_esc && code == '\\' {
+                            break;
+                        }
+                        prev_esc = code == '\x1b';
+                    }
+                }
+                _ => {}
             }
             continue;
         }
@@ -590,13 +608,31 @@ fn visible_trailing_newlines(text: &str) -> Option<u8> {
 
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
-            if matches!(chars.peek(), Some('[')) {
-                chars.next();
-                for code in chars.by_ref() {
-                    if ('@'..='~').contains(&code) {
-                        break;
+            match chars.peek().copied() {
+                // CSI: ESC [ ... <final byte>
+                Some('[') => {
+                    chars.next();
+                    for code in chars.by_ref() {
+                        if ('@'..='~').contains(&code) {
+                            break;
+                        }
                     }
                 }
+                // OSC / APC / DCS: ESC ] / ESC _ / ESC P ... terminated by BEL or ST (ESC \\)
+                Some(']') | Some('_') | Some('P') | Some('^') => {
+                    let introducer = chars.next().unwrap_or('\0');
+                    let mut prev_esc = false;
+                    for code in chars.by_ref() {
+                        if introducer == ']' && code == '\x07' {
+                            break;
+                        }
+                        if prev_esc && code == '\\' {
+                            break;
+                        }
+                        prev_esc = code == '\x1b';
+                    }
+                }
+                _ => {}
             }
             continue;
         }

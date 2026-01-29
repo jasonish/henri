@@ -7,7 +7,9 @@
 //! keyboard input, resize events, and chat streaming concurrently.
 
 mod clipboard;
+mod editor;
 pub(crate) mod history;
+pub(crate) mod image_preview;
 mod input;
 pub(crate) mod listener;
 mod markdown;
@@ -16,8 +18,6 @@ mod prompt;
 pub(crate) mod render;
 mod slash_menu;
 pub(crate) mod terminal;
-
-mod editor;
 
 pub(crate) const TOOL_OUTPUT_VIEWPORT_LINES: usize = 10;
 pub(crate) const TOOL_OUTPUT_VIEWPORT_SPACER_LINES: u16 = 1;
@@ -596,6 +596,7 @@ async fn run_event_loop(
 
     // Load show_diffs setting (needed for both interactive and batch mode)
     listener::reload_show_diffs();
+    listener::reload_show_image_previews();
 
     // Submit initial prompt if provided
     if let Some(prompt) = initial_prompt {
@@ -1545,6 +1546,7 @@ async fn run_event_loop(
                                 prompt_box.reload_settings();
                                 listener::reload_show_network_stats();
                                 listener::reload_show_diffs();
+                                listener::reload_show_image_previews();
                                 refresh_prompt_status(
                                     &mut prompt_box,
                                     &provider_manager,

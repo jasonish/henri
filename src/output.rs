@@ -57,6 +57,13 @@ pub(crate) enum OutputEvent {
         /// Language for syntax highlighting (derived from file extension)
         language: Option<String>,
     },
+    /// Image preview (for terminals that support inline images)
+    ImagePreview {
+        /// Base64-encoded image data
+        data: String,
+        /// MIME type of the image
+        mime_type: String,
+    },
     /// Auto-compaction is starting
     AutoCompactStarting { current_usage: u64, limit: u64 },
     /// Auto-compaction completed
@@ -269,4 +276,9 @@ pub(crate) fn emit_auto_compact_starting(ctx: &OutputContext, current_usage: u64
 /// Emit auto-compaction completed
 pub(crate) fn emit_auto_compact_completed(ctx: &OutputContext, messages_compacted: usize) {
     ctx.emit(OutputEvent::AutoCompactCompleted { messages_compacted });
+}
+
+/// Emit image preview for terminals that support inline images
+pub(crate) fn emit_image_preview(ctx: &OutputContext, data: String, mime_type: String) {
+    ctx.emit(OutputEvent::ImagePreview { data, mime_type });
 }

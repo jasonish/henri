@@ -380,8 +380,8 @@ fn read_image_file(
         format!("[Type={}]", final_mime)
     };
 
-    // No streaming output for images - the summary will be shown with the tool result.
-    let _ = output;
+    // Emit image preview for terminals that support inline images (e.g., Kitty).
+    crate::output::emit_image_preview(output, base64_data.clone(), final_mime.clone());
 
     ToolResult::success(tool_use_id, content)
         .with_summary(summary)

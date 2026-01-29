@@ -15,6 +15,8 @@
   while still returning the full (numbered) file contents
 - CLI: `file_read` preview lines now display with syntax highlighting based on
   file extension, colorizing only the file content (not line numbers)
+- CLI: Preview image `file_read` results inline in Kitty-compatible terminals
+  (configurable via `show-image-previews` in `/settings`)
 - CLI: Tool result indicators can include a short summary (e.g. `file_read` and `bash`
   show lines/bytes read)
 - CLI: `henri tool-call bash` subcommand for testing the bash tool (prints raw JSON tool results)

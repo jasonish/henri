@@ -132,6 +132,11 @@ pub(crate) struct ConfigFile {
     pub show_network_stats: bool,
     #[serde(default = "default_show_diffs")]
     pub show_diffs: bool,
+    #[serde(
+        default = "default_show_image_previews",
+        rename = "show-image-previews"
+    )]
+    pub show_image_previews: bool,
     /// Enable LSP integration for diagnostics (default: true)
     #[serde(default = "default_lsp_enabled", rename = "lsp-enabled")]
     pub lsp_enabled: bool,
@@ -168,6 +173,7 @@ impl Default for ConfigFile {
             lsp: None,
             show_network_stats: default_show_network_stats(),
             show_diffs: default_show_diffs(),
+            show_image_previews: default_show_image_previews(),
             lsp_enabled: default_lsp_enabled(),
             favorite_models: Vec::new(),
             auto_compact: AutoCompactConfig::default(),
@@ -182,6 +188,10 @@ fn default_show_network_stats() -> bool {
 }
 
 fn default_show_diffs() -> bool {
+    true
+}
+
+fn default_show_image_previews() -> bool {
     true
 }
 
@@ -672,6 +682,13 @@ impl ConfigFile {
                 config.show_diffs = b;
             }
 
+            // show-image-previews
+            if let Some(val) = table.get("show-image-previews")
+                && let Some(b) = val.as_bool()
+            {
+                config.show_image_previews = b;
+            }
+
             // lsp-enabled
             if let Some(val) = table.get("lsp-enabled")
                 && let Some(b) = val.as_bool()
@@ -1043,6 +1060,13 @@ expires-at = 12345
         let toml_str = r#"show-network-stats = true"#;
         let config: ConfigFile = toml::from_str(toml_str).unwrap();
         assert_eq!(config.default_model, DefaultModel::LastUsed);
+    }
+
+    #[test]
+    fn test_show_image_previews_parsing() {
+        let toml_str = r#"show-image-previews = false"#;
+        let config: ConfigFile = toml::from_str(toml_str).unwrap();
+        assert!(!config.show_image_previews);
     }
 
     #[test]

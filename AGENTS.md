@@ -29,7 +29,7 @@ This project uses **Rust Edition 2024** and requires **Rust 1.88.0** or later. T
 All Rust source files must start with:
 ```rust
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2025 Jason Ish
+// Copyright (c) 2026 Jason Ish
 ```
 
 ### Import Ordering
