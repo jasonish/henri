@@ -14,7 +14,6 @@ use tokio::sync::Mutex;
 use crate::config::{ConfigFile, OpenAiProviderConfig, ProviderConfig, ProviderType};
 use crate::error::{Error, Result};
 use crate::output;
-use crate::prompts;
 use crate::provider::model_utils;
 use crate::provider::{
     ChatResponse, ContentBlock, Message, MessageContent, Provider, Role, StopReason, ToolCall,
@@ -192,20 +191,6 @@ impl OpenAiProvider {
 
     fn build_codex_input(&self, messages: &[Message]) -> Vec<CodexInputItem> {
         let mut input_items = Vec::new();
-
-        let mut system = prompts::system_prompt_with_services(Some(&self.services));
-        system.push(
-            "You do not have an `apply_patch` tool, instead use the `file_edit` tool.".to_string(),
-        );
-        input_items.push(CodexInputItem {
-            kind: "message".to_string(),
-            role: Some("user".to_string()),
-            content: Some(vec![serde_json::json!({
-                "type": "input_text",
-                "text": system.join("\n\n"),
-            })]),
-            ..Default::default()
-        });
 
         for message in messages {
             // Determine role and text type based on message role
@@ -468,6 +453,24 @@ impl OpenAiProvider {
 
     async fn build_request(&self, messages: &[Message]) -> CodexRequest {
         let instructions = self.codex_instructions().await;
+
+        // OpenAI Codex Responses API: put application system prompt in `instructions`.
+        // This avoids smuggling the system prompt in as a fake user message.
+        let mut merged_instructions = Vec::new();
+        let model_instructions = instructions.trim();
+        if !model_instructions.is_empty() {
+            merged_instructions.push(model_instructions.to_string());
+        }
+
+        let mut app_instructions =
+            crate::prompts::system_prompt_with_services(Some(&self.services));
+        app_instructions.push(
+            "You do not have an `apply_patch` tool, instead use the `file_edit` tool.".to_string(),
+        );
+        merged_instructions.extend(app_instructions);
+
+        let instructions = merged_instructions.join("\n\n");
+
         let input = self.build_codex_input(messages);
         let prompt_cache_key = self.services.session_id();
 
