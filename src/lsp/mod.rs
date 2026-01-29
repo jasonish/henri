@@ -772,5 +772,5 @@ pub(crate) fn diagnostic_summary(diagnostics: &[FileDiagnostic]) -> Option<Strin
             if warnings == 1 { "" } else { "s" }
         ));
     }
-    Some(format!("LSP diagnostics: {}", parts.join(", ")))
+    Some(format!("[LSP diagnostics: {}]", parts.join(", ")))
 }

@@ -1205,6 +1205,11 @@ struct StreamState {
     last_tool_call_open: bool,
     /// Whether we're inside a <Tool>...</Tool> block
     in_tool_block: bool,
+    /// Whether an info message was printed while inside a tool block.
+    ///
+    /// Used to insert a blank line before the next tool call so messages like
+    /// "[LSP activated: ...]" don't run into the next "▶ ..." banner.
+    info_since_last_tool_call: bool,
     /// Tool output viewport state
     tool_output: ToolOutputState,
 }
@@ -1222,6 +1227,7 @@ impl StreamState {
             diff_shown: false,
             last_tool_call_open: false,
             in_tool_block: false,
+            info_since_last_tool_call: false,
             tool_output: ToolOutputState::new(),
         }
     }
@@ -1236,6 +1242,7 @@ impl StreamState {
         self.diff_shown = false;
         self.last_tool_call_open = false;
         self.in_tool_block = false;
+        self.info_since_last_tool_call = false;
         self.tool_output.reset();
     }
 }
@@ -1701,7 +1708,7 @@ impl CliListener {
                         // Subsequent tool call: ensure it starts on its own line.
                         // If an info message was printed in between tool calls (e.g. LSP activated),
                         // add a blank line for readability.
-                        if matches!(state.last_block, Some(LastBlock::Info)) {
+                        if state.info_since_last_tool_call {
                             terminal::ensure_trailing_newlines(2);
                         } else {
                             terminal::ensure_line_break();
@@ -1712,6 +1719,7 @@ impl CliListener {
                     terminal::print_above(&text);
                     state.last_tool_call_open = true;
                     state.last_block = Some(LastBlock::Tool);
+                    state.info_since_last_tool_call = false;
                     starting
                 } else {
                     false
@@ -2019,11 +2027,24 @@ impl CliListener {
             }
 
             OutputEvent::Info(msg) => {
-                terminal::ensure_line_break();
-                terminal::println_above("");
+                let spacing = self
+                    .state
+                    .lock()
+                    .map(|s| matches!(s.last_block, Some(LastBlock::Tool)))
+                    .unwrap_or(false);
+
+                if spacing {
+                    terminal::ensure_trailing_newlines(2);
+                } else {
+                    terminal::ensure_line_break();
+                }
+
                 terminal::println_above(&msg.cyan().to_string());
                 history::push(HistoryEvent::Info(msg.clone()));
                 if let Ok(mut state) = self.state.lock() {
+                    if state.in_tool_block {
+                        state.info_since_last_tool_call = true;
+                    }
                     state.last_block = Some(LastBlock::Info);
                 }
             }

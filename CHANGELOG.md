@@ -65,8 +65,9 @@
   or scrolling over the prompt block
 - CLI: Keep info/warning/error spacing consistent between live output and session replay
   and render info messages with consistent styling
-- CLI: Insert a blank line between an info message (e.g. LSP activation) and a
-  subsequent tool call for readability
+- CLI: Insert a blank line between an in-tool info message (e.g. LSP activation) and the
+  next tool call for readability
+- LSP: Wrap diagnostic summary in brackets to match other info-style messages
 - CLI: After switching models and running `/clear`, auto-compaction no longer
   triggers immediately due to stale usage data
 - CLI: Ctrl+D now behaves like Delete when input is not empty
