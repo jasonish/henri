@@ -4,6 +4,9 @@
 
 ### Added
 
+- Config: Add `top_p` (nucleus sampling) parameter to model configuration
+- Zen: Add `kimi-k2.5-free` model and default parameters for kimi-k2.5 models
+
 - CLI: `henri tool-call grep` now prints raw JSON tool results
 - CLI: `henri tool-call file_read` subcommand for testing the file_read tool
 - CLI: Set terminal title to show 🐕 and current directory

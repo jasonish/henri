@@ -552,6 +552,9 @@ pub(crate) struct ModelConfig {
     /// Temperature for sampling (0.0 - 2.0)
     #[serde(default)]
     pub temperature: Option<f32>,
+    /// Top-p (nucleus) sampling parameter (0.0 - 1.0)
+    #[serde(default)]
+    pub top_p: Option<f64>,
     /// Maximum tokens to generate
     #[serde(default)]
     pub max_tokens: Option<u32>,
@@ -959,6 +962,7 @@ mod tests {
             name: Some("Test Model".to_string()),
             reasoning_effort: Some("high".to_string()),
             temperature: Some(0.7),
+            top_p: None,
             max_tokens: Some(1000),
             stop_sequences: Some(vec!["STOP".to_string()]),
         };
@@ -978,6 +982,7 @@ mod tests {
             name: None,
             reasoning_effort: None,
             temperature: None,
+            top_p: None,
             max_tokens: None,
             stop_sequences: None,
         };
@@ -1109,6 +1114,7 @@ expires-at = 12345
                     name: Some("claude-opus-4-5-thinking#off".to_string()),
                     reasoning_effort: Some("off".to_string()),
                     temperature: None,
+                    top_p: None,
                     max_tokens: None,
                     stop_sequences: None,
                 },
@@ -1117,6 +1123,7 @@ expires-at = 12345
                     name: Some("claude-opus-4-5-thinking#high".to_string()),
                     reasoning_effort: Some("high".to_string()),
                     temperature: None,
+                    top_p: None,
                     max_tokens: None,
                     stop_sequences: None,
                 },

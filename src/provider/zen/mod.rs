@@ -63,6 +63,7 @@ const ZEN_MODELS: &[ZenModelSpec] = &[
     ZenModelSpec::new("gpt-5-nano", ApiType::OpenAiResponses),
     ZenModelSpec::new("grok-code", ApiType::OpenAiCompatible),
     ZenModelSpec::new("kimi-k2.5", ApiType::OpenAiCompatible),
+    ZenModelSpec::new("kimi-k2.5-free", ApiType::OpenAiCompatible),
 ];
 
 fn get_model_spec(model: &str) -> Option<&'static ZenModelSpec> {
@@ -131,6 +132,7 @@ impl ZenProvider {
                 name: None,
                 reasoning_effort: None,
                 temperature: None,
+                top_p: None,
                 max_tokens: None,
                 stop_sequences: None,
             });
@@ -142,6 +144,7 @@ impl ZenProvider {
                 name: None,
                 reasoning_effort: None,
                 temperature: None,
+                top_p: None,
                 max_tokens: None,
                 stop_sequences: None,
             });
@@ -153,7 +156,32 @@ impl ZenProvider {
                 name: None,
                 reasoning_effort: None,
                 temperature: None,
+                top_p: None,
                 max_tokens: None,
+                stop_sequences: None,
+            });
+
+        provider_config
+            .model_configs
+            .push(crate::config::ModelConfig {
+                id: "kimi-k2.5".to_string(),
+                name: None,
+                reasoning_effort: None,
+                temperature: Some(1.0),
+                top_p: Some(0.95),
+                max_tokens: Some(32000),
+                stop_sequences: None,
+            });
+
+        provider_config
+            .model_configs
+            .push(crate::config::ModelConfig {
+                id: "kimi-k2.5-free".to_string(),
+                name: None,
+                reasoning_effort: None,
+                temperature: Some(1.0),
+                top_p: Some(0.95),
+                max_tokens: Some(32000),
                 stop_sequences: None,
             });
 

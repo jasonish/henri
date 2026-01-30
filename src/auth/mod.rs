@@ -408,6 +408,7 @@ async fn login_openai_compat() -> Result<()> {
             name: None,
             reasoning_effort,
             temperature: None,
+            top_p: None,
             max_tokens: None,
             stop_sequences: None,
         });
@@ -533,6 +534,7 @@ async fn login_openrouter() -> Result<()> {
             name: None,
             reasoning_effort,
             temperature: None,
+            top_p: None,
             max_tokens: None,
             stop_sequences: None,
         });
