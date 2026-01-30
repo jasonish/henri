@@ -2916,6 +2916,10 @@ fn spawn_compaction_chat(
     // Reset streaming stats for this turn
     listener::reset_turn_stats();
 
+    // Manual compaction shouldn't immediately trigger auto-compaction based on stale
+    // context usage from prior API calls.
+    crate::usage::reset_last_context_usage();
+
     // Capture provider info
     let provider = provider_manager.current_provider();
     let model_id = provider_manager.current_model_id().to_string();
