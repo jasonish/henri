@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use rmcp::RoleClient;
 use rmcp::ServiceExt;
-use rmcp::model::CallToolRequestParam;
+use rmcp::model::CallToolRequestParams;
 use rmcp::model::Tool;
 use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
@@ -212,7 +212,8 @@ impl McpManager {
                     tool_name
                 };
 
-                let params = CallToolRequestParam {
+                let params = CallToolRequestParams {
+                    meta: None,
                     name: actual_name.to_string().into(),
                     arguments: input.as_object().cloned(),
                     task: None,

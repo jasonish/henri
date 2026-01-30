@@ -37,6 +37,7 @@
 - Providers: Deduplicate `model#variant` parsing/cycling helpers
 - Tools: Factor shared LSP diagnostics handling for `file_edit`/`file_write`
 - Tools: Render full multi-line `bash` commands in tool-call banners (newlines shown as `\\n`)
+- MCP: Update `rmcp` to 0.14
 - Prompts: Include only current date (no time) to improve prompt caching
 - OpenAI provider: Move system prompt into Codex `instructions` payload
 - Providers: Remove heuristic streaming progress estimates; emit progress only when usage is known
