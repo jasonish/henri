@@ -21,6 +21,10 @@ use crate::provider::zen::ZenProvider;
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
 use crate::services::Services;
 
+/// Callback type for saving session after tool iterations.
+/// Called with a reference to the current messages after each tool loop iteration.
+pub(crate) type SessionSaveCallback = Box<dyn Fn(&[Message]) + Send>;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ModelProvider {
     Antigravity,
@@ -489,6 +493,8 @@ pub(crate) struct ProviderManager {
     current_model_id: String,
     current_custom_provider: Option<String>,
     services: Services,
+    /// Optional callback to save session after each tool iteration
+    session_save_callback: Option<SessionSaveCallback>,
 }
 
 impl ProviderManager {
@@ -534,7 +540,13 @@ impl ProviderManager {
             current_model_id,
             current_custom_provider,
             services,
+            session_save_callback: None,
         }
+    }
+
+    /// Set a callback to be called after each tool iteration to save the session.
+    pub(crate) fn set_session_save_callback(&mut self, callback: SessionSaveCallback) {
+        self.session_save_callback = Some(callback);
     }
 
     /// Set the current model.
@@ -859,7 +871,13 @@ impl ProviderManager {
 
             match result {
                 ChatIterationResult::Done => break,
-                ChatIterationResult::Continue => continue,
+                ChatIterationResult::Continue => {
+                    // Save session after each tool iteration if callback is set
+                    if let Some(ref callback) = self.session_save_callback {
+                        callback(messages);
+                    }
+                    continue;
+                }
             }
         }
 

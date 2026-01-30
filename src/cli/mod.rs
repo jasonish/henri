@@ -634,6 +634,19 @@ async fn run_event_loop(
                     processing_initial_prompt = batch;
 
                     if let Some(pm) = provider_manager.take() {
+                        // Ensure session_id is set (should already be, but be defensive)
+                        if current_session_id.is_none() {
+                            *current_session_id = Some(session::generate_session_id());
+                        }
+                        let session_ctx = SessionSaveContext {
+                            working_dir: working_dir.to_path_buf(),
+                            provider: pm.current_provider(),
+                            model_id: pm.current_model_id().to_string(),
+                            thinking_enabled: thinking_state.enabled,
+                            read_only,
+                            // Safe to unwrap: we just ensured it's Some above
+                            session_id: current_session_id.clone().unwrap(),
+                        };
                         chat_task = Some(spawn_chat_task(
                             prompt,
                             vec![],
@@ -641,6 +654,7 @@ async fn run_event_loop(
                             pm,
                             thinking_state,
                             output,
+                            session_ctx,
                         ));
                     }
                 }
@@ -914,6 +928,32 @@ async fn run_event_loop(
                             ChatTaskStatus::Error(msg) | ChatTaskStatus::Panic(msg) => {
                                 pending_prompts.clear();
 
+                                // Remove incomplete tool turn before saving (same as interrupt)
+                                remove_pending_tool_turn(&mut messages);
+
+                                // Save session on error to preserve work done so far
+                                if !messages.is_empty()
+                                    && let Some(ref pm) = provider_manager
+                                {
+                                    match session::save_session(
+                                        working_dir,
+                                        &messages,
+                                        &pm.current_provider(),
+                                        pm.current_model_id(),
+                                        thinking_state.enabled,
+                                        read_only,
+                                        current_session_id.as_deref(),
+                                    ) {
+                                        Ok(id) => *current_session_id = Some(id),
+                                        Err(e) => {
+                                            terminal::println_above(&format!(
+                                                "Warning: Failed to save session: {}",
+                                                e
+                                            ));
+                                        }
+                                    }
+                                }
+
                                 if batch {
                                     return Err(std::io::Error::other(msg));
                                 }
@@ -957,6 +997,19 @@ async fn run_event_loop(
                         // Draw prompt first so it's visible for spawn_chat_task's println_above
                         prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
 
+                        // Ensure session_id is set (should already be, but be defensive)
+                        if current_session_id.is_none() {
+                            *current_session_id = Some(session::generate_session_id());
+                        }
+                        let session_ctx = SessionSaveContext {
+                            working_dir: working_dir.to_path_buf(),
+                            provider: pm.current_provider(),
+                            model_id: pm.current_model_id().to_string(),
+                            thinking_enabled: thinking_state.enabled,
+                            read_only,
+                            // Safe to unwrap: we just ensured it's Some above
+                            session_id: current_session_id.clone().unwrap(),
+                        };
                         chat_task = Some(spawn_chat_task(
                             next.input,
                             next.images,
@@ -964,6 +1017,7 @@ async fn run_event_loop(
                             pm,
                             thinking_state,
                             output,
+                            session_ctx,
                         ));
                     } else if let Some(ref menu) = history_search {
                         prompt_box.draw_with_history_search(&input_state, menu)?;
@@ -2075,6 +2129,20 @@ async fn run_event_loop(
 
                                         // Spawn chat task (takes ownership of provider_manager)
                                         if let Some(pm) = provider_manager.take() {
+                                            // Ensure session_id is set (should already be, but be defensive)
+                                            if current_session_id.is_none() {
+                                                *current_session_id =
+                                                    Some(session::generate_session_id());
+                                            }
+                                            let session_ctx = SessionSaveContext {
+                                                working_dir: working_dir.to_path_buf(),
+                                                provider: pm.current_provider(),
+                                                model_id: pm.current_model_id().to_string(),
+                                                thinking_enabled: thinking_state.enabled,
+                                                read_only,
+                                                // Safe to unwrap: we just ensured it's Some above
+                                                session_id: current_session_id.clone().unwrap(),
+                                            };
                                             chat_task = Some(spawn_chat_task(
                                                 prompt,
                                                 pasted_images,
@@ -2082,6 +2150,7 @@ async fn run_event_loop(
                                                 pm,
                                                 thinking_state,
                                                 output,
+                                                session_ctx,
                                             ));
                                         }
                                     }
@@ -2491,6 +2560,23 @@ fn handle_chat_outcome(
         ChatOutcome::Interrupted => {
             terminal::println_above("Cancelled");
             remove_pending_tool_turn(messages);
+            // Save session on interrupt to preserve work done so far
+            if !messages.is_empty() {
+                match session::save_session(
+                    working_dir,
+                    messages,
+                    &provider_manager.current_provider(),
+                    provider_manager.current_model_id(),
+                    thinking_state.enabled,
+                    read_only,
+                    current_session_id.as_deref(),
+                ) {
+                    Ok(id) => *current_session_id = Some(id),
+                    Err(e) => {
+                        terminal::println_above(&format!("Warning: Failed to save session: {}", e));
+                    }
+                }
+            }
             prompt_box.hide()?;
         }
     }
@@ -2563,6 +2649,17 @@ async fn handle_global_shortcuts(
     }
 }
 
+/// Session save context for incremental saves during tool loops.
+struct SessionSaveContext {
+    working_dir: std::path::PathBuf,
+    provider: ModelProvider,
+    model_id: String,
+    thinking_enabled: bool,
+    read_only: bool,
+    /// Session ID is always set (generated at start of session or on /reset)
+    session_id: String,
+}
+
 /// Spawn a chat task that runs asynchronously
 fn spawn_chat_task(
     prompt: String,
@@ -2571,6 +2668,7 @@ fn spawn_chat_task(
     mut provider_manager: ProviderManager,
     thinking_state: &crate::providers::ThinkingState,
     output: &OutputContext,
+    session_save_ctx: SessionSaveContext,
 ) -> ChatTask {
     // Reset streaming stats for this new turn
     listener::reset_turn_stats();
@@ -2580,6 +2678,22 @@ fn spawn_chat_task(
     terminal::set_streaming_status_line_active(true);
     // Prime the status line immediately so the newly-reserved rows aren't blank.
     listener::spinner_working();
+
+    // Set up session save callback for incremental saves after each tool iteration
+    let save_callback: crate::providers::SessionSaveCallback =
+        Box::new(move |msgs: &[Message]| {
+            // Save session silently - don't print errors during streaming
+            let _ = session::save_session(
+                &session_save_ctx.working_dir,
+                msgs,
+                &session_save_ctx.provider,
+                &session_save_ctx.model_id,
+                session_save_ctx.thinking_enabled,
+                session_save_ctx.read_only,
+                Some(&session_save_ctx.session_id),
+            );
+        });
+    provider_manager.set_session_save_callback(save_callback);
 
     // Capture provider info before moving provider_manager
     let provider = provider_manager.current_provider();

@@ -26,6 +26,8 @@
 - CLI: Tool output viewport now shows "(... N previous lines)" indicator when
   output has scrolled the first lines out of view
 - Custom commands: Also load from `~/.config/opencode/command/`
+- Sessions: More aggressive session saving - now saves on interrupt (Ctrl+C),
+  on error/panic, and after each tool iteration during long tool loops
 
 ### Changed
 
