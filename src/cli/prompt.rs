@@ -226,12 +226,11 @@ impl PromptBox {
         let _status_row_offset = input_height;
 
         // Calculate where everything starts.
-        // In redraw mode, scrolling (if needed) must be queued inside sync_update
-        // so the clear and redraw happen atomically.
+        // Scrolling is queued inside sync_update for atomic clear+redraw.
         let (start_row, scroll_up) = if inline {
-            (self.inline_start_row(stdout, total_height)?, 0)
+            self.inline_start_row(total_height)?
         } else {
-            self.redraw_start_row(stdout, total_height)?
+            self.redraw_start_row(total_height)?
         };
 
         self.refresh_dimensions();
@@ -272,9 +271,9 @@ impl PromptBox {
                 .unwrap_or(0)
             + 1;
 
-        // Update last_start_row BEFORE clearing so clear_prompt_area uses correct position
-        // This is critical when scrolling occurred - the old position shifted with the scroll
-        let old_start_row = self.last_start_row;
+        // Compute adjusted old_start_row accounting for pending scroll.
+        // Don't mutate self.last_start_row until after the scroll succeeds.
+        let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
         let old_height = self.last_height;
         self.last_start_row = Some(start_row);
         self.last_height = actual_total_height;
@@ -394,12 +393,12 @@ impl PromptBox {
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
-        let (start_row, scroll_up) = self.redraw_start_row(&mut stdout, total_height)?;
+        let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
 
         self.refresh_dimensions();
 
-        // Update last_start_row BEFORE clearing so clear uses correct position
-        let old_start_row = self.last_start_row;
+        // Compute adjusted old_start_row accounting for pending scroll
+        let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
         let old_height = self.last_height;
         self.last_start_row = Some(start_row);
         self.last_height = total_height;
@@ -472,12 +471,12 @@ impl PromptBox {
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
-        let (start_row, scroll_up) = self.redraw_start_row(&mut stdout, total_height)?;
+        let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
 
         self.refresh_dimensions();
 
-        // Update last_start_row BEFORE clearing so clear uses correct position
-        let old_start_row = self.last_start_row;
+        // Compute adjusted old_start_row accounting for pending scroll
+        let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
         let old_height = self.last_height;
         self.last_start_row = Some(start_row);
         self.last_height = total_height;
@@ -549,12 +548,12 @@ impl PromptBox {
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
-        let (start_row, scroll_up) = self.redraw_start_row(&mut stdout, total_height)?;
+        let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
 
         self.refresh_dimensions();
 
-        // Update last_start_row BEFORE clearing so clear uses correct position
-        let old_start_row = self.last_start_row;
+        // Compute adjusted old_start_row accounting for pending scroll
+        let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
         let old_height = self.last_height;
         self.last_start_row = Some(start_row);
         self.last_height = total_height;
@@ -624,12 +623,12 @@ impl PromptBox {
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
-        let (start_row, scroll_up) = self.redraw_start_row(&mut stdout, total_height)?;
+        let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
 
         self.refresh_dimensions();
 
-        // Update last_start_row BEFORE clearing so clear uses correct position
-        let old_start_row = self.last_start_row;
+        // Compute adjusted old_start_row accounting for pending scroll
+        let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
         let old_height = self.last_height;
         self.last_start_row = Some(start_row);
         self.last_height = total_height;
@@ -702,12 +701,12 @@ impl PromptBox {
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
-        let (start_row, scroll_up) = self.redraw_start_row(&mut stdout, total_height)?;
+        let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
 
         self.refresh_dimensions();
 
-        // Update last_start_row BEFORE clearing so clear uses correct position
-        let old_start_row = self.last_start_row;
+        // Compute adjusted old_start_row accounting for pending scroll
+        let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
         let old_height = self.last_height;
         self.last_start_row = Some(start_row);
         self.last_height = total_height;
@@ -780,18 +779,22 @@ impl PromptBox {
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
-        let (start_row, _scroll_up) = self.redraw_start_row(&mut stdout, total_height)?;
+        let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
 
         self.refresh_dimensions();
 
-        // Update last_start_row BEFORE clearing so clear uses correct position
-        let old_start_row = self.last_start_row;
+        // Compute adjusted old_start_row accounting for pending scroll
+        let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
         let old_height = self.last_height;
         self.last_start_row = Some(start_row);
         self.last_height = total_height;
 
         // Use synchronized update to prevent flicker
         stdout.sync_update(|stdout| {
+            if scroll_up > 0 {
+                queue!(stdout, terminal::ScrollUp(scroll_up))?;
+            }
+
             // Clear the entire area (input + menu below)
             self.clear_from_row(stdout, start_row, total_height, old_start_row, old_height)?;
 
@@ -862,12 +865,12 @@ impl PromptBox {
         let total_height = input_height + menu_height + pending_extra + 1;
         let status_row_offset = pending_extra + input_height;
 
-        let (start_row, scroll_up) = self.redraw_start_row(&mut stdout, total_height)?;
+        let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
 
         self.refresh_dimensions();
 
-        // Update last_start_row BEFORE clearing so clear uses correct position
-        let old_start_row = self.last_start_row;
+        // Compute adjusted old_start_row accounting for pending scroll
+        let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
         let old_height = self.last_height;
         self.last_start_row = Some(start_row);
         self.last_height = total_height;
@@ -1214,18 +1217,15 @@ impl PromptBox {
         }
     }
 
-    fn inline_start_row(&mut self, stdout: &mut io::Stdout, height: u16) -> io::Result<u16> {
+    fn inline_start_row(&self, height: u16) -> io::Result<(u16, u16)> {
         let (_, cursor_row) = crossterm::cursor::position()?;
         let term_height = cli_terminal::term_height();
-
-        // Calculate the maximum start_row that keeps the entire prompt visible
         let max_start_row = term_height.saturating_sub(height);
 
         let start_row = if let Some(last_start) = self.last_start_row {
             // If the last known prompt position is below the current cursor,
-            // it means the prompt was pushed down by output, but the cursor
-            // (restored after printing) is still "behind".
-            // We should respect the last known valid position to avoid overwriting output.
+            // the prompt was pushed down by output but the cursor is still "behind".
+            // Respect the last known position to avoid overwriting output.
             if last_start > cursor_row {
                 last_start
             } else {
@@ -1237,10 +1237,7 @@ impl PromptBox {
                 }
             }
         } else {
-            // First draw: start at the current cursor position.
-            // Space for output above will be reserved on first output.
-            // If the status line is active, reserve the current row for it and
-            // start the prompt one row below.
+            // First draw: start at current cursor position.
             let reserve_rows = cli_terminal::streaming_status_line_reserved_rows();
             if reserve_rows > 0 {
                 cursor_row.saturating_add(reserve_rows)
@@ -1249,22 +1246,20 @@ impl PromptBox {
             }
         };
 
-        // If the prompt would extend past the bottom of the terminal on the first draw,
-        // scroll the terminal up to create space instead of clamping the start_row.
-        // Clamping alone would overwrite existing terminal output.
+        // Calculate scroll needed to keep prompt visible.
         let mut start_row = start_row;
+        let mut scroll_up: u16 = 0;
 
         let end_row = start_row.saturating_add(height);
         if end_row > term_height {
             let delta = end_row - term_height;
-            execute!(stdout, terminal::ScrollUp(delta))?;
+            scroll_up = delta;
             start_row = start_row.saturating_sub(delta);
         }
 
-        // Ensure start_row doesn't exceed max_start_row (keeps prompt fully visible)
         start_row = start_row.min(max_start_row);
 
-        Ok(start_row)
+        Ok((start_row, scroll_up))
     }
 
     fn compute_redraw_start_row(&self, height: u16) -> (u16, u16) {
@@ -1297,14 +1292,12 @@ impl PromptBox {
         (start_row, scroll_up)
     }
 
-    fn redraw_start_row(&mut self, stdout: &mut io::Stdout, height: u16) -> io::Result<(u16, u16)> {
-        // Returns: (start_row, scroll_up)
+    fn redraw_start_row(&self, height: u16) -> io::Result<(u16, u16)> {
         if self.last_start_row.is_none() {
             let term_height = cli_terminal::term_height();
             let max_start_row = term_height.saturating_sub(height);
             if max_start_row == 0 {
-                let start_row = self.inline_start_row(stdout, height)?;
-                return Ok((start_row, 0));
+                return self.inline_start_row(height);
             }
             return Ok((max_start_row, 0));
         }
