@@ -188,10 +188,22 @@ impl PromptBox {
         let mut stdout = io::stdout();
         self.draw_with_stdout(&mut stdout, state, inline, show_exit_hint)?;
 
-        // Update tracked cursor position using wrapped display
+        // Update tracked cursor position using the same viewport calculation as draw_with_stdout
         if let Some(start_row) = self.last_start_row {
-            let (_, cursor_pos) = state.display_lines_and_cursor(self.width);
-            let cursor_row = start_row + 1 + cursor_pos.row as u16;
+            let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(self.width);
+            let menu_height = state
+                .slash_menu
+                .as_ref()
+                .map(|m| m.display_height())
+                .unwrap_or(0);
+
+            let max_content_rows = self.max_input_content_rows(menu_height, 0);
+            let rows_to_display = wrapped_rows.len().min(max_content_rows);
+            let viewport_start =
+                self.viewport_start_for_cursor(wrapped_rows.len(), rows_to_display, cursor_pos.row);
+
+            let display_cursor_row = cursor_pos.row.saturating_sub(viewport_start);
+            let cursor_row = start_row + 1 + display_cursor_row as u16;
             let prefix_width = state.display_prefix_width(&cursor_pos);
             let cursor_col = prefix_width + cursor_pos.col;
             cli_terminal::set_prompt_cursor(
@@ -213,66 +225,44 @@ impl PromptBox {
     ) -> io::Result<()> {
         self.sync_prompt_position();
 
+        // Refresh dimensions before computing wrapped display so our width is current.
+        self.refresh_dimensions();
+
         // Compute wrapped display
         let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(self.width);
 
-        let input_height = (wrapped_rows.len() + 2) as u16; // top border + rows + bottom border
         let menu_height = state
             .slash_menu
             .as_ref()
             .map(|m| m.display_height())
             .unwrap_or(0);
-        let total_height = input_height + menu_height + 1;
-        let _status_row_offset = input_height;
 
-        // Calculate where everything starts.
-        // Scrolling is queued inside sync_update for atomic clear+redraw.
-        let (start_row, scroll_up) = if inline {
-            self.inline_start_row(total_height)?
-        } else {
-            self.redraw_start_row(total_height)?
-        };
+        // Cap the prompt height (including borders + status line + menu).
+        let max_content_rows = self.max_input_content_rows(menu_height, 0);
 
-        self.refresh_dimensions();
-
-        // Calculate how many content rows we can display
-        // Term height - start_row gives us available space
-        // We need 3 rows for: top border, bottom border, status line
-        let term_height = cli_terminal::term_height();
-        let available_content_rows =
-            term_height.saturating_sub(start_row).saturating_sub(3) as usize;
-
-        // Calculate viewport: which rows to display to keep cursor visible
+        // Calculate viewport window.
         let total_rows = wrapped_rows.len();
-        let (viewport_start, rows_to_display) = if total_rows <= available_content_rows {
-            // All rows fit - display everything
-            (0, total_rows)
-        } else {
-            // Need to scroll - show window around cursor
-            let cursor_row = cursor_pos.row;
-            let half_viewport = available_content_rows / 2;
+        let rows_to_display = total_rows.min(max_content_rows);
+        let viewport_start =
+            self.viewport_start_for_cursor(total_rows, rows_to_display, cursor_pos.row);
 
-            // Try to center cursor, but clamp to valid range
-            let ideal_start = cursor_row.saturating_sub(half_viewport);
-            let max_start = total_rows.saturating_sub(available_content_rows);
-            let viewport_start = ideal_start.min(max_start);
+        let hidden_above = viewport_start;
+        let hidden_below = total_rows.saturating_sub(viewport_start + rows_to_display);
+        let border_indicator = self.input_scroll_indicator(hidden_above, hidden_below);
 
-            (viewport_start, available_content_rows)
-        };
-
-        // Recalculate actual height based on what we'll display
+        // Calculate final heights based on capped content display.
         let display_height = (rows_to_display + 2) as u16; // top border + visible rows + bottom border
         let status_row_offset = display_height;
-        let actual_total_height = display_height
-            + state
-                .slash_menu
-                .as_ref()
-                .map(|m| m.display_height())
-                .unwrap_or(0)
-            + 1;
+        let actual_total_height = display_height + menu_height + 1;
+
+        // Calculate where everything starts.
+        let (start_row, scroll_up) = if inline {
+            self.inline_start_row(actual_total_height)?
+        } else {
+            self.redraw_start_row(actual_total_height)?
+        };
 
         // Compute adjusted old_start_row accounting for pending scroll.
-        // Don't mutate self.last_start_row until after the scroll succeeds.
         let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
         let old_height = self.last_height;
         self.last_start_row = Some(start_row);
@@ -341,7 +331,7 @@ impl PromptBox {
                 write!(stdout, "{}{}", prefix, display_text)?;
                 queue!(stdout, SetAttribute(Attribute::Reset))?;
             }
-            self.draw_border_line(stdout, input_bottom_row, false)?;
+            self.draw_bottom_border_line(stdout, input_bottom_row, border_indicator.as_deref())?;
 
             // Draw prompt status line below the bottom border
             let status_row = input_bottom_row + 1;
@@ -384,18 +374,26 @@ impl PromptBox {
         let mut stdout = io::stdout();
         self.sync_prompt_position();
 
+        // Refresh dimensions before computing wrapped display so our width is current.
+        self.refresh_dimensions();
+
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
         let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
 
-        let input_height = (wrapped_rows.len() + 2) as u16; // top border + rows + bottom border
         let menu_height = model_menu.display_height();
+
+        // Cap the prompt height so large inputs don't push the menu off-screen.
+        let max_content_rows = self.max_input_content_rows(menu_height, 0);
+        let total_rows = wrapped_rows.len();
+        let rows_to_display = total_rows.min(max_content_rows);
+        let border_indicator = self.input_scroll_indicator(total_rows - rows_to_display, 0);
+
+        let input_height = (rows_to_display + 2) as u16; // top border + visible rows + bottom border
         let total_height = input_height + menu_height + 1;
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
         let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
-
-        self.refresh_dimensions();
 
         // Compute adjusted old_start_row accounting for pending scroll
         let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
@@ -415,9 +413,9 @@ impl PromptBox {
             // Draw input box first
             self.draw_border_line(stdout, start_row, true)?;
 
-            // Draw wrapped rows
-            for (i, row) in wrapped_rows.iter().enumerate() {
-                let term_row = start_row + 1 + i as u16;
+            // Draw wrapped rows (capped)
+            for (display_idx, row) in wrapped_rows.iter().take(rows_to_display).enumerate() {
+                let term_row = start_row + 1 + display_idx as u16;
                 queue!(
                     stdout,
                     cursor::MoveTo(0, term_row),
@@ -427,8 +425,8 @@ impl PromptBox {
                 write!(stdout, "{}{}", prefix, row.text)?;
             }
 
-            let input_bottom_row = start_row + 1 + wrapped_rows.len() as u16;
-            self.draw_border_line(stdout, input_bottom_row, false)?;
+            let input_bottom_row = start_row + 1 + rows_to_display as u16;
+            self.draw_bottom_border_line(stdout, input_bottom_row, border_indicator.as_deref())?;
 
             // Draw prompt status line below the bottom border
             let status_row = input_bottom_row + 1;
@@ -462,18 +460,26 @@ impl PromptBox {
         let mut stdout = io::stdout();
         self.sync_prompt_position();
 
+        // Refresh dimensions before computing wrapped display so our width is current.
+        self.refresh_dimensions();
+
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
         let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
 
-        let input_height = (wrapped_rows.len() + 2) as u16; // top border + rows + bottom border
         let menu_height = history_search.display_height();
+
+        // Cap the prompt height so large inputs don't push the menu off-screen.
+        let max_content_rows = self.max_input_content_rows(menu_height, 0);
+        let total_rows = wrapped_rows.len();
+        let rows_to_display = total_rows.min(max_content_rows);
+        let border_indicator = self.input_scroll_indicator(total_rows - rows_to_display, 0);
+
+        let input_height = (rows_to_display + 2) as u16; // top border + visible rows + bottom border
         let total_height = input_height + menu_height + 1;
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
         let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
-
-        self.refresh_dimensions();
 
         // Compute adjusted old_start_row accounting for pending scroll
         let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
@@ -493,9 +499,9 @@ impl PromptBox {
             // Draw input box first
             self.draw_border_line(stdout, start_row, true)?;
 
-            // Draw wrapped rows
-            for (i, row) in wrapped_rows.iter().enumerate() {
-                let term_row = start_row + 1 + i as u16;
+            // Draw wrapped rows (capped)
+            for (display_idx, row) in wrapped_rows.iter().take(rows_to_display).enumerate() {
+                let term_row = start_row + 1 + display_idx as u16;
                 queue!(
                     stdout,
                     cursor::MoveTo(0, term_row),
@@ -505,8 +511,8 @@ impl PromptBox {
                 write!(stdout, "{}{}", prefix, row.text)?;
             }
 
-            let input_bottom_row = start_row + 1 + wrapped_rows.len() as u16;
-            self.draw_border_line(stdout, input_bottom_row, false)?;
+            let input_bottom_row = start_row + 1 + rows_to_display as u16;
+            self.draw_bottom_border_line(stdout, input_bottom_row, border_indicator.as_deref())?;
 
             // Draw prompt status line below the bottom border
             let status_row = input_bottom_row + 1;
@@ -540,17 +546,25 @@ impl PromptBox {
         let mut stdout = io::stdout();
         self.sync_prompt_position();
 
+        // Refresh dimensions before computing wrapped display so our width is current.
+        self.refresh_dimensions();
+
         let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
 
-        let input_height = (wrapped_rows.len() + 2) as u16; // top border + rows + bottom border
         let menu_height = sessions_menu.display_height();
+
+        // Cap the prompt height so large inputs don't push the menu off-screen.
+        let max_content_rows = self.max_input_content_rows(menu_height, 0);
+        let total_rows = wrapped_rows.len();
+        let rows_to_display = total_rows.min(max_content_rows);
+        let border_indicator = self.input_scroll_indicator(total_rows - rows_to_display, 0);
+
+        let input_height = (rows_to_display + 2) as u16; // top border + visible rows + bottom border
         let total_height = input_height + menu_height + 1;
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
         let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
-
-        self.refresh_dimensions();
 
         // Compute adjusted old_start_row accounting for pending scroll
         let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
@@ -582,7 +596,7 @@ impl PromptBox {
             }
 
             let input_bottom_row = start_row + 1 + wrapped_rows.len() as u16;
-            self.draw_border_line(stdout, input_bottom_row, false)?;
+            self.draw_bottom_border_line(stdout, input_bottom_row, border_indicator.as_deref())?;
 
             // Draw prompt status line below the bottom border
             let status_row = input_bottom_row + 1;
@@ -614,18 +628,26 @@ impl PromptBox {
         let mut stdout = io::stdout();
         self.sync_prompt_position();
 
+        // Refresh dimensions before computing wrapped display so our width is current.
+        self.refresh_dimensions();
+
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
         let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
 
-        let input_height = (wrapped_rows.len() + 2) as u16; // top border + rows + bottom border
         let menu_height = settings_menu.display_height();
+
+        // Cap the prompt height so large inputs don't push the menu off-screen.
+        let max_content_rows = self.max_input_content_rows(menu_height, 0);
+        let total_rows = wrapped_rows.len();
+        let rows_to_display = total_rows.min(max_content_rows);
+        let border_indicator = self.input_scroll_indicator(total_rows - rows_to_display, 0);
+
+        let input_height = (rows_to_display + 2) as u16; // top border + visible rows + bottom border
         let total_height = input_height + menu_height + 1;
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
         let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
-
-        self.refresh_dimensions();
 
         // Compute adjusted old_start_row accounting for pending scroll
         let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
@@ -645,9 +667,9 @@ impl PromptBox {
             // Draw input box first
             self.draw_border_line(stdout, start_row, true)?;
 
-            // Draw wrapped rows
-            for (i, row) in wrapped_rows.iter().enumerate() {
-                let term_row = start_row + 1 + i as u16;
+            // Draw wrapped rows (capped)
+            for (display_idx, row) in wrapped_rows.iter().take(rows_to_display).enumerate() {
+                let term_row = start_row + 1 + display_idx as u16;
                 queue!(
                     stdout,
                     cursor::MoveTo(0, term_row),
@@ -657,8 +679,8 @@ impl PromptBox {
                 write!(stdout, "{}{}", prefix, row.text)?;
             }
 
-            let input_bottom_row = start_row + 1 + wrapped_rows.len() as u16;
-            self.draw_border_line(stdout, input_bottom_row, false)?;
+            let input_bottom_row = start_row + 1 + rows_to_display as u16;
+            self.draw_bottom_border_line(stdout, input_bottom_row, border_indicator.as_deref())?;
 
             // Draw prompt status line below the bottom border
             let status_row = input_bottom_row + 1;
@@ -692,18 +714,26 @@ impl PromptBox {
         let mut stdout = io::stdout();
         self.sync_prompt_position();
 
+        // Refresh dimensions before computing wrapped display so our width is current.
+        self.refresh_dimensions();
+
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
         let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
 
-        let input_height = (wrapped_rows.len() + 2) as u16; // top border + rows + bottom border
         let menu_height = mcp_menu.display_height();
+
+        // Cap the prompt height so large inputs don't push the menu off-screen.
+        let max_content_rows = self.max_input_content_rows(menu_height, 0);
+        let total_rows = wrapped_rows.len();
+        let rows_to_display = total_rows.min(max_content_rows);
+        let border_indicator = self.input_scroll_indicator(total_rows - rows_to_display, 0);
+
+        let input_height = (rows_to_display + 2) as u16; // top border + visible rows + bottom border
         let total_height = input_height + menu_height + 1;
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
         let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
-
-        self.refresh_dimensions();
 
         // Compute adjusted old_start_row accounting for pending scroll
         let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
@@ -723,9 +753,9 @@ impl PromptBox {
             // Draw input box first
             self.draw_border_line(stdout, start_row, true)?;
 
-            // Draw wrapped rows
-            for (i, row) in wrapped_rows.iter().enumerate() {
-                let term_row = start_row + 1 + i as u16;
+            // Draw wrapped rows (capped)
+            for (display_idx, row) in wrapped_rows.iter().take(rows_to_display).enumerate() {
+                let term_row = start_row + 1 + display_idx as u16;
                 queue!(
                     stdout,
                     cursor::MoveTo(0, term_row),
@@ -735,8 +765,8 @@ impl PromptBox {
                 write!(stdout, "{}{}", prefix, row.text)?;
             }
 
-            let input_bottom_row = start_row + 1 + wrapped_rows.len() as u16;
-            self.draw_border_line(stdout, input_bottom_row, false)?;
+            let input_bottom_row = start_row + 1 + rows_to_display as u16;
+            self.draw_bottom_border_line(stdout, input_bottom_row, border_indicator.as_deref())?;
 
             // Draw prompt status line below the bottom border
             let status_row = input_bottom_row + 1;
@@ -770,18 +800,26 @@ impl PromptBox {
         let mut stdout = io::stdout();
         self.sync_prompt_position();
 
+        // Refresh dimensions before computing wrapped display so our width is current.
+        self.refresh_dimensions();
+
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
         let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
 
-        let input_height = (wrapped_rows.len() + 2) as u16; // top border + rows + bottom border
         let menu_height = tools_menu.display_height();
+
+        // Cap the prompt height so large inputs don't push the menu off-screen.
+        let max_content_rows = self.max_input_content_rows(menu_height, 0);
+        let total_rows = wrapped_rows.len();
+        let rows_to_display = total_rows.min(max_content_rows);
+        let border_indicator = self.input_scroll_indicator(total_rows - rows_to_display, 0);
+
+        let input_height = (rows_to_display + 2) as u16; // top border + visible rows + bottom border
         let total_height = input_height + menu_height + 1;
         let status_row_offset = input_height;
 
         // Use redraw positioning (not inline) for menu display
         let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
-
-        self.refresh_dimensions();
 
         // Compute adjusted old_start_row accounting for pending scroll
         let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
@@ -801,9 +839,9 @@ impl PromptBox {
             // Draw input box first
             self.draw_border_line(stdout, start_row, true)?;
 
-            // Draw wrapped rows
-            for (i, row) in wrapped_rows.iter().enumerate() {
-                let term_row = start_row + 1 + i as u16;
+            // Draw wrapped rows (capped)
+            for (display_idx, row) in wrapped_rows.iter().take(rows_to_display).enumerate() {
+                let term_row = start_row + 1 + display_idx as u16;
                 queue!(
                     stdout,
                     cursor::MoveTo(0, term_row),
@@ -813,8 +851,8 @@ impl PromptBox {
                 write!(stdout, "{}{}", prefix, row.text)?;
             }
 
-            let input_bottom_row = start_row + 1 + wrapped_rows.len() as u16;
-            self.draw_border_line(stdout, input_bottom_row, false)?;
+            let input_bottom_row = start_row + 1 + rows_to_display as u16;
+            self.draw_bottom_border_line(stdout, input_bottom_row, border_indicator.as_deref())?;
 
             // Draw prompt status line below the bottom border
             let status_row = input_bottom_row + 1;
@@ -855,19 +893,29 @@ impl PromptBox {
         // Each pending prompt takes one line (no wrapping)
         let pending_height: u16 = pending_prompts.len() as u16;
 
-        let input_height = (wrapped_rows.len() + 2) as u16;
+        // Cap the prompt height (including pending rows, borders, status, and menu).
         let menu_height = state
             .slash_menu
             .as_ref()
             .map(|m| m.display_height())
             .unwrap_or(0);
         let pending_extra = pending_height;
-        let total_height = input_height + menu_height + pending_extra + 1;
-        let status_row_offset = pending_extra + input_height;
+
+        let max_content_rows = self.max_input_content_rows(menu_height, pending_extra);
+        let total_rows = wrapped_rows.len();
+        let rows_to_display = total_rows.min(max_content_rows);
+        let viewport_start =
+            self.viewport_start_for_cursor(total_rows, rows_to_display, cursor_pos.row);
+
+        let hidden_above = viewport_start;
+        let hidden_below = total_rows.saturating_sub(viewport_start + rows_to_display);
+        let border_indicator = self.input_scroll_indicator(hidden_above, hidden_below);
+
+        let display_height = (rows_to_display + 2) as u16; // top border + visible rows + bottom border
+        let status_row_offset = pending_extra + display_height;
+        let total_height = pending_extra + display_height + menu_height + 1;
 
         let (start_row, scroll_up) = self.redraw_start_row(total_height)?;
-
-        self.refresh_dimensions();
 
         // Compute adjusted old_start_row accounting for pending scroll
         let old_start_row = self.last_start_row.map(|r| r.saturating_sub(scroll_up));
@@ -928,9 +976,14 @@ impl PromptBox {
             // Draw input box
             self.draw_border_line(stdout, current_row, true)?;
 
-            // Draw wrapped rows
-            for (i, row) in wrapped_rows.iter().enumerate() {
-                let term_row = current_row + 1 + i as u16;
+            // Draw wrapped rows (viewport window)
+            for (display_idx, row) in wrapped_rows
+                .iter()
+                .skip(viewport_start)
+                .take(rows_to_display)
+                .enumerate()
+            {
+                let term_row = current_row + 1 + display_idx as u16;
                 queue!(
                     stdout,
                     cursor::MoveTo(0, term_row),
@@ -940,8 +993,8 @@ impl PromptBox {
                 write!(stdout, "{}{}", prefix, row.text)?;
             }
 
-            let input_bottom_row = current_row + 1 + wrapped_rows.len() as u16;
-            self.draw_border_line(stdout, input_bottom_row, false)?;
+            let input_bottom_row = current_row + 1 + rows_to_display as u16;
+            self.draw_bottom_border_line(stdout, input_bottom_row, border_indicator.as_deref())?;
 
             // Draw prompt status line below the bottom border
             let status_row = input_bottom_row + 1;
@@ -955,8 +1008,9 @@ impl PromptBox {
                 menu.render(stdout, menu_start_row)?;
             }
 
-            // Position cursor in input
-            let cursor_row = current_row + 1 + cursor_pos.row as u16;
+            // Position cursor in input - adjust for viewport offset
+            let display_cursor_row = cursor_pos.row.saturating_sub(viewport_start);
+            let cursor_row = current_row + 1 + display_cursor_row as u16;
             let prefix_width = state.display_prefix_width(&cursor_pos);
             let cursor_col = prefix_width + cursor_pos.col;
             queue!(
@@ -972,59 +1026,12 @@ impl PromptBox {
 
         // Update tracked cursor position (pending, then input; menu is below)
         let input_start = start_row + pending_extra;
-        let cursor_row = input_start + 1 + cursor_pos.row as u16;
+        let display_cursor_row = cursor_pos.row.saturating_sub(viewport_start);
+        let cursor_row = input_start + 1 + display_cursor_row as u16;
         let prefix_width = state.display_prefix_width(&cursor_pos);
         let cursor_col = prefix_width + cursor_pos.col;
         cli_terminal::set_prompt_cursor(cursor_row.saturating_sub(start_row), cursor_col as u16);
 
-        Ok(())
-    }
-
-    /// Position the cursor at the correct location in the input.
-    pub(super) fn position_cursor(&self, state: &InputState) -> io::Result<()> {
-        let _guard = cli_terminal::lock_output();
-        let mut stdout = io::stdout();
-
-        // Use live position if available to handle prompt shifts during streaming
-        let start_row = cli_terminal::prompt_position()
-            .map(|(row, _)| row)
-            .or(self.last_start_row);
-
-        if let Some(start_row) = start_row {
-            // Use wrapped display to get correct cursor position accounting for word wrap
-            let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(self.width);
-
-            // Calculate viewport offset (same logic as draw_with_stdout)
-            let term_height = cli_terminal::term_height();
-            let available_content_rows =
-                term_height.saturating_sub(start_row).saturating_sub(3) as usize;
-            let total_rows = wrapped_rows.len();
-
-            let viewport_start = if total_rows <= available_content_rows {
-                0
-            } else {
-                let half_viewport = available_content_rows / 2;
-                let ideal_start = cursor_pos.row.saturating_sub(half_viewport);
-                let max_start = total_rows.saturating_sub(available_content_rows);
-                ideal_start.min(max_start)
-            };
-
-            // Adjust cursor row for viewport offset
-            let display_cursor_row = cursor_pos.row.saturating_sub(viewport_start);
-            let cursor_row = start_row + 1 + display_cursor_row as u16;
-            let prefix_width = state.display_prefix_width(&cursor_pos);
-            let cursor_col = prefix_width + cursor_pos.col;
-
-            execute!(
-                stdout,
-                cursor::MoveTo(cursor_col as u16, cursor_row),
-                cursor::Show
-            )?;
-
-            // Update tracked cursor position for output restoration
-            let row_offset = cursor_row.saturating_sub(start_row);
-            cli_terminal::set_prompt_cursor(row_offset, cursor_col as u16);
-        }
         Ok(())
     }
 
@@ -1067,15 +1074,26 @@ impl PromptBox {
         // Use a conservative prompt height based on the current input state so
         // history output does not render into the spacer/status rows above the prompt.
         let prompt_height = {
-            let (wrapped_rows, _cursor_pos) = state.display_lines_and_cursor(cols as usize);
-            let input_height = (wrapped_rows.len() + 2) as u16; // top border + rows + bottom border
+            let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(cols as usize);
             let menu_height = state
                 .slash_menu
                 .as_ref()
                 .map(|m| m.display_height())
                 .unwrap_or(0);
-            // Include pending prompts height
             let pending_extra = pending_prompts.len() as u16;
+
+            let max_content_rows = self.max_input_content_rows(menu_height, pending_extra);
+            let total_rows = wrapped_rows.len();
+            let rows_to_display = total_rows.min(max_content_rows);
+            let viewport_start =
+                self.viewport_start_for_cursor(total_rows, rows_to_display, cursor_pos.row);
+
+            let _hidden_above = viewport_start;
+            let _hidden_below = total_rows.saturating_sub(viewport_start + rows_to_display);
+
+            let display_height = (rows_to_display + 2) as u16;
+            let input_height = display_height;
+
             input_height
                 .saturating_add(menu_height)
                 .saturating_add(pending_extra)
@@ -1215,6 +1233,43 @@ impl PromptBox {
             self.last_start_row = Some(start_row);
             self.last_height = height;
         }
+    }
+
+    fn max_prompt_height(&self) -> u16 {
+        // Keep the prompt usable when the input becomes very large by capping
+        // the prompt block to about half the terminal height.
+        (cli_terminal::term_height() / 2).max(4)
+    }
+
+    fn max_input_content_rows(&self, menu_height: u16, pending_extra: u16) -> usize {
+        // Prompt layout:
+        // - pending_extra rows (optional)
+        // - top border (1)
+        // - content rows (N)
+        // - bottom border (1)
+        // - status line (1)
+        // - menu_height rows (optional)
+        let non_content_rows: u16 = pending_extra.saturating_add(menu_height).saturating_add(3);
+
+        self.max_prompt_height()
+            .saturating_sub(non_content_rows)
+            .max(1) as usize
+    }
+
+    fn viewport_start_for_cursor(
+        &self,
+        total_rows: usize,
+        rows_to_display: usize,
+        cursor_row: usize,
+    ) -> usize {
+        if total_rows <= rows_to_display {
+            return 0;
+        }
+
+        let half_viewport = rows_to_display / 2;
+        let ideal_start = cursor_row.saturating_sub(half_viewport);
+        let max_start = total_rows.saturating_sub(rows_to_display);
+        ideal_start.min(max_start)
     }
 
     fn inline_start_row(&self, height: u16) -> io::Result<(u16, u16)> {
@@ -1441,6 +1496,58 @@ impl PromptBox {
 
         queue!(stdout, ResetColor)?;
         Ok(())
+    }
+
+    fn draw_bottom_border_line(
+        &self,
+        stdout: &mut io::Stdout,
+        row: u16,
+        indicator: Option<&str>,
+    ) -> io::Result<()> {
+        queue!(
+            stdout,
+            cursor::MoveTo(0, row),
+            terminal::Clear(ClearType::CurrentLine),
+            SetForegroundColor(BORDER_COLOR)
+        )?;
+
+        let Some(indicator) = indicator else {
+            write!(stdout, "{}", self.border)?;
+            queue!(stdout, ResetColor)?;
+            return Ok(());
+        };
+
+        let tag = format!("[{}]", indicator);
+        let tag_width = display_width(&tag);
+        if tag_width >= self.width {
+            write!(stdout, "{}", self.border)?;
+            queue!(stdout, ResetColor)?;
+            return Ok(());
+        }
+
+        let remaining = self.width.saturating_sub(tag_width);
+        let left = remaining / 2;
+        let right = remaining.saturating_sub(left);
+
+        for _ in 0..left {
+            write!(stdout, "─")?;
+        }
+        write!(stdout, "{}", tag)?;
+        for _ in 0..right {
+            write!(stdout, "─")?;
+        }
+
+        queue!(stdout, ResetColor)?;
+        Ok(())
+    }
+
+    fn input_scroll_indicator(&self, hidden_above: usize, hidden_below: usize) -> Option<String> {
+        match (hidden_above, hidden_below) {
+            (0, 0) => None,
+            (a, 0) => Some(format!("↑{}", a)),
+            (0, b) => Some(format!("↓{}", b)),
+            (a, b) => Some(format!("↑{} ↓{}", a, b)),
+        }
     }
 
     fn draw_prompt_status_line(&self, stdout: &mut io::Stdout, row: u16) -> io::Result<()> {

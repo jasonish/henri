@@ -1745,7 +1745,12 @@ async fn run_event_loop(
                             }
                         }
                         InputAction::MoveCursor => {
-                            prompt_box.position_cursor(&input_state)?;
+                            // Redraw on cursor moves so the input viewport scrolls as needed.
+                            if pending_prompts.is_empty() {
+                                prompt_box.draw(&input_state, false)?;
+                            } else {
+                                prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            }
                         }
                         InputAction::HistoryUp => {
                             input_state.apply_history_up(prompt_history);

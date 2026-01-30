@@ -56,6 +56,9 @@
 ### Fixed
 - CLI: Strip carriage returns from tool output to avoid erase glitches
 - CLI: Queue prompt scrolling inside sync_update to avoid overwrite glitches
+- CLI: Cap prompt height and internally scroll long input to keep the cursor visible
+- CLI: Prompt viewport now follows cursor movement (prevents accidental history navigation at the top edge)
+- CLI: Prompt border padding now uses display width (Unicode-aware) so indicators fill full terminal width
 
 - CLI: Persist last-used model so `default-model = ":last-used"` works on restart
 - CLI: Network stats now default to enabled on fresh configs
