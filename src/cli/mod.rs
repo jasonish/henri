@@ -17,6 +17,7 @@ mod menus;
 mod prompt;
 pub(crate) mod render;
 mod slash_menu;
+pub(crate) mod spacing;
 pub(crate) mod terminal;
 
 pub(crate) const TOOL_OUTPUT_VIEWPORT_LINES: usize = 10;

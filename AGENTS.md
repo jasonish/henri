@@ -100,7 +100,7 @@ use crate::provider::Message;
 - Maintain the SPDX license header on all new Rust files
 - The project uses cutting-edge Rust features - check Rust 2024 edition capabilities
 - Do not create planning documents or other external files unless explicitly requested
-- Session files are stored in `~/.local/share/henri/sessions/` (hashed by working directory)
+- Session files are stored in `~/.cache/henri/sessions/` (hashed by working directory)
 - Configuration is in `~/.config/henri/config.toml`
 - Prompts in `src/prompts/` are embedded at compile time via `include_str!`
 - When reviewing code, follow review instructions from .henri/commands/review.md

@@ -12,6 +12,7 @@ use unicode_width::UnicodeWidthChar;
 use super::history::{HistoryEvent, ImageMeta, TodoStatus};
 use super::markdown::{align_markdown_tables, render_markdown_line};
 use crate::cli::image_preview;
+use crate::cli::spacing::{LastBlock, needs_blank_line_before};
 use crate::syntax;
 
 // Shared color constants for consistent styling
@@ -60,49 +61,63 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
     }
 }
 
-/// Determine if a blank line should be inserted before this event based on the previous event.
-///
-/// This mirrors the spacing logic in `listener.rs` for streaming output.
-fn needs_blank_line_before(prev: Option<&HistoryEvent>, current: &HistoryEvent) -> bool {
-    let Some(prev) = prev else {
-        return false;
-    };
+fn last_block_for_event(event: &HistoryEvent) -> Option<LastBlock> {
+    match event {
+        HistoryEvent::UserPrompt { .. } => Some(LastBlock::UserPrompt),
+        HistoryEvent::AssistantText { .. } => Some(LastBlock::Text),
+        HistoryEvent::Thinking { .. } => Some(LastBlock::Thinking),
+        HistoryEvent::Info(_) | HistoryEvent::Error(_) | HistoryEvent::Warning(_) => {
+            Some(LastBlock::Info)
+        }
+        HistoryEvent::ToolUse { .. }
+        | HistoryEvent::ToolResult { .. }
+        | HistoryEvent::ToolOutput { .. }
+        | HistoryEvent::FileReadOutput { .. }
+        | HistoryEvent::ImagePreview { .. }
+        | HistoryEvent::FileDiff { .. } => Some(LastBlock::Tool),
+        HistoryEvent::ToolStart
+        | HistoryEvent::ToolEnd
+        | HistoryEvent::ThinkingEnd
+        | HistoryEvent::ResponseEnd
+        | HistoryEvent::TodoList { .. }
+        | HistoryEvent::AutoCompact { .. } => None,
+    }
+}
 
-    match (prev, current) {
-        // Any -> Info: blank line (live mode prints a blank line before info)
-        (_, HistoryEvent::Info(_)) => true,
-        // UserPrompt -> Thinking: blank line
-        (HistoryEvent::UserPrompt { .. }, HistoryEvent::Thinking { .. }) => true,
-        // UserPrompt -> Text: blank line (prompt ends with newline in render)
-        (HistoryEvent::UserPrompt { .. }, HistoryEvent::AssistantText { .. }) => true,
-        // Thinking -> Text: blank line
-        (HistoryEvent::Thinking { .. }, HistoryEvent::AssistantText { .. }) => true,
-        (HistoryEvent::ThinkingEnd, HistoryEvent::AssistantText { .. }) => true,
-        // Tool -> Text: blank line
-        (HistoryEvent::ToolResult { .. }, HistoryEvent::AssistantText { .. }) => true,
-        (HistoryEvent::ToolOutput { .. }, HistoryEvent::AssistantText { .. }) => true,
-        (HistoryEvent::FileReadOutput { .. }, HistoryEvent::AssistantText { .. }) => true,
-        (HistoryEvent::ImagePreview { .. }, HistoryEvent::AssistantText { .. }) => true,
-        (HistoryEvent::ToolEnd, HistoryEvent::AssistantText { .. }) => true,
-        // Tool -> Thinking: blank line
-        (HistoryEvent::ToolResult { .. }, HistoryEvent::Thinking { .. }) => true,
-        (HistoryEvent::ToolOutput { .. }, HistoryEvent::Thinking { .. }) => true,
-        (HistoryEvent::FileReadOutput { .. }, HistoryEvent::Thinking { .. }) => true,
-        (HistoryEvent::ImagePreview { .. }, HistoryEvent::Thinking { .. }) => true,
-        (HistoryEvent::ToolEnd, HistoryEvent::Thinking { .. }) => true,
-        // Thinking/Text -> ToolStart: blank line
-        (HistoryEvent::Thinking { .. }, HistoryEvent::ToolStart) => true,
-        (HistoryEvent::ThinkingEnd, HistoryEvent::ToolStart) => true,
-        (HistoryEvent::AssistantText { .. }, HistoryEvent::ToolStart) => true,
-        (HistoryEvent::ResponseEnd, HistoryEvent::ToolStart) => true,
-        // Info -> Tool: blank line
-        (HistoryEvent::Info(_), HistoryEvent::ToolStart) => true,
-        (HistoryEvent::Info(_), HistoryEvent::ToolUse { .. }) => true,
-        // ResponseEnd -> Text/Thinking: blank line (for session replay across message boundaries)
-        (HistoryEvent::ResponseEnd, HistoryEvent::AssistantText { .. }) => true,
-        (HistoryEvent::ResponseEnd, HistoryEvent::Thinking { .. }) => true,
-        // ResponseEnd -> UserPrompt: blank line (new turn from user)
-        (HistoryEvent::ResponseEnd, HistoryEvent::UserPrompt { .. }) => true,
+fn trailing_newlines(s: &str) -> usize {
+    let mut count = 0usize;
+    for &b in s.as_bytes().iter().rev() {
+        match b {
+            b'\n' => count += 1,
+            b'\r' => {}
+            _ => break,
+        }
+    }
+    count
+}
+
+fn ensure_trailing_newlines(output: &mut String, min: usize) {
+    let existing = trailing_newlines(output);
+    if existing >= min {
+        return;
+    }
+    output.push_str(&"\n".repeat(min - existing));
+}
+
+fn should_suppress_success_checkmark(diff_shown: &mut bool, event: &HistoryEvent) -> bool {
+    match event {
+        HistoryEvent::FileDiff { .. } => {
+            *diff_shown = true;
+            false
+        }
+        HistoryEvent::ToolResult {
+            is_error: false, ..
+        } if *diff_shown => {
+            *diff_shown = false;
+            true
+        }
+        // On errors, keep the flag set so the next successful ToolResult still suppresses.
+        HistoryEvent::ToolResult { is_error: true, .. } => false,
         _ => false,
     }
 }
@@ -110,6 +125,13 @@ fn needs_blank_line_before(prev: Option<&HistoryEvent>, current: &HistoryEvent) 
 /// Render all history events.
 pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
     let mut output = String::new();
+    let mut last_block: Option<LastBlock> = None;
+
+    // History includes ToolStart/ToolEnd boundaries so we can match live spacing rules.
+    let mut in_tool_block = false;
+
+    // Mirrors `CliListener`'s one-shot diff_shown behavior so we don't suppress multiple ✓'s.
+    let mut diff_shown = false;
 
     for (idx, event) in events.iter().enumerate() {
         let prev = if idx > 0 {
@@ -118,9 +140,47 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
             None
         };
 
-        // Insert blank line between blocks where appropriate
-        if needs_blank_line_before(prev, event) {
-            output.push('\n');
+        match event {
+            HistoryEvent::ToolStart => {
+                in_tool_block = true;
+            }
+            HistoryEvent::ToolEnd => {
+                in_tool_block = false;
+            }
+            _ => {}
+        }
+
+        let suppressed_tool_result = should_suppress_success_checkmark(&mut diff_shown, event);
+
+        let current_block = if suppressed_tool_result {
+            None
+        } else {
+            last_block_for_event(event)
+        };
+
+        // Insert blank line between blocks where appropriate.
+        if let Some(current_block) = current_block
+            && needs_blank_line_before(last_block, current_block)
+        {
+            // Mirror live streaming behavior:
+            // - Info blocks are separated.
+            // - Tool results stay grouped with any preceding info emitted by that tool.
+            if matches!(event, HistoryEvent::ToolResult { .. })
+                && in_tool_block
+                && last_block == Some(LastBlock::Info)
+            {
+                ensure_trailing_newlines(&mut output, 1);
+            } else {
+                ensure_trailing_newlines(&mut output, 2);
+            }
+        }
+
+        // Ensure there is a blank line between tool output and an info message.
+        // Skip if the previous rendered event already ends with a newline (e.g. FileDiff output)
+        // so we don't accidentally create a double-blank separator.
+        if matches!(event, HistoryEvent::Info(_)) && in_tool_block && trailing_newlines(&output) < 1
+        {
+            ensure_trailing_newlines(&mut output, 2);
         }
 
         let next = events.get(idx + 1);
@@ -140,9 +200,7 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
                 output,
                 summary,
             } => {
-                // If the previous event was a FileDiff, it already displayed a checkmark,
-                // so we don't need another one for success.
-                if !*is_error && matches!(prev, Some(HistoryEvent::FileDiff { .. })) {
+                if suppressed_tool_result {
                     String::new()
                 } else {
                     // Only add leading space if previous was ToolUse (inline display).
@@ -154,6 +212,12 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
         };
 
         output.push_str(&rendered);
+
+        if let Some(current_block) = current_block
+            && !rendered.is_empty()
+        {
+            last_block = Some(current_block);
+        }
     }
 
     // Avoid leaving the output cursor on an empty trailing line above the prompt/status line.

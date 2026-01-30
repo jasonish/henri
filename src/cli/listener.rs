@@ -21,6 +21,7 @@ use super::markdown::{
     render_markdown_inlines, render_markdown_inlines_with_style, render_markdown_line,
 };
 use super::render::{BG_DARK_GREEN, BG_DARK_RED, style_file_read_line};
+use super::spacing::{LastBlock, needs_blank_line_before};
 use super::terminal;
 
 static ACTIVE_LISTENER: OnceLock<&'static CliListener> = OnceLock::new();
@@ -1131,15 +1132,6 @@ impl WordWrapper {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LastBlock {
-    UserPrompt,
-    Thinking,
-    Text,
-    Info,
-    Tool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum OutputState {
     Idle,
     Thinking { has_output: bool },
@@ -1262,13 +1254,14 @@ struct StreamState {
     last_tool_call_open: bool,
     /// Whether we're inside a <Tool>...</Tool> block
     in_tool_block: bool,
-    /// Whether an info message was printed while inside a tool block.
-    ///
-    /// Used to insert a blank line before the next tool call so messages like
-    /// "[LSP activated: ...]" don't run into the next "▶ ..." banner.
-    info_since_last_tool_call: bool,
     /// Tool output viewport state
     tool_output: ToolOutputState,
+    /// Whether an info message was printed inside a tool block since the last tool call banner.
+    ///
+    /// Some info lines (e.g. "[LSP activated...]") can be emitted by tools and end up visually
+    /// adjacent to a subsequent tool call once the previous tool result checkmark is rendered.
+    /// Track this explicitly so we can insert an extra blank line for readability.
+    info_since_last_tool_call: bool,
 }
 
 impl StreamState {
@@ -1284,8 +1277,8 @@ impl StreamState {
             diff_shown: false,
             last_tool_call_open: false,
             in_tool_block: false,
-            info_since_last_tool_call: false,
             tool_output: ToolOutputState::new(),
+            info_since_last_tool_call: false,
         }
     }
 
@@ -1299,8 +1292,8 @@ impl StreamState {
         self.diff_shown = false;
         self.last_tool_call_open = false;
         self.in_tool_block = false;
-        self.info_since_last_tool_call = false;
         self.tool_output.reset();
+        self.info_since_last_tool_call = false;
     }
 }
 
@@ -1523,12 +1516,7 @@ impl CliListener {
                     // it handles cases where the previous output intentionally didn't end with a
                     // newline (user prompt / tool checkmark).
                     if !state.thinking.has_content {
-                        if matches!(
-                            state.last_block,
-                            Some(LastBlock::Tool) | Some(LastBlock::UserPrompt)
-                        ) {
-                            // Prompt -> Thinking: blank line
-                            // Tool   -> Thinking: blank line
+                        if needs_blank_line_before(state.last_block, LastBlock::Thinking) {
                             terminal::ensure_trailing_newlines(2);
                         } else {
                             terminal::ensure_line_break();
@@ -1591,10 +1579,7 @@ impl CliListener {
                 {
                     // Ensure the placeholder becomes its own visual block instead of
                     // appearing adjacent to the user prompt/tool line.
-                    if matches!(
-                        state.last_block,
-                        Some(LastBlock::Tool) | Some(LastBlock::UserPrompt)
-                    ) {
+                    if needs_blank_line_before(state.last_block, LastBlock::Thinking) {
                         terminal::ensure_trailing_newlines(2);
                     } else {
                         terminal::ensure_line_break();
@@ -1648,22 +1633,12 @@ impl CliListener {
                 }
 
                 // Ensure response text starts on the correct line.
-                //
-                // Rules:
-                // - UserPrompt -> Text: blank line
-                // - Thinking   -> Text: blank line
-                // - Tool       -> Text: blank line
-                if matches!(state.last_block, Some(LastBlock::Tool)) {
+                if !state.text_output_written
+                    && needs_blank_line_before(state.last_block, LastBlock::Text)
+                {
                     terminal::ensure_trailing_newlines(2);
                 } else if !state.text_output_written {
-                    if matches!(
-                        state.last_block,
-                        Some(LastBlock::Thinking) | Some(LastBlock::UserPrompt)
-                    ) {
-                        terminal::ensure_trailing_newlines(2);
-                    } else {
-                        terminal::ensure_line_break();
-                    }
+                    terminal::ensure_line_break();
                 }
 
                 state.text_output_written = true;
@@ -1689,10 +1664,7 @@ impl CliListener {
                 if !state.text_output_written {
                     // Ensure the placeholder becomes its own visual block instead of
                     // appearing adjacent to the user prompt/tool line.
-                    if matches!(
-                        state.last_block,
-                        Some(LastBlock::Tool) | Some(LastBlock::UserPrompt)
-                    ) {
+                    if needs_blank_line_before(state.last_block, LastBlock::Text) {
                         terminal::ensure_trailing_newlines(2);
                     } else {
                         terminal::ensure_line_break();
@@ -1746,14 +1718,9 @@ impl CliListener {
                     let starting = !state.in_tool_block;
 
                     if starting {
-                        // Spacing rules (reactive): insert a blank line between blocks where it
+                        // Spacing rules: insert a blank line between blocks where it
                         // improves readability, but not between consecutive tool calls.
-                        if matches!(
-                            state.last_block,
-                            Some(LastBlock::Thinking)
-                                | Some(LastBlock::Text)
-                                | Some(LastBlock::Info)
-                        ) {
+                        if needs_blank_line_before(state.last_block, LastBlock::Tool) {
                             terminal::ensure_trailing_newlines(2);
                         } else {
                             terminal::ensure_line_break();
@@ -1772,11 +1739,12 @@ impl CliListener {
                         }
                     }
 
+                    state.info_since_last_tool_call = false;
+
                     let text = format!("▶ {}", description);
                     terminal::print_above(&text);
                     state.last_tool_call_open = true;
                     state.last_block = Some(LastBlock::Tool);
-                    state.info_since_last_tool_call = false;
                     starting
                 } else {
                     false
@@ -2090,25 +2058,42 @@ impl CliListener {
             }
 
             OutputEvent::Info(msg) => {
-                let spacing = self
+                let (last_block, in_tool_block, pending_tool_line) = self
                     .state
                     .lock()
-                    .map(|s| matches!(s.last_block, Some(LastBlock::Tool)))
-                    .unwrap_or(false);
+                    .map(|s| (s.last_block, s.in_tool_block, s.last_tool_call_open))
+                    .unwrap_or((None, false, false));
 
-                if spacing {
+                if needs_blank_line_before(last_block, LastBlock::Info) {
                     terminal::ensure_trailing_newlines(2);
                 } else {
                     terminal::ensure_line_break();
                 }
 
-                terminal::println_above(&msg.cyan().to_string());
+                let styled = msg.cyan().to_string();
+
+                // In prompt mode, avoid leaving the output cursor on a blank trailing line.
+                // That blank line stacks with the status-line spacer row and looks like
+                // "two blank lines" before the status line.
+                //
+                // Exception: if we're in the middle of a tool call banner awaiting its
+                // checkmark, we *do* terminate the line so the ✓/✗ doesn't get appended to
+                // the info message.
+                if terminal::prompt_visible() && !pending_tool_line {
+                    terminal::print_above(&styled);
+                } else {
+                    terminal::println_above(&styled);
+                }
+
                 history::push(HistoryEvent::Info(msg.clone()));
                 if let Ok(mut state) = self.state.lock() {
-                    if state.in_tool_block {
+                    state.last_block = Some(LastBlock::Info);
+                    if in_tool_block {
                         state.info_since_last_tool_call = true;
                     }
-                    state.last_block = Some(LastBlock::Info);
+                    if pending_tool_line {
+                        state.last_tool_call_open = false;
+                    }
                 }
             }
 
@@ -2121,7 +2106,15 @@ impl CliListener {
                 if let Ok(mut state) = self.state.lock() {
                     state.output_state = OutputState::Idle;
                 }
-                terminal::ensure_line_break();
+
+                let last_block = self.state.lock().map(|s| s.last_block).unwrap_or(None);
+
+                if needs_blank_line_before(last_block, LastBlock::Info) {
+                    terminal::ensure_trailing_newlines(2);
+                } else {
+                    terminal::ensure_line_break();
+                }
+
                 terminal::println_above(&msg.red().to_string());
                 history::push(HistoryEvent::Error(msg.clone()));
                 if let Ok(mut state) = self.state.lock() {
@@ -2130,7 +2123,14 @@ impl CliListener {
             }
 
             OutputEvent::Warning(msg) => {
-                terminal::ensure_line_break();
+                let last_block = self.state.lock().map(|s| s.last_block).unwrap_or(None);
+
+                if needs_blank_line_before(last_block, LastBlock::Info) {
+                    terminal::ensure_trailing_newlines(2);
+                } else {
+                    terminal::ensure_line_break();
+                }
+
                 terminal::println_above(&msg.yellow().to_string());
                 history::push(HistoryEvent::Warning(msg.clone()));
                 if let Ok(mut state) = self.state.lock() {

@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::cli::history::{HistoryEvent, ImageMeta};
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
 use crate::providers::ModelProvider;
 use crate::tools::TodoItem;
@@ -31,7 +32,275 @@ use crate::tools::TodoItem;
 use crate::tools::format_tool_call_description;
 use crate::tools::todo::{clear_todos, get_todos, set_todos};
 
-const SESSION_VERSION: u32 = 2;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SerializableHistoryTodoItem {
+    pub content: String,
+    pub status: SerializableHistoryTodoStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SerializableHistoryTodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum SerializableHistoryEvent {
+    UserPrompt {
+        text: String,
+        images: Vec<SerializableImageMeta>,
+    },
+    AssistantText {
+        text: String,
+        is_streaming: bool,
+    },
+    Thinking {
+        text: String,
+        is_streaming: bool,
+    },
+    ToolUse {
+        description: String,
+    },
+    ThinkingEnd,
+    ResponseEnd,
+    ToolStart,
+    ToolEnd,
+    ToolResult {
+        output: String,
+        is_error: bool,
+        summary: Option<String>,
+    },
+    ToolOutput {
+        text: String,
+    },
+    FileReadOutput {
+        filename: String,
+        text: String,
+    },
+    ImagePreview {
+        data: Vec<u8>,
+        mime_type: String,
+    },
+    Error {
+        message: String,
+    },
+    Warning {
+        message: String,
+    },
+    Info {
+        message: String,
+    },
+    FileDiff {
+        diff: String,
+        language: Option<String>,
+    },
+    TodoList {
+        items: Vec<SerializableHistoryTodoItem>,
+    },
+    AutoCompact {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SerializableImageMeta {
+    pub marker: String,
+    pub mime_type: String,
+    pub size_bytes: usize,
+}
+
+impl From<&ImageMeta> for SerializableImageMeta {
+    fn from(meta: &ImageMeta) -> Self {
+        Self {
+            marker: meta._marker.clone(),
+            mime_type: meta._mime_type.clone(),
+            size_bytes: meta._size_bytes,
+        }
+    }
+}
+
+impl From<&SerializableImageMeta> for ImageMeta {
+    fn from(meta: &SerializableImageMeta) -> Self {
+        Self {
+            _marker: meta.marker.clone(),
+            _mime_type: meta.mime_type.clone(),
+            _size_bytes: meta.size_bytes,
+        }
+    }
+}
+
+impl From<&HistoryEvent> for SerializableHistoryEvent {
+    fn from(event: &HistoryEvent) -> Self {
+        match event {
+            HistoryEvent::UserPrompt { text, images } => SerializableHistoryEvent::UserPrompt {
+                text: text.clone(),
+                images: images.iter().map(SerializableImageMeta::from).collect(),
+            },
+            HistoryEvent::AssistantText { text, is_streaming } => {
+                SerializableHistoryEvent::AssistantText {
+                    text: text.clone(),
+                    is_streaming: *is_streaming,
+                }
+            }
+            HistoryEvent::Thinking { text, is_streaming } => SerializableHistoryEvent::Thinking {
+                text: text.clone(),
+                is_streaming: *is_streaming,
+            },
+            HistoryEvent::ToolUse { description } => SerializableHistoryEvent::ToolUse {
+                description: description.clone(),
+            },
+            HistoryEvent::ThinkingEnd => SerializableHistoryEvent::ThinkingEnd,
+            HistoryEvent::ResponseEnd => SerializableHistoryEvent::ResponseEnd,
+            HistoryEvent::ToolStart => SerializableHistoryEvent::ToolStart,
+            HistoryEvent::ToolEnd => SerializableHistoryEvent::ToolEnd,
+            HistoryEvent::ToolResult {
+                output,
+                is_error,
+                summary,
+            } => SerializableHistoryEvent::ToolResult {
+                output: output.clone(),
+                is_error: *is_error,
+                summary: summary.clone(),
+            },
+            HistoryEvent::ToolOutput { text } => {
+                SerializableHistoryEvent::ToolOutput { text: text.clone() }
+            }
+            HistoryEvent::FileReadOutput { filename, text } => {
+                SerializableHistoryEvent::FileReadOutput {
+                    filename: filename.clone(),
+                    text: text.clone(),
+                }
+            }
+            HistoryEvent::ImagePreview { data, mime_type } => {
+                SerializableHistoryEvent::ImagePreview {
+                    data: data.clone(),
+                    mime_type: mime_type.clone(),
+                }
+            }
+            HistoryEvent::Error(msg) => SerializableHistoryEvent::Error {
+                message: msg.clone(),
+            },
+            HistoryEvent::Warning(msg) => SerializableHistoryEvent::Warning {
+                message: msg.clone(),
+            },
+            HistoryEvent::Info(msg) => SerializableHistoryEvent::Info {
+                message: msg.clone(),
+            },
+            HistoryEvent::FileDiff { diff, language } => SerializableHistoryEvent::FileDiff {
+                diff: diff.clone(),
+                language: language.clone(),
+            },
+            HistoryEvent::TodoList { items } => SerializableHistoryEvent::TodoList {
+                items: items
+                    .iter()
+                    .map(|t| SerializableHistoryTodoItem {
+                        content: t.content.clone(),
+                        status: match t.status {
+                            crate::cli::history::TodoStatus::Pending => {
+                                SerializableHistoryTodoStatus::Pending
+                            }
+                            crate::cli::history::TodoStatus::InProgress => {
+                                SerializableHistoryTodoStatus::InProgress
+                            }
+                            crate::cli::history::TodoStatus::Completed => {
+                                SerializableHistoryTodoStatus::Completed
+                            }
+                        },
+                    })
+                    .collect(),
+            },
+            HistoryEvent::AutoCompact { message } => SerializableHistoryEvent::AutoCompact {
+                message: message.clone(),
+            },
+        }
+    }
+}
+
+impl From<&SerializableHistoryEvent> for HistoryEvent {
+    fn from(event: &SerializableHistoryEvent) -> Self {
+        match event {
+            SerializableHistoryEvent::UserPrompt { text, images } => HistoryEvent::UserPrompt {
+                text: text.clone(),
+                images: images.iter().map(ImageMeta::from).collect(),
+            },
+            SerializableHistoryEvent::AssistantText { text, is_streaming } => {
+                HistoryEvent::AssistantText {
+                    text: text.clone(),
+                    is_streaming: *is_streaming,
+                }
+            }
+            SerializableHistoryEvent::Thinking { text, is_streaming } => HistoryEvent::Thinking {
+                text: text.clone(),
+                is_streaming: *is_streaming,
+            },
+            SerializableHistoryEvent::ToolUse { description } => HistoryEvent::ToolUse {
+                description: description.clone(),
+            },
+            SerializableHistoryEvent::ThinkingEnd => HistoryEvent::ThinkingEnd,
+            SerializableHistoryEvent::ResponseEnd => HistoryEvent::ResponseEnd,
+            SerializableHistoryEvent::ToolStart => HistoryEvent::ToolStart,
+            SerializableHistoryEvent::ToolEnd => HistoryEvent::ToolEnd,
+            SerializableHistoryEvent::ToolResult {
+                output,
+                is_error,
+                summary,
+            } => HistoryEvent::ToolResult {
+                output: output.clone(),
+                is_error: *is_error,
+                summary: summary.clone(),
+            },
+            SerializableHistoryEvent::ToolOutput { text } => {
+                HistoryEvent::ToolOutput { text: text.clone() }
+            }
+            SerializableHistoryEvent::FileReadOutput { filename, text } => {
+                HistoryEvent::FileReadOutput {
+                    filename: filename.clone(),
+                    text: text.clone(),
+                }
+            }
+            SerializableHistoryEvent::ImagePreview { data, mime_type } => {
+                HistoryEvent::ImagePreview {
+                    data: data.clone(),
+                    mime_type: mime_type.clone(),
+                }
+            }
+            SerializableHistoryEvent::Error { message } => HistoryEvent::Error(message.clone()),
+            SerializableHistoryEvent::Warning { message } => HistoryEvent::Warning(message.clone()),
+            SerializableHistoryEvent::Info { message } => HistoryEvent::Info(message.clone()),
+            SerializableHistoryEvent::FileDiff { diff, language } => HistoryEvent::FileDiff {
+                diff: diff.clone(),
+                language: language.clone(),
+            },
+            SerializableHistoryEvent::TodoList { items } => HistoryEvent::TodoList {
+                items: items
+                    .iter()
+                    .map(|t| crate::cli::history::TodoItem {
+                        content: t.content.clone(),
+                        status: match t.status {
+                            SerializableHistoryTodoStatus::Pending => {
+                                crate::cli::history::TodoStatus::Pending
+                            }
+                            SerializableHistoryTodoStatus::InProgress => {
+                                crate::cli::history::TodoStatus::InProgress
+                            }
+                            SerializableHistoryTodoStatus::Completed => {
+                                crate::cli::history::TodoStatus::Completed
+                            }
+                        },
+                    })
+                    .collect(),
+            },
+            SerializableHistoryEvent::AutoCompact { message } => HistoryEvent::AutoCompact {
+                message: message.clone(),
+            },
+        }
+    }
+}
+
+const SESSION_VERSION: u32 = 3;
 
 /// Session metadata stored as the first line of the JSONL file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +355,11 @@ pub(crate) struct SessionInfo {
 pub(crate) struct SessionState {
     pub meta: SessionMeta,
     pub messages: Vec<SerializableMessage>,
+    /// Optional serialized CLI history snapshot captured at save time.
+    ///
+    /// When present, this is used to replay sessions so the loaded view matches exactly what the
+    /// user saw live (including Info events like "[LSP activated...]" and "[LSP diagnostics: ...]").
+    pub cli_history: Option<Vec<SerializableHistoryEvent>>,
 }
 
 /// Restored session ready to be used by CLI.
@@ -401,6 +675,18 @@ pub(crate) fn save_session(
     let todos = get_todos();
     let todos = if todos.is_empty() { None } else { Some(todos) };
 
+    let cli_history = crate::cli::history::snapshot();
+    let cli_history = if cli_history.is_empty() {
+        None
+    } else {
+        Some(
+            cli_history
+                .iter()
+                .map(SerializableHistoryEvent::from)
+                .collect(),
+        )
+    };
+
     let meta = SessionMeta {
         version: SESSION_VERSION,
         session_id: session_id.clone(),
@@ -413,19 +699,31 @@ pub(crate) fn save_session(
         todos,
     };
 
+    let state = SessionState {
+        meta,
+        messages: messages.iter().map(SerializableMessage::from).collect(),
+        cli_history,
+    };
+
     let mut file = File::create(&session_path)?;
 
     // Write metadata as first line
-    let meta_json = serde_json::to_string(&meta)
+    let meta_json = serde_json::to_string(&state.meta)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     writeln!(file, "{}", meta_json)?;
 
     // Write each message as a separate line
-    for msg in messages {
-        let serializable: SerializableMessage = msg.into();
-        let msg_json = serde_json::to_string(&serializable)
+    for msg in &state.messages {
+        let msg_json = serde_json::to_string(msg)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         writeln!(file, "{}", msg_json)?;
+    }
+
+    // Write serialized history snapshot (optional)
+    if let Some(events) = &state.cli_history {
+        let history_json = serde_json::to_string(events)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        writeln!(file, "{}", history_json)?;
     }
 
     Ok(session_id)
@@ -467,19 +765,32 @@ fn load_session_from_path(path: &Path) -> Option<SessionState> {
         return None;
     }
 
-    // Remaining lines are messages
+    // Remaining lines are messages, plus an optional history snapshot as the last line.
     let mut messages = Vec::new();
+    let mut cli_history: Option<Vec<SerializableHistoryEvent>> = None;
+
     for line in lines {
         let line = line.ok()?;
         if line.is_empty() {
             continue;
         }
+        if cli_history.is_none()
+            && let Ok(events) = serde_json::from_str::<Vec<SerializableHistoryEvent>>(&line)
+        {
+            cli_history = Some(events);
+            continue;
+        }
+
         if let Ok(msg) = serde_json::from_str::<SerializableMessage>(&line) {
             messages.push(msg);
         }
     }
 
-    Some(SessionState { meta, messages })
+    Some(SessionState {
+        meta,
+        messages,
+        cli_history,
+    })
 }
 
 /// List all sessions for a directory, sorted by recency (newest first).
@@ -643,6 +954,21 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
     // Use the same marker format as the interactive CLI ("Image#1", "Image#2", ...).
     const IMAGE_MARKER_PREFIX: &str = "Image#";
 
+    if let Some(events) = &state.cli_history {
+        // Replay exact CLI history captured at save time.
+        history::clear();
+        clear_todos();
+        if let Some(todos) = &state.meta.todos {
+            set_todos(todos.clone());
+        }
+
+        for ev in events {
+            history::push(HistoryEvent::from(ev));
+        }
+
+        return;
+    }
+
     // Clear existing history and todos so the replay is the authoritative view.
     history::clear();
     clear_todos();
@@ -764,6 +1090,12 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
                                     if let Some((is_error, content, data, mime_type)) =
                                         tool_results.get(id)
                                     {
+                                        for info in extract_lsp_info_events_from_tool_result_content(
+                                            content,
+                                        ) {
+                                            history::push(HistoryEvent::Info(info));
+                                        }
+
                                         let output = if *is_error {
                                             content.lines().next().unwrap_or("").to_string()
                                         } else {
@@ -795,6 +1127,12 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
                                 } => {
                                     // Tool results in saved sessions include full content; live UI only shows
                                     // the ✓/✗ indicator. Store just the first line for error previews.
+                                    for info in
+                                        extract_lsp_info_events_from_tool_result_content(content)
+                                    {
+                                        history::push(HistoryEvent::Info(info));
+                                    }
+
                                     let output = if *is_error {
                                         content.lines().next().unwrap_or("").to_string()
                                     } else {
@@ -920,6 +1258,85 @@ fn is_tool_result_only_serializable(msg: &SerializableMessage) -> bool {
                     .all(|b| matches!(b, SerializableContentBlock::ToolResult { .. }))
         }
     }
+}
+
+fn extract_lsp_info_events_from_tool_result_content(content: &str) -> Vec<String> {
+    let mut infos = Vec::new();
+
+    // Tool results typically include the detailed diagnostics block but not the summary info line.
+    // Reconstruct the live summary when possible.
+    if !content.contains("[LSP diagnostics:")
+        && let Some(summary) = extract_lsp_diagnostics_summary_from_tool_result_content(content)
+    {
+        infos.push(summary);
+    }
+
+    // LSP activation messages are emitted as info events live; if a tool includes them in its
+    // content (rare), preserve them.
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("[LSP activated:") {
+            infos.push(line.to_string());
+        }
+    }
+
+    infos
+}
+
+fn extract_lsp_diagnostics_summary_from_tool_result_content(content: &str) -> Option<String> {
+    if !content.contains("--- LSP Diagnostics ---") {
+        return None;
+    }
+
+    let mut errors: Option<usize> = None;
+    let mut warnings: Option<usize> = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+
+        if errors.is_none() && line.starts_with("Errors (") {
+            errors = parse_count_in_parens(line, "Errors (");
+        }
+
+        if warnings.is_none() && line.starts_with("Warnings (") {
+            warnings = parse_count_in_parens(line, "Warnings (");
+        }
+
+        if errors.is_some() && warnings.is_some() {
+            break;
+        }
+    }
+
+    let errors = errors.unwrap_or(0);
+    let warnings = warnings.unwrap_or(0);
+
+    if errors == 0 && warnings == 0 {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if errors > 0 {
+        parts.push(format!(
+            "{} error{}",
+            errors,
+            if errors == 1 { "" } else { "s" }
+        ));
+    }
+    if warnings > 0 {
+        parts.push(format!(
+            "{} warning{}",
+            warnings,
+            if warnings == 1 { "" } else { "s" }
+        ));
+    }
+
+    Some(format!("[LSP diagnostics: {}]", parts.join(", ")))
+}
+
+fn parse_count_in_parens(line: &str, prefix: &str) -> Option<usize> {
+    let rest = line.strip_prefix(prefix)?;
+    let count_str = rest.split(')').next()?;
+    count_str.parse().ok()
 }
 
 fn user_text_and_images(
@@ -1067,6 +1484,7 @@ mod tests {
                     ]),
                 },
             ],
+            cli_history: None,
         };
 
         replay_session_into_output(&state);
