@@ -2763,13 +2763,11 @@ fn spawn_chat_task(
                 // Continuation of subsequent lines
                 input::CONTINUATION
             };
-            // Colorize image markers
-            let styled_line = render::colorize_image_markers(wrapped_line);
+            // Colorize image markers, restoring grey background after each marker.
+            let styled_line =
+                render::colorize_image_markers(wrapped_line, Some(render::BG_GREY_ANSI));
 
             // Full-width grey background without printing trailing spaces.
-            //
-            // Important: `colorize_image_markers()` may emit ANSI reset codes; re-assert
-            // the prompt background before `\x1b[K` so the erase uses the grey background.
             let line = format!(
                 "{}{}{}{}\x1b[K\x1b[0m",
                 render::BG_GREY_ANSI,

@@ -258,13 +258,10 @@ fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String
         for (j, wrapped_line) in wrapped.iter().enumerate() {
             let p = if j == 0 { prefix } else { continuation };
 
-            // Colorize image markers in the line.
-            let styled_line = colorize_image_markers(wrapped_line);
+            // Colorize image markers in the line, restoring grey background after each marker.
+            let styled_line = colorize_image_markers(wrapped_line, Some(BG_GREY_ANSI));
 
             // Full-width grey background without printing trailing spaces.
-            //
-            // Important: `colorize_image_markers()` may emit ANSI reset codes; re-assert
-            // the prompt background before `\x1b[K` so the erase uses the grey background.
             output.push_str(BG_GREY_ANSI);
             output.push_str(p);
             output.push_str(&styled_line);
@@ -287,7 +284,10 @@ use super::input::IMAGE_MARKER_PREFIX;
 
 /// Colorize image markers like `Image#1` with cyan text on dark background.
 /// Matches "Image#" followed by one or more digits.
-pub(super) fn colorize_image_markers(text: &str) -> String {
+///
+/// If `restore_bg` is provided, the ANSI sequence is emitted after each marker
+/// to restore the surrounding background color (e.g., the grey user-prompt background).
+pub(super) fn colorize_image_markers(text: &str, restore_bg: Option<&str>) -> String {
     use colored::Colorize;
 
     let mut result = String::new();
@@ -320,6 +320,11 @@ pub(super) fn colorize_image_markers(text: &str) -> String {
 
             let marker: String = chars[start..i].iter().collect();
             result.push_str(&marker.cyan().on_color(BG_IMAGE_MARKER).to_string());
+
+            // Restore surrounding background if provided (the marker styling resets all attributes)
+            if let Some(bg) = restore_bg {
+                result.push_str(bg);
+            }
         } else {
             result.push(chars[i]);
             i += 1;

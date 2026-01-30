@@ -311,7 +311,7 @@ impl PromptBox {
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
                 let prefix = state.display_prefix_for_row(row);
-                let styled_text = colorize_image_markers(&row.text);
+                let styled_text = colorize_image_markers(&row.text, None);
                 write!(stdout, "{}{}", prefix, styled_text)?;
             }
 
