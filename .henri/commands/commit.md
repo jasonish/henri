@@ -10,9 +10,7 @@ Respect any of the users custom instructions: $ARGUMENTS
 * If still not "just check" clean, resolve any issues.
 * Commit all changes, not just those relevant to the work in the
   context.
-* Make sure CHANGELOG.md is up to date. If this was a simple commit
-  like a version bump or purely a dependency update, the CHANGELOG.md
-  update can be skipped.
+* Do not update the CHANGELOG.md.
 
 The commit should follow any other commit guidelines you may have been given.
 
