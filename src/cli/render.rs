@@ -651,9 +651,10 @@ pub(crate) fn style_tool_output_line(line: &str) -> String {
     result
 }
 
-/// Format the "scrolled lines" indicator shown when output is truncated.
-pub(crate) fn format_scrolled_indicator(hidden_lines: usize) -> String {
-    format!("(... {} previous lines)", hidden_lines)
+/// Format the scroll indicator shown when output is truncated.
+pub(crate) fn format_scrolled_indicator(hidden: usize, visible: usize) -> String {
+    let total = hidden + visible;
+    format!("(Showing last {} of {} lines)", visible, total)
         .bright_black()
         .to_string()
 }
@@ -667,6 +668,7 @@ fn render_tool_output(text: &str, width: usize) -> String {
 
     let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
     let start = wrapped.len().saturating_sub(max_lines);
+    let visible = wrapped.len() - start;
     let mut output = String::new();
 
     for line in &wrapped[start..] {
@@ -676,7 +678,9 @@ fn render_tool_output(text: &str, width: usize) -> String {
 
     // Show indicator at the bottom if lines were scrolled out of view
     if start > 0 {
-        output.push_str(&style_tool_output_line(&format_scrolled_indicator(start)));
+        output.push_str(&style_tool_output_line(&format_scrolled_indicator(
+            start, visible,
+        )));
         output.push('\n');
     }
 
@@ -692,6 +696,7 @@ fn render_file_read_output(filename: &str, text: &str, width: usize) -> String {
 
     let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
     let start = wrapped.len().saturating_sub(max_lines);
+    let visible = wrapped.len() - start;
     let language = syntax::language_from_path(filename);
     let mut output = String::new();
 
@@ -703,7 +708,9 @@ fn render_file_read_output(filename: &str, text: &str, width: usize) -> String {
 
     // Show indicator at the bottom if lines were scrolled out of view
     if start > 0 {
-        output.push_str(&style_tool_output_line(&format_scrolled_indicator(start)));
+        output.push_str(&style_tool_output_line(&format_scrolled_indicator(
+            start, visible,
+        )));
         output.push('\n');
     }
 

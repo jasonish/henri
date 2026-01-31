@@ -1957,7 +1957,10 @@ impl CliListener {
                         );
                         if hidden > 0 {
                             visible.push(crate::cli::render::style_tool_output_line(
-                                &crate::cli::render::format_scrolled_indicator(hidden),
+                                &crate::cli::render::format_scrolled_indicator(
+                                    hidden,
+                                    tail_lines.len(),
+                                ),
                             ));
                         }
                         let viewport_height = visible.len() as u16;
@@ -2075,7 +2078,10 @@ impl CliListener {
                         );
                         if hidden > 0 {
                             visible.push(crate::cli::render::style_tool_output_line(
-                                &crate::cli::render::format_scrolled_indicator(hidden),
+                                &crate::cli::render::format_scrolled_indicator(
+                                    hidden,
+                                    tail_lines.len(),
+                                ),
                             ));
                         }
                         let viewport_height = visible.len() as u16;
