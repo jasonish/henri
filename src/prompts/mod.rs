@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use chrono::Local;
 
 use crate::services::Services;
+use crate::skills;
 
 /// Git guidelines embedded at compile time.
 const GIT_GUIDELINES: &str = include_str!("git.md");
@@ -99,6 +100,11 @@ pub(crate) fn system_prompt_with_services(services: Option<&Services>) -> Vec<St
             agent_file.contents
         );
         prompt.push(instruction);
+    }
+
+    // Add skill prompts (agentskills.io format)
+    if let Some(skills_block) = skills::get_skill_prompts() {
+        prompt.push(skills_block);
     }
 
     // If provided, append read-only mode notice.

@@ -622,7 +622,9 @@ async fn run_event_loop(
 
     // Submit initial prompt if provided
     if let Some(prompt) = initial_prompt {
-        if provider_manager.is_none() {
+        // Only block non-slash commands when no provider is configured
+        // Slash commands are handled by process_input which has its own allow-list
+        if provider_manager.is_none() && !prompt.trim().starts_with('/') {
             print_no_providers_or_model_configured();
             if batch {
                 return Ok(());
@@ -3371,6 +3373,7 @@ async fn process_input(
                         | Command::Provider
                         | Command::Sessions
                         | Command::Settings
+                        | Command::Skills
                         | Command::Mcp
                         | Command::Lsp
                         | Command::Tools
@@ -3597,6 +3600,29 @@ async fn handle_command(
         Command::Tools => {
             // Open tools menu for interactive toggling
             CommandResult::OpenToolsMenu
+        }
+
+        Command::Skills => {
+            // List available skills
+            let skills = crate::skills::load_skills();
+            if skills.is_empty() {
+                terminal::println_above("No skills found.");
+                terminal::println_above("");
+                terminal::println_above("Skills are loaded from:");
+                terminal::println_above("  • .henri/skills/<skill-id>/SKILL.md (project)");
+                terminal::println_above("  • ~/.config/henri/skills/<skill-id>/SKILL.md (user)");
+            } else {
+                terminal::println_above(&format!("Available skills ({}):", skills.len()));
+                terminal::println_above("");
+                for skill in &skills {
+                    let name_display = format!("  {} {}", skill.name, skill.source.dimmed());
+                    terminal::println_above(&name_display);
+                    if !skill.description.is_empty() {
+                        terminal::println_above(&format!("    {}", skill.description.dimmed()));
+                    }
+                }
+            }
+            CommandResult::Continue
         }
 
         Command::Mcp => {

@@ -39,6 +39,7 @@ pub(crate) enum Command {
     Yolo,
     Sessions,
     Settings,
+    Skills,
     StartTransactionLogging,
     StopTransactionLogging,
     Tools,
@@ -184,6 +185,12 @@ pub(crate) const COMMANDS: &[SlashCommand] = &[
         command: Command::Settings,
         name: "settings",
         description: "Configure application settings",
+        availability: Availability::Always,
+    },
+    SlashCommand {
+        command: Command::Skills,
+        name: "skills",
+        description: "List available skills",
         availability: Availability::Always,
     },
     SlashCommand {

@@ -20,6 +20,7 @@ mod provider;
 mod providers;
 mod services;
 mod session;
+mod skills;
 mod sse;
 mod syntax;
 mod tools;
