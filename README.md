@@ -49,7 +49,7 @@ are best-effort.
 Currently, the only way to install is with Cargo:
 
 ```
-cargo install --locked --git https://github.com/jasonish/henri
+cargo install --locked henri
 ```
 
 This will install to `~/.cargo/bin`. Ensure that directory is in your
@@ -65,7 +65,8 @@ mv ~/.cargo/bin/henri ~/.local/bin/henri
 henri
 ```
 
-On first start, you must configure a provider/model (see `henri provider add`).
+On first start, you must configure a provider/model with the "/provider"
+command.
 
 ## Adding a Provider
 
