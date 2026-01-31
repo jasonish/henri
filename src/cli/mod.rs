@@ -167,6 +167,26 @@ struct CompactionState {
     original: Vec<Message>,
 }
 
+/// State for an async shell command task
+struct ShellTask {
+    /// Receiver for output lines from the shell command
+    line_rx: tokio::sync::mpsc::Receiver<ShellOutput>,
+    /// Output lines collected for history
+    output_lines: Vec<String>,
+    /// Exit status when complete
+    exit_status: Option<Option<i32>>,
+}
+
+/// Output from a shell command task
+enum ShellOutput {
+    /// A line of output (stdout or stderr)
+    Line(String),
+    /// Command completed with optional exit code
+    Done(Option<i32>),
+    /// Command failed to start
+    Error(String),
+}
+
 /// Arguments for the CLI interface
 pub(crate) struct CliArgs {
     pub model: Option<String>,
@@ -510,6 +530,9 @@ async fn run_event_loop(
     // Active chat task state
     let mut chat_task: Option<ChatTask> = None;
 
+    // Active shell command task state
+    let mut shell_task: Option<ShellTask> = None;
+
     // Model menu state (active when Some)
     let mut model_menu: Option<ModelMenuState> = None;
 
@@ -759,6 +782,12 @@ async fn run_event_loop(
                     if let Some(pm) = provider_manager.take() {
                         chat_task = Some(spawn_compaction_chat(data, &mut messages, pm, output));
                     }
+                }
+                ProcessResult::StartShellCommand(cmd) => {
+                    if batch {
+                        return Ok(());
+                    }
+                    shell_task = Some(spawn_shell_task(cmd));
                 }
                 ProcessResult::RunProviderFlow => {
                     if batch {
@@ -1047,6 +1076,143 @@ async fn run_event_loop(
             }
         }
 
+        // Poll for shell task output if running
+        if let Some(ref mut task) = shell_task {
+            // Drain all available output
+            loop {
+                match task.line_rx.try_recv() {
+                    Ok(ShellOutput::Line(line)) => {
+                        task.output_lines.push(line.clone());
+                        terminal::println_above(&render::style_tool_output_line(&line));
+                    }
+                    Ok(ShellOutput::Done(exit_code)) => {
+                        task.exit_status = Some(exit_code);
+                        break;
+                    }
+                    Ok(ShellOutput::Error(msg)) => {
+                        terminal::println_above(
+                            &format!("Failed to execute command: {}", msg)
+                                .red()
+                                .to_string(),
+                        );
+                        history::push(history::HistoryEvent::Error(format!(
+                            "Failed to execute command: {}",
+                            msg
+                        )));
+                        shell_task = None;
+                        break;
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        // No more output available right now
+                        break;
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                        // Channel closed unexpectedly
+                        shell_task = None;
+                        break;
+                    }
+                }
+            }
+
+            // Check if task completed
+            if let Some(ref task) = shell_task
+                && task.exit_status.is_some()
+            {
+                // Save output to history
+                if !task.output_lines.is_empty() {
+                    let combined = task.output_lines.join("\n");
+                    history::push(history::HistoryEvent::Info(combined));
+                }
+
+                // Show exit status if non-zero
+                if let Some(Some(code)) = task.exit_status
+                    && code != 0
+                {
+                    terminal::println_above(
+                        &format!("[Command exited with status {}]", code)
+                            .bright_black()
+                            .to_string(),
+                    );
+                }
+
+                shell_task = None;
+
+                // Process any pending prompts that were queued while shell was running
+                if let Some(next) = pending_prompts.pop_front() {
+                    // Process the input
+                    let result = process_input(
+                        &next.input,
+                        &mut messages,
+                        current_session_id,
+                        working_dir,
+                        &mut prompt_box,
+                        &mut input_state,
+                        services,
+                        custom_commands,
+                        &mut provider_manager,
+                        thinking_state,
+                    )
+                    .await;
+
+                    match result {
+                        ProcessResult::Continue => {
+                            // Command completed (like a /command), echo it
+                            echo_user_prompt_to_output(&next.input, &next.images);
+                            // Check for more pending prompts
+                            if pending_prompts.is_empty() {
+                                prompt_box.draw(&input_state, false)?;
+                            } else {
+                                prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                            }
+                        }
+                        ProcessResult::Quit => {
+                            break;
+                        }
+                        ProcessResult::StartChat(prompt, history_entry) => {
+                            // spawn_chat_task echoes the prompt itself
+                            let history_text = history_entry.as_ref().unwrap_or(&prompt);
+                            let _ = prompt_history.add_with_images(history_text, vec![]);
+
+                            if let Some(pm) = provider_manager.take() {
+                                if current_session_id.is_none() {
+                                    *current_session_id = Some(session::generate_session_id());
+                                }
+                                let session_ctx = SessionSaveContext {
+                                    working_dir: working_dir.to_path_buf(),
+                                    provider: pm.current_provider(),
+                                    model_id: pm.current_model_id().to_string(),
+                                    thinking_enabled: thinking_state.enabled,
+                                    read_only,
+                                    session_id: current_session_id.clone().unwrap(),
+                                };
+                                chat_task = Some(spawn_chat_task(
+                                    prompt,
+                                    next.images,
+                                    &mut messages,
+                                    pm,
+                                    thinking_state,
+                                    output,
+                                    session_ctx,
+                                ));
+                            }
+                            prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                        }
+                        ProcessResult::StartShellCommand(cmd) => {
+                            shell_task = Some(spawn_shell_task(cmd));
+                            prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                        }
+                        // Other results (menus, etc.) - just continue, menus will open
+                        _ => {
+                            prompt_box.draw(&input_state, false)?;
+                        }
+                    }
+                } else {
+                    // No pending prompts, just redraw
+                    prompt_box.draw(&input_state, false)?;
+                }
+            }
+        }
+
         // Check if LSP generation changed (a new server started during streaming).
         // If so, redraw the prompt to show the updated LSP count.
         if let Some(ref task) = chat_task {
@@ -1314,7 +1480,7 @@ async fn run_event_loop(
                     }
 
                     // During chat: allow typing but block submission and other shortcuts
-                    let chatting = chat_task.is_some();
+                    let chatting = chat_task.is_some() || shell_task.is_some();
 
                     if chatting
                         && key.code == KeyCode::Up
@@ -2344,6 +2510,11 @@ async fn run_event_loop(
                                         .await;
                                         prompt_box.draw(&input_state, true)?;
                                     }
+                                    ProcessResult::StartShellCommand(cmd) => {
+                                        input_state.clear();
+                                        prompt_box.draw(&input_state, false)?;
+                                        shell_task = Some(spawn_shell_task(cmd));
+                                    }
                                 }
                             }
                         }
@@ -3033,6 +3204,72 @@ fn finalize_compaction(chat_messages: Vec<Message>, state: CompactionState) -> V
     new_messages
 }
 
+/// Spawn an async shell command task
+fn spawn_shell_task(cmd: String) -> ShellTask {
+    use tokio::process::Command;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<ShellOutput>(100);
+
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+
+        let result = Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+
+        match result {
+            Ok(mut child) => {
+                let stdout = child.stdout.take();
+                let stderr = child.stderr.take();
+
+                // Spawn tasks to read stdout and stderr concurrently
+                let tx_stdout = tx.clone();
+                let stdout_task = tokio::spawn(async move {
+                    if let Some(stdout) = stdout {
+                        let reader = tokio::io::BufReader::new(stdout);
+                        let mut lines = reader.lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            let _ = tx_stdout.send(ShellOutput::Line(line)).await;
+                        }
+                    }
+                });
+
+                let tx_stderr = tx.clone();
+                let stderr_task = tokio::spawn(async move {
+                    if let Some(stderr) = stderr {
+                        let reader = tokio::io::BufReader::new(stderr);
+                        let mut lines = reader.lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            let _ = tx_stderr.send(ShellOutput::Line(line)).await;
+                        }
+                    }
+                });
+
+                // Wait for both readers to complete
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+
+                // Wait for the process to finish
+                let status = child.wait().await;
+                let exit_code = status.ok().and_then(|s| s.code());
+                let _ = tx.send(ShellOutput::Done(exit_code)).await;
+            }
+            Err(e) => {
+                let _ = tx.send(ShellOutput::Error(e.to_string())).await;
+            }
+        }
+    });
+
+    ShellTask {
+        line_rx: rx,
+        output_lines: Vec::new(),
+        exit_status: None,
+    }
+}
+
 enum ProcessResult {
     /// Continue to next input
     Continue,
@@ -3058,6 +3295,8 @@ enum ProcessResult {
     RunProviderFlow,
     /// Start compaction
     StartCompaction(CompactionData),
+    /// Start an async shell command
+    StartShellCommand(String),
 }
 
 /// Process user input and return what to do next
@@ -3078,63 +3317,12 @@ async fn process_input(
 
     // Handle shell commands starting with '!'
     if input.starts_with('!') {
-        // Disable raw mode for shell command
-        let _ = crossterm_terminal::disable_raw_mode();
-        let _ = prompt_box.hide_and_clear();
-
-        let cmd = input.strip_prefix('!').unwrap_or("");
-        if !cmd.is_empty() {
-            history::push_user_prompt(&format!("!{}", cmd), vec![]);
-            let output = std::process::Command::new("sh").arg("-c").arg(cmd).output();
-            match output {
-                Ok(result) => {
-                    let stdout = String::from_utf8_lossy(&result.stdout);
-                    let stderr = String::from_utf8_lossy(&result.stderr);
-                    let mut combined = String::new();
-                    if !stdout.is_empty() {
-                        combined.push_str(&stdout);
-                    }
-                    if !stderr.is_empty() {
-                        if !combined.is_empty() && !combined.ends_with('\n') {
-                            combined.push('\n');
-                        }
-                        combined.push_str(&stderr);
-                    }
-                    if !combined.is_empty() {
-                        let mut cleaned = combined.clone();
-                        if cleaned.ends_with('\n') {
-                            cleaned.pop();
-                        }
-                        history::push(history::HistoryEvent::Info(cleaned));
-                        print!("{}", combined);
-                    }
-                    if !result.status.success()
-                        && let Some(code) = result.status.code()
-                    {
-                        terminal::println_above(
-                            &format!("[Command exited with status {}]", code)
-                                .bright_black()
-                                .to_string(),
-                        );
-                    }
-                }
-                Err(e) => {
-                    terminal::println_above(
-                        &format!("Failed to execute command: {}", e)
-                            .red()
-                            .to_string(),
-                    );
-                    history::push(history::HistoryEvent::Error(format!(
-                        "Failed to execute command: {}",
-                        e
-                    )));
-                }
-            }
+        let cmd = input.strip_prefix('!').unwrap_or("").to_string();
+        if cmd.is_empty() {
+            return ProcessResult::Continue;
         }
-
-        // Re-enable raw mode
-        let _ = crossterm_terminal::enable_raw_mode();
-        return ProcessResult::Continue;
+        echo_user_prompt_to_output(input, &[]);
+        return ProcessResult::StartShellCommand(cmd);
     }
 
     // Handle slash commands
