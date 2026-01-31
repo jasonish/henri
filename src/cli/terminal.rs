@@ -356,10 +356,19 @@ pub(crate) fn update_terminal_title(title: &str) {
 }
 
 /// Write text to the status line (if active and visible).
+///
+/// This function uses `try_lock` to avoid blocking on the output lock, allowing
+/// the spinner to update even while tool output is being rendered. If the lock
+/// is held, the status line update is skipped (it will be refreshed on the next
+/// spinner tick).
 pub(crate) fn write_status_line(text: &str) {
     use crossterm::SynchronizedUpdate;
 
-    let _guard = lock_output();
+    // Use try_lock to avoid blocking the spinner when output is being rendered.
+    // The spinner ticks every 100ms, so missing one update is acceptable.
+    let Ok(_guard) = output_lock().try_lock() else {
+        return;
+    };
     let state = PROMPT_STATE.lock().unwrap();
 
     let reserved_rows = if state.status_line_active {

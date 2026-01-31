@@ -589,18 +589,66 @@ pub(crate) fn style_tool_output_line(line: &str) -> String {
         return format!("{}\x1b[2K{}", BG, RESET);
     }
 
-    // Strip carriage returns (CR) so cursor rewinds don't interact with our
-    // line-clearing sequences (e.g. `\x1b[K`) and erase the rendered content.
-    let line = line.replace('\r', "");
+    // Fast path: if line has no special characters, skip expensive processing
+    if !line.contains('\r') && !line.contains("\x1b[0m") && !line.contains("\x1b[m") {
+        return format!("{}\x1b[2K{}{}\x1b[K{}", BG, line, BG, RESET);
+    }
 
-    let line = line.replace("\x1b[0m", "\x1b[0m\x1b[48;5;233m");
-    let line = line.replace("\x1b[m", "\x1b[m\x1b[48;5;233m");
+    // Slow path: process special characters in a single pass
+    // Pre-allocate with reasonable capacity
+    let mut result = String::with_capacity(line.len() + 64);
+    result.push_str(BG);
+    result.push_str("\x1b[2K");
 
-    // Paint full width by clearing the entire line with the background active, then
-    // render the content. Finally, `EL` ensures any remaining portion after the last
-    // printed character uses our background (in case the content changed background
-    // mid-line).
-    format!("{}\x1b[2K{}{}\x1b[K{}", BG, line, BG, RESET)
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip carriage returns
+        if bytes[i] == b'\r' {
+            i += 1;
+            continue;
+        }
+
+        // Check for escape sequences that need background restoration
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            // Check for \x1b[0m (4 bytes) or \x1b[m (3 bytes)
+            if i + 3 < bytes.len() && bytes[i + 2] == b'0' && bytes[i + 3] == b'm' {
+                // \x1b[0m - emit it and restore background
+                result.push_str("\x1b[0m\x1b[48;5;233m");
+                i += 4;
+                continue;
+            }
+            if i + 2 < bytes.len() && bytes[i + 2] == b'm' {
+                // \x1b[m - emit it and restore background
+                result.push_str("\x1b[m\x1b[48;5;233m");
+                i += 3;
+                continue;
+            }
+        }
+
+        // Regular character - find next special character for batch copy
+        let start = i;
+        while i < bytes.len()
+            && bytes[i] != b'\r'
+            && !(bytes[i] == 0x1b
+                && i + 2 < bytes.len()
+                && bytes[i + 1] == b'['
+                && (bytes[i + 2] == b'm'
+                    || (i + 3 < bytes.len() && bytes[i + 2] == b'0' && bytes[i + 3] == b'm')))
+        {
+            i += 1;
+        }
+        if i > start {
+            // SAFETY: We only split at ASCII byte boundaries (\r, ESC, [, 0, m are
+            // all single-byte ASCII). ASCII bytes are always valid UTF-8 boundaries.
+            result.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[start..i]) });
+        }
+    }
+
+    result.push_str(BG);
+    result.push_str("\x1b[K");
+    result.push_str(RESET);
+    result
 }
 
 /// Format the "scrolled lines" indicator shown when output is truncated.
@@ -621,14 +669,14 @@ fn render_tool_output(text: &str, width: usize) -> String {
     let start = wrapped.len().saturating_sub(max_lines);
     let mut output = String::new();
 
-    // Show indicator if lines were scrolled out of view
-    if start > 0 {
-        output.push_str(&style_tool_output_line(&format_scrolled_indicator(start)));
+    for line in &wrapped[start..] {
+        output.push_str(&style_tool_output_line(line));
         output.push('\n');
     }
 
-    for line in &wrapped[start..] {
-        output.push_str(&style_tool_output_line(line));
+    // Show indicator at the bottom if lines were scrolled out of view
+    if start > 0 {
+        output.push_str(&style_tool_output_line(&format_scrolled_indicator(start)));
         output.push('\n');
     }
 
@@ -647,15 +695,15 @@ fn render_file_read_output(filename: &str, text: &str, width: usize) -> String {
     let language = syntax::language_from_path(filename);
     let mut output = String::new();
 
-    // Show indicator if lines were scrolled out of view
-    if start > 0 {
-        output.push_str(&style_tool_output_line(&format_scrolled_indicator(start)));
-        output.push('\n');
-    }
-
     for line in &wrapped[start..] {
         let styled = style_file_read_line(line, language.as_deref());
         output.push_str(&styled);
+        output.push('\n');
+    }
+
+    // Show indicator at the bottom if lines were scrolled out of view
+    if start > 0 {
+        output.push_str(&style_tool_output_line(&format_scrolled_indicator(start)));
         output.push('\n');
     }
 
@@ -952,6 +1000,193 @@ fn char_width(c: char) -> usize {
 /// Get display width of a string
 pub(crate) fn display_width(s: &str) -> usize {
     s.chars().map(char_width).sum()
+}
+
+/// Fast extraction of tail lines by scanning backwards from end.
+///
+/// Given a pre-computed line count, this finds the last `max_lines` by scanning
+/// backwards to locate newline positions. This is O(output_size) for the visible
+/// portion only, not O(total_buffer_size).
+///
+/// If `wrap_width` is provided, lines longer than that are hard-wrapped (no word
+/// boundary logic, just character-based splitting). Lines containing ANSI escape
+/// sequences are not wrapped to avoid breaking the sequences.
+///
+/// Returns `(visible_lines, hidden_count)` where `hidden_count` is the number of
+/// wrapped lines not shown (for the scroll indicator).
+pub(crate) fn tail_lines_fast(
+    text: &str,
+    total_line_count: usize,
+    max_lines: usize,
+    wrap_width: Option<usize>,
+) -> (Vec<&str>, usize) {
+    if text.is_empty() || max_lines == 0 {
+        return (vec![], 0);
+    }
+
+    // If we have fewer lines than max, just return all (possibly wrapped)
+    if total_line_count <= max_lines {
+        let lines: Vec<&str> = text.lines().collect();
+        return if let Some(width) = wrap_width {
+            hard_wrap_lines(&lines, width, max_lines)
+        } else {
+            (lines, 0)
+        };
+    }
+
+    // Scan backwards to find the byte offset where the visible portion starts.
+    // We need enough raw lines that after wrapping we have at least max_lines.
+    // Fetch extra to account for potential wrapping.
+    let fetch_lines = if wrap_width.is_some() {
+        max_lines * 2
+    } else {
+        max_lines
+    };
+
+    let bytes = text.as_bytes();
+
+    // Find newlines from the end
+    let mut newline_positions = Vec::with_capacity(fetch_lines + 1);
+    for (i, &b) in bytes.iter().enumerate().rev() {
+        if b == b'\n' {
+            newline_positions.push(i);
+            if newline_positions.len() > fetch_lines {
+                break;
+            }
+        }
+    }
+
+    // Determine start offset
+    let start_offset = if newline_positions.len() > fetch_lines {
+        newline_positions[fetch_lines] + 1
+    } else {
+        0
+    };
+
+    // Extract the tail portion and split into lines
+    let tail = &text[start_offset..];
+    let raw_lines: Vec<&str> = tail.lines().collect();
+
+    // Count lines we're not even fetching (before start_offset)
+    let unfetched_lines = total_line_count.saturating_sub(raw_lines.len());
+
+    // Apply hard wrapping if requested
+    if let Some(width) = wrap_width {
+        let (visible, wrapped_hidden) = hard_wrap_lines(&raw_lines, width, max_lines);
+        (visible, unfetched_lines + wrapped_hidden)
+    } else if raw_lines.len() > max_lines {
+        let hidden = raw_lines.len() - max_lines + unfetched_lines;
+        (raw_lines[raw_lines.len() - max_lines..].to_vec(), hidden)
+    } else {
+        (raw_lines, unfetched_lines)
+    }
+}
+
+/// Hard-wrap lines at a fixed width (character-based, no word boundary logic).
+/// Returns `(visible_lines, hidden_count)` where at most `max_lines` are visible.
+/// Lines containing ANSI escape sequences are not wrapped.
+fn hard_wrap_lines<'a>(lines: &[&'a str], width: usize, max_lines: usize) -> (Vec<&'a str>, usize) {
+    if width == 0 {
+        let visible: Vec<_> = lines.iter().take(max_lines).copied().collect();
+        let hidden = lines.len().saturating_sub(max_lines);
+        return (visible, hidden);
+    }
+
+    // First pass: count total wrapped lines to know how many to skip
+    let mut total_wrapped = 0usize;
+    for line in lines {
+        total_wrapped += count_wrapped_chunks(line, width);
+    }
+
+    if total_wrapped <= max_lines {
+        // No truncation needed, but still need to wrap
+        let mut result = Vec::with_capacity(total_wrapped);
+        for line in lines {
+            if line.is_empty() {
+                result.push(*line);
+            } else {
+                result.extend(wrap_line_chunks(line, width));
+            }
+        }
+        return (result, 0);
+    }
+
+    // Need to skip some wrapped lines from the beginning
+    let skip = total_wrapped - max_lines;
+    let mut skipped = 0usize;
+    let mut result = Vec::with_capacity(max_lines);
+
+    for line in lines {
+        let chunks = if line.is_empty() {
+            vec![*line]
+        } else {
+            wrap_line_chunks(line, width)
+        };
+        for chunk in chunks {
+            if skipped < skip {
+                skipped += 1;
+            } else {
+                result.push(chunk);
+                if result.len() >= max_lines {
+                    return (result, skip);
+                }
+            }
+        }
+    }
+
+    (result, skip)
+}
+
+/// Count how many visual lines a string produces when wrapped.
+fn count_wrapped_chunks(line: &str, width: usize) -> usize {
+    if line.is_empty() {
+        return 1;
+    }
+    // Don't wrap lines with ANSI escapes (would break sequences)
+    if line.contains('\x1b') {
+        return 1;
+    }
+    let line_width = display_width(line);
+    line_width.div_ceil(width).max(1)
+}
+
+/// Split a single line into width-sized chunks.
+/// Lines containing ANSI escape sequences are returned as-is.
+fn wrap_line_chunks(line: &str, width: usize) -> Vec<&str> {
+    if line.is_empty() || width == 0 {
+        return vec![line];
+    }
+
+    // Don't wrap lines with ANSI escapes - would break the sequences
+    if line.contains('\x1b') {
+        return vec![line];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut current_width = 0;
+
+    for (i, c) in line.char_indices() {
+        let char_width = UnicodeWidthChar::width(c).unwrap_or(0);
+
+        if current_width + char_width > width && current_width > 0 {
+            chunks.push(&line[start..i]);
+            start = i;
+            current_width = char_width;
+        } else {
+            current_width += char_width;
+        }
+    }
+
+    if start < line.len() {
+        chunks.push(&line[start..]);
+    }
+
+    if chunks.is_empty() {
+        vec![line]
+    } else {
+        chunks
+    }
 }
 
 /// Wrap text to fit within a given width, preserving whitespace and newlines.
@@ -1315,5 +1550,90 @@ const x = 42;
         assert!(result.contains("✓"));
         // Should NOT have two checkmarks
         assert_eq!(result.matches("✓").count(), 1);
+    }
+
+    #[test]
+    fn test_tail_lines_fast_small_input() {
+        // When input is small, returns all lines with no hidden
+        let input = "line1\nline2\nline3\n";
+        let (lines, hidden) = tail_lines_fast(input, 3, 10, None);
+        assert_eq!(lines, vec!["line1", "line2", "line3"]);
+        assert_eq!(hidden, 0);
+    }
+
+    #[test]
+    fn test_tail_lines_fast_truncates_to_max_lines() {
+        // When input exceeds max_lines, returns only the tail
+        let input = "a\nb\nc\nd\ne\n";
+        let (lines, hidden) = tail_lines_fast(input, 5, 3, None);
+        assert_eq!(lines, vec!["c", "d", "e"]);
+        assert_eq!(hidden, 2);
+    }
+
+    #[test]
+    fn test_tail_lines_fast_large_input() {
+        // For large input, should return correct tail
+        let mut input = String::new();
+        for i in 0..100 {
+            input.push_str(&format!("line{}\n", i));
+        }
+        let (lines, hidden) = tail_lines_fast(&input, 100, 5, None);
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[4], "line99");
+        assert_eq!(hidden, 95);
+    }
+
+    #[test]
+    fn test_tail_lines_fast_empty_input() {
+        let (lines, hidden) = tail_lines_fast("", 0, 10, None);
+        assert!(lines.is_empty());
+        assert_eq!(hidden, 0);
+    }
+
+    #[test]
+    fn test_tail_lines_fast_with_wrapping() {
+        // Long line should be wrapped, hidden count reflects wrapped lines
+        let input = "short\nthis_is_a_very_long_line_that_exceeds_width\n";
+        let (lines, hidden) = tail_lines_fast(input, 2, 10, Some(20));
+        // First line "short" fits, second line wraps to 3 chunks (45 chars / 20 = 3)
+        assert!(lines.len() >= 2);
+        assert_eq!(lines[0], "short");
+        assert_eq!(hidden, 0); // All lines fit in viewport
+    }
+
+    #[test]
+    fn test_tail_lines_fast_wrapping_hidden_count() {
+        // Test that hidden count is correct when wrapping causes overflow
+        let input = "a\nb\nc\n"; // 3 short lines
+        let (lines, hidden) = tail_lines_fast(input, 3, 2, None);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(hidden, 1);
+    }
+
+    #[test]
+    fn test_tail_lines_fast_ansi_not_wrapped() {
+        // Lines with ANSI escapes should not be wrapped (would break sequences)
+        let input = "normal\n\x1b[31mthis_is_colored_and_very_long_line\x1b[0m\n";
+        let (lines, _) = tail_lines_fast(input, 2, 10, Some(10));
+        // The colored line should remain intact, not split
+        assert!(lines.iter().any(|l| l.contains("\x1b[31m")));
+    }
+
+    #[test]
+    fn test_style_tool_output_line_fast_path() {
+        // Lines without special characters should use fast path
+        let styled = style_tool_output_line("simple line");
+        assert!(styled.contains("simple line"));
+        assert!(styled.contains("\x1b[48;5;233m")); // Has background color
+    }
+
+    #[test]
+    fn test_style_tool_output_line_handles_reset_sequences() {
+        // Lines with reset sequences should restore background
+        let styled = style_tool_output_line("before\x1b[0mafter");
+        assert!(styled.contains("before"));
+        assert!(styled.contains("after"));
+        // Should restore background after reset
+        assert!(styled.contains("\x1b[0m\x1b[48;5;233m"));
     }
 }

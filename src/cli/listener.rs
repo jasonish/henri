@@ -1302,6 +1302,8 @@ struct ToolOutputState {
     active: bool,
     buffer: String,
     reserved_lines: u16,
+    /// Running count of complete lines (newlines seen)
+    line_count: usize,
 }
 
 impl ToolOutputState {
@@ -1310,6 +1312,7 @@ impl ToolOutputState {
             active: false,
             buffer: String::new(),
             reserved_lines: 0,
+            line_count: 0,
         }
     }
 
@@ -1317,6 +1320,14 @@ impl ToolOutputState {
         self.active = false;
         self.buffer.clear();
         self.reserved_lines = 0;
+        self.line_count = 0;
+    }
+
+    /// Append text to buffer and update line count
+    fn append(&mut self, text: &str) {
+        // Count newlines in the new text
+        self.line_count += text.bytes().filter(|&b| b == b'\n').count();
+        self.buffer.push_str(text);
     }
 }
 
@@ -1881,44 +1892,74 @@ impl CliListener {
                     return;
                 }
 
-                let width = Self::terminal_width();
-                let mut first_segment = true;
+                // Batch process: accumulate all segments, then render once per complete line.
+                // This avoids expensive per-segment wrap_text calls on the entire buffer.
+                let segments: Vec<&str> = text.split_inclusive('\n').collect();
+                let has_trailing_newline = text.ends_with('\n');
 
-                for segment in text.split_inclusive('\n') {
+                // If there's no newline at all, we still need to update state but can skip
+                // expensive viewport rendering until we get a complete line.
+                if segments.is_empty() {
+                    return;
+                }
+
+                // Accumulate content and only render on complete lines
+                let should_render;
+
+                // Single lock acquisition to update buffer
+                {
+                    let Ok(mut state) = self.state.lock() else {
+                        return;
+                    };
+
+                    state.last_tool_call_open = false;
+
+                    if !state.tool_output.active {
+                        state.tool_output.active = true;
+                    }
+
+                    // Append all segments to buffer with line counting
+                    for segment in &segments {
+                        state.tool_output.append(segment);
+                    }
+
+                    // Only render if we have a complete line (ends with newline)
+                    // or if the buffer has grown significantly (every ~50 lines for partial lines)
+                    should_render = has_trailing_newline
+                        || state.tool_output.buffer.len()
+                            > crate::cli::TOOL_OUTPUT_RENDER_THRESHOLD;
+                }
+
+                if should_render {
                     let (reserve_delta, visible_lines, viewport_height, spacer_lines) = {
                         let Ok(mut state) = self.state.lock() else {
                             return;
                         };
 
-                        if first_segment {
-                            state.last_tool_call_open = false;
-                            first_segment = false;
-                        }
-
-                        if !state.tool_output.active {
-                            state.tool_output.active = true;
-                        }
-
-                        state.tool_output.buffer.push_str(segment);
-
-                        let wrapped =
-                            crate::cli::render::wrap_text(&state.tool_output.buffer, width);
                         let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
-                        let height = wrapped.len().min(max_lines);
-                        let start = wrapped.len().saturating_sub(height);
+                        let total_lines = state.tool_output.line_count;
+                        let width = Self::terminal_width();
 
-                        // Build visible lines, prepending scrolled indicator if needed
-                        let mut visible: Vec<String> = Vec::with_capacity(height + 1);
-                        if start > 0 {
-                            visible.push(crate::cli::render::style_tool_output_line(
-                                &crate::cli::render::format_scrolled_indicator(start),
-                            ));
-                        }
+                        // Use fast tail extraction with hard wrapping for long lines
+                        let (tail_lines, hidden) = crate::cli::render::tail_lines_fast(
+                            &state.tool_output.buffer,
+                            total_lines,
+                            max_lines,
+                            Some(width),
+                        );
+
+                        // Build visible lines with scrolled indicator at bottom
+                        let mut visible: Vec<String> = Vec::with_capacity(tail_lines.len() + 1);
                         visible.extend(
-                            wrapped[start..]
+                            tail_lines
                                 .iter()
                                 .map(|line| crate::cli::render::style_tool_output_line(line)),
                         );
+                        if hidden > 0 {
+                            visible.push(crate::cli::render::style_tool_output_line(
+                                &crate::cli::render::format_scrolled_indicator(hidden),
+                            ));
+                        }
                         let viewport_height = visible.len() as u16;
 
                         // Keep a spacer row between the tool viewport and where subsequent
@@ -1973,45 +2014,70 @@ impl CliListener {
                     return;
                 }
 
-                let width = Self::terminal_width();
                 let language = syntax::language_from_path(filename);
-                let mut first_segment = true;
+                let has_trailing_newline = text.ends_with('\n');
 
-                for segment in text.split_inclusive('\n') {
+                // Batch process: accumulate all segments, then render once per complete line.
+                let segments: Vec<&str> = text.split_inclusive('\n').collect();
+                if segments.is_empty() {
+                    return;
+                }
+
+                let should_render;
+
+                // Single lock acquisition to update buffer
+                {
+                    let Ok(mut state) = self.state.lock() else {
+                        return;
+                    };
+
+                    state.last_tool_call_open = false;
+
+                    if !state.tool_output.active {
+                        state.tool_output.active = true;
+                    }
+
+                    // Append all segments to buffer with line counting
+                    for segment in &segments {
+                        state.tool_output.append(segment);
+                    }
+
+                    // Only render if we have a complete line or buffer is large
+                    should_render = has_trailing_newline
+                        || state.tool_output.buffer.len()
+                            > crate::cli::TOOL_OUTPUT_RENDER_THRESHOLD;
+                }
+
+                if should_render {
                     let (reserve_delta, visible_lines, viewport_height, spacer_lines) = {
                         let Ok(mut state) = self.state.lock() else {
                             return;
                         };
 
-                        if first_segment {
-                            state.last_tool_call_open = false;
-                            first_segment = false;
-                        }
-
-                        if !state.tool_output.active {
-                            state.tool_output.active = true;
-                        }
-
-                        state.tool_output.buffer.push_str(segment);
-
-                        let wrapped =
-                            crate::cli::render::wrap_text(&state.tool_output.buffer, width);
                         let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
-                        let height = wrapped.len().min(max_lines);
-                        let start = wrapped.len().saturating_sub(height);
+                        let total_lines = state.tool_output.line_count;
+                        let width = Self::terminal_width();
 
-                        // Build visible lines, prepending scrolled indicator if needed
-                        let mut visible: Vec<String> = Vec::with_capacity(height + 1);
-                        if start > 0 {
-                            visible.push(crate::cli::render::style_tool_output_line(
-                                &crate::cli::render::format_scrolled_indicator(start),
-                            ));
-                        }
+                        // Use fast tail extraction with hard wrapping for long lines
+                        let (tail_lines, hidden) = crate::cli::render::tail_lines_fast(
+                            &state.tool_output.buffer,
+                            total_lines,
+                            max_lines,
+                            Some(width),
+                        );
+
+                        // Build visible lines with scrolled indicator at bottom
+                        let mut visible: Vec<String> = Vec::with_capacity(tail_lines.len() + 1);
                         visible.extend(
-                            wrapped[start..]
+                            tail_lines
                                 .iter()
                                 .map(|line| style_file_read_line(line, language.as_deref())),
                         );
+                        if hidden > 0 {
+                            visible.push(crate::cli::render::style_tool_output_line(
+                                &crate::cli::render::format_scrolled_indicator(hidden),
+                            ));
+                        }
                         let viewport_height = visible.len() as u16;
 
                         let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;

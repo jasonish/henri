@@ -22,6 +22,8 @@ pub(crate) mod terminal;
 
 pub(crate) const TOOL_OUTPUT_VIEWPORT_LINES: usize = 10;
 pub(crate) const TOOL_OUTPUT_VIEWPORT_SPACER_LINES: u16 = 1;
+/// Minimum buffer size before forcing a render (for partial lines without newlines).
+pub(crate) const TOOL_OUTPUT_RENDER_THRESHOLD: usize = 4096;
 
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
