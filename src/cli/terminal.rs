@@ -1210,14 +1210,14 @@ fn redraw_from_history_with_size_inner(
 
     let rendered = render::render_all(&events, width);
     let normalized = normalize_newlines(&rendered);
-    let (lines_used, end_col) = calculate_output_size(0, &normalized, width as u16);
+
+    // Add a blank line for visual separation between output and prompt.
+    let with_gap = format!("{}\n", normalized);
+
+    let (lines_used, end_col) = calculate_output_size(0, &with_gap, width as u16);
     // `calculate_output_size` returns the number of line breaks/wraps encountered;
     // the actual number of terminal rows occupied is that count + 1 for non-empty output.
-    let rows_used = if normalized.is_empty() {
-        0
-    } else {
-        lines_used.saturating_add(1)
-    };
+    let rows_used = lines_used.saturating_add(1);
 
     let mut stdout = io::stdout();
 
@@ -1255,8 +1255,8 @@ fn redraw_from_history_with_size_inner(
     // Move to output start position
     let _ = execute!(stdout, MoveTo(0, output_start_row));
 
-    // Print the rendered output
-    print!("{}", normalized);
+    // Print the rendered output (with trailing blank line for visual separation)
+    print!("{}", with_gap);
     let _ = stdout.flush();
 
     let mut final_col = end_col;
@@ -1289,7 +1289,7 @@ fn redraw_from_history_with_size_inner(
     }
 
     // Reset output cursor state
-    let trailing = visible_trailing_newlines(&normalized).unwrap_or(0);
+    let trailing = visible_trailing_newlines(&with_gap).unwrap_or(0);
     set_output_cursor(final_col, trailing);
 }
 
@@ -1319,6 +1319,45 @@ pub(crate) fn redraw_from_history_with_size_locked(
 /// Uses current terminal dimensions (queries the terminal).
 pub(crate) fn redraw_from_history(prompt_height: u16) {
     redraw_from_history_with_size(prompt_height, None, None);
+}
+
+/// Print history as scrolling output without clearing the screen.
+///
+/// This is used when restoring a session on startup (`henri -c`) to preserve
+/// prior terminal output in the scrollback buffer. Unlike `redraw_from_history`,
+/// this function prints the history content as normal terminal output that
+/// scrolls naturally.
+pub(crate) fn print_history_scrolled() {
+    use std::io::Write;
+
+    use super::history;
+    use super::render;
+
+    let _guard = lock_output();
+
+    let events = history::snapshot();
+    if events.is_empty() {
+        return;
+    }
+
+    let width = term_width() as usize;
+    let rendered = render::render_all(&events, width);
+    let normalized = normalize_newlines(&rendered);
+
+    if normalized.is_empty() {
+        return;
+    }
+
+    // Trim trailing whitespace to get consistent spacing.
+    let trimmed = normalized.trim_end();
+
+    // Print the rendered output as normal scrolling text.
+    // End current line and add one blank line for visual separation.
+    print!("{}", trimmed);
+    println!();
+    println!();
+
+    let _ = io::stdout().flush();
 }
 
 #[cfg(test)]

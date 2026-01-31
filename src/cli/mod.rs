@@ -575,20 +575,19 @@ async fn run_event_loop(
             terminal::println_above(&msg);
         }
 
-        // Don't reserve the streaming status line area until we actually start streaming.
-        // This avoids showing a blank status area on startup.
-        prompt_box.draw(&input_state, true)?;
-
-        // If we started with a restored session, replay it into the output history now that
-        // the prompt is visible and output can be rendered above it.
+        // If we started with a restored session, replay it into the output history and print
+        // it as scrolling output BEFORE drawing the prompt. This preserves prior terminal
+        // output in the scrollback buffer (unlike redraw_history which clears the screen).
         if let Some(session_id) = current_session_id.as_deref()
             && let Some(state) = session::load_session_by_id(working_dir, session_id)
         {
             session::replay_session_into_output(&state);
-            prompt_box.redraw_history().ok();
-            // Restore user draft after redraw (redraw_history draws a fresh prompt state).
-            prompt_box.draw(&input_state, false)?;
+            terminal::print_history_scrolled();
         }
+
+        // Don't reserve the streaming status line area until we actually start streaming.
+        // This avoids showing a blank status area on startup.
+        prompt_box.draw(&input_state, true)?;
 
         // Start spinner/bandwidth updates.
         listener::reload_show_network_stats();
@@ -1528,15 +1527,6 @@ async fn run_event_loop(
                                     // Clear history and replay session
                                     session::replay_session_into_output(&state);
                                     prompt_box.redraw_history().ok();
-
-                                    terminal::println_above(&format!(
-                                        "Loaded session: {} ({} messages)",
-                                        selected_session
-                                            .preview
-                                            .as_deref()
-                                            .unwrap_or("(no preview)"),
-                                        state.messages.len()
-                                    ));
 
                                     // Update provider/model from session
                                     if let Some(ref mut pm) = provider_manager {
