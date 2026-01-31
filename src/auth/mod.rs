@@ -410,7 +410,6 @@ async fn login_openai_compat() -> Result<()> {
             temperature: None,
             top_p: None,
             max_tokens: None,
-            stop_sequences: None,
         });
 
         println!("{}", format!("✓ Added model: {}", model_name).green());
@@ -536,7 +535,6 @@ async fn login_openrouter() -> Result<()> {
             temperature: None,
             top_p: None,
             max_tokens: None,
-            stop_sequences: None,
         });
 
         println!("{}", format!("✓ Added model: {}", model_name).green());

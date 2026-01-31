@@ -60,8 +60,6 @@ pub(crate) struct OpenAiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stop: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
 }
 
@@ -480,9 +478,8 @@ pub(crate) async fn build_request(
         stream: true,
         tools,
         temperature: model_params.and_then(|c| c.temperature).map(f64::from),
-        top_p: model_params.and_then(|c| c.top_p).map(f64::from),
+        top_p: model_params.and_then(|c| c.top_p),
         max_tokens: model_params.and_then(|c| c.max_tokens),
-        stop: model_params.and_then(|c| c.stop_sequences.clone()),
         reasoning_effort,
     })
 }

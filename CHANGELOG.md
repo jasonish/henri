@@ -34,6 +34,7 @@
 
 ### Changed
 
+- Config: Remove unused `stop-sequences` parameter from model configuration
 - Tools: Refactor `file_read` to remove per-line truncation; output limited by
   total size (50KB) and line count (2000) only
 - Tools: `bash` tool output is now tail-truncated for the model and bounded by 2000 lines and 32KiB, with an in-band truncation notice

@@ -134,7 +134,6 @@ impl ZenProvider {
                 temperature: None,
                 top_p: None,
                 max_tokens: None,
-                stop_sequences: None,
             });
 
         provider_config
@@ -146,7 +145,6 @@ impl ZenProvider {
                 temperature: None,
                 top_p: None,
                 max_tokens: None,
-                stop_sequences: None,
             });
 
         provider_config
@@ -158,7 +156,6 @@ impl ZenProvider {
                 temperature: None,
                 top_p: None,
                 max_tokens: None,
-                stop_sequences: None,
             });
 
         provider_config
@@ -170,7 +167,6 @@ impl ZenProvider {
                 temperature: Some(1.0),
                 top_p: Some(0.95),
                 max_tokens: Some(32000),
-                stop_sequences: None,
             });
 
         provider_config
@@ -182,7 +178,6 @@ impl ZenProvider {
                 temperature: Some(1.0),
                 top_p: Some(0.95),
                 max_tokens: Some(32000),
-                stop_sequences: None,
             });
 
         Some(OpenAiCompatProvider::with_config(

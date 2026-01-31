@@ -558,9 +558,6 @@ pub(crate) struct ModelConfig {
     /// Maximum tokens to generate
     #[serde(default)]
     pub max_tokens: Option<u32>,
-    /// Stop sequences
-    #[serde(default)]
-    pub stop_sequences: Option<Vec<String>>,
 }
 
 impl ModelConfig {
@@ -964,7 +961,6 @@ mod tests {
             temperature: Some(0.7),
             top_p: None,
             max_tokens: Some(1000),
-            stop_sequences: Some(vec!["STOP".to_string()]),
         };
         let toml = toml::to_string(&model_config).unwrap();
         assert!(toml.contains("id = "), "Expected 'id'");
@@ -974,7 +970,6 @@ mod tests {
             "Expected 'reasoning-effort'"
         );
         assert!(toml.contains("max-tokens"), "Expected 'max-tokens'");
-        assert!(toml.contains("stop-sequences"), "Expected 'stop-sequences'");
 
         // Test display_name falls back to id when name is None
         let model_config_no_name = ModelConfig {
@@ -984,7 +979,6 @@ mod tests {
             temperature: None,
             top_p: None,
             max_tokens: None,
-            stop_sequences: None,
         };
         assert_eq!(model_config_no_name.display_name(), "fallback-id");
         assert_eq!(model_config.display_name(), "Test Model");
@@ -1116,7 +1110,6 @@ expires-at = 12345
                     temperature: None,
                     top_p: None,
                     max_tokens: None,
-                    stop_sequences: None,
                 },
                 ModelConfig {
                     id: "claude-opus-4-5-thinking".to_string(),
@@ -1125,7 +1118,6 @@ expires-at = 12345
                     temperature: None,
                     top_p: None,
                     max_tokens: None,
-                    stop_sequences: None,
                 },
             ],
         };
