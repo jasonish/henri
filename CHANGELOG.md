@@ -1,12 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] - 2026-01-30
 
 ### Added
 
 - Config: Add `top_p` (nucleus sampling) parameter to model configuration
 - Zen: Add `kimi-k2.5-free` model and default parameters for kimi-k2.5 models
-
 - CLI: `henri tool-call grep` now prints raw JSON tool results
 - CLI: `henri tool-call file_read` subcommand for testing the file_read tool
 - CLI: Set terminal title to show 🐕 and current directory
@@ -46,7 +45,6 @@
 - OpenAI provider: Move system prompt into Codex `instructions` payload
 - Providers: Remove heuristic streaming progress estimates; emit progress only when usage is known
 - CLI: Streaming status line now shows per-turn input/output/cache/total tokens
-
 - CLI: Requires a configured provider/model on startup (no implicit default);
   prompts entered before configuration now show a helpful error directing users
   to `/provider`.
@@ -64,7 +62,6 @@
 - CLI: Cap prompt height and internally scroll long input to keep the cursor visible
 - CLI: Prompt viewport now follows cursor movement (prevents accidental history navigation at the top edge)
 - CLI: Prompt border padding now uses display width (Unicode-aware) so indicators fill full terminal width
-
 - CLI: Persist last-used model so `default-model = ":last-used"` works on restart
 - CLI: Network stats now default to enabled on fresh configs
 - CLI: Startup error message now distinguishes "no providers" vs "no model"
