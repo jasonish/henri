@@ -744,6 +744,42 @@ async fn start_callback_server(
 }
 
 async fn login_openai() -> Result<()> {
+    let config = ConfigFile::load()?;
+    let existing_providers = config.providers_of_type(ProviderType::Openai);
+
+    // Determine provider ID before authentication
+    let target_provider_id = if !existing_providers.is_empty() {
+        let options = vec!["Add new account", "Update existing account"];
+        let action = Select::new("OpenAI provider already configured:", options)
+            .with_page_size(crate::output::menu_page_size())
+            .prompt()
+            .map_err(|e| Error::Prompt(e.to_string()))?;
+
+        if action == "Add new account" {
+            // Prompt for new account name before starting OAuth
+            determine_local_id(&config, ProviderType::Openai)?
+        } else {
+            // Update existing
+            if existing_providers.len() == 1 {
+                let (id, _) = existing_providers[0];
+                id.clone()
+            } else {
+                // Select which one
+                let ids: Vec<String> = existing_providers
+                    .iter()
+                    .map(|(id, _)| id.to_string())
+                    .collect();
+                Select::new("Select account to update:", ids)
+                    .with_page_size(crate::output::menu_page_size())
+                    .prompt()
+                    .map_err(|e| Error::Prompt(e.to_string()))?
+            }
+        }
+    } else {
+        // First account - use default ID
+        ProviderType::Openai.default_id().to_string()
+    };
+
     println!("\n{}", "OpenAI Authentication".cyan().bold());
     println!("{}", "═".repeat(50).cyan());
 
@@ -781,22 +817,9 @@ async fn login_openai() -> Result<()> {
 
     println!(
         "{}",
-        "A browser window will open for OpenAI authentication.".yellow()
+        "Please open the following URL in your browser to authenticate:".yellow()
     );
-    if let Err(e) = open::that(auth_url.as_str()) {
-        println!(
-            "{}",
-            format!("Failed to open browser automatically: {e}").yellow()
-        );
-    }
-    println!(
-        "{}",
-        format!(
-            "If the browser did not open, navigate to:\n{}",
-            auth_url.as_str()
-        )
-        .blue()
-    );
+    println!("{}", auth_url.as_str().blue().underline());
 
     let mut code = None;
 
@@ -889,15 +912,17 @@ async fn login_openai() -> Result<()> {
     };
 
     let mut config = ConfigFile::load()?;
-    let local_id = determine_local_id(&config, ProviderType::Openai)?;
-    config.set_provider(local_id.clone(), ProviderConfig::Openai(openai_config));
+    config.set_provider(
+        target_provider_id.clone(),
+        ProviderConfig::Openai(openai_config),
+    );
     config.save()?;
 
     println!(
         "{}",
         format!(
             "✓ OpenAI account '{}' connected. You can now select OpenAI models.",
-            local_id
+            target_provider_id
         )
         .green()
         .bold()
@@ -1127,13 +1152,11 @@ async fn login_claude_oauth(auth_url: &str, target_provider_id: Option<String>) 
     );
 
     println!("\n{}", "Step 1: Authorization".green().bold());
-    println!("Opening browser for authentication...");
-
-    if let Err(e) = open::that(&full_auth_url) {
-        println!("{}", format!("Failed to open browser: {e}").yellow());
-        println!("Please manually open this URL:");
-        println!("{}", full_auth_url.blue().underline());
-    }
+    println!(
+        "{}",
+        "Please open the following URL in your browser to authenticate:".yellow()
+    );
+    println!("{}", full_auth_url.blue().underline());
 
     println!("\n{}", "Step 2: Authorization Code".green().bold());
     println!("After authorizing, you'll receive a code in the format: code#state");
@@ -1387,22 +1410,9 @@ async fn login_antigravity() -> Result<()> {
 
     println!(
         "{}",
-        "A browser window will open for Google authentication.".yellow()
+        "Please open the following URL in your browser to authenticate:".yellow()
     );
-    if let Err(e) = open::that(auth_url.as_str()) {
-        println!(
-            "{}",
-            format!("Failed to open browser automatically: {e}").yellow()
-        );
-    }
-    println!(
-        "{}",
-        format!(
-            "If the browser did not open, navigate to:\n{}",
-            auth_url.as_str()
-        )
-        .blue()
-    );
+    println!("{}", auth_url.as_str().blue().underline());
 
     let mut code = None;
 
