@@ -7,6 +7,7 @@
 //! types "/" at the start of input. The menu appears above the prompt to
 //! avoid shifting the input position.
 
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 use crossterm::cursor;
@@ -180,8 +181,29 @@ impl SlashMenuState {
             // Calculate spacing for alignment
             let name_width = cmd.name.len() + 1; // +1 for "/" prefix
             let padding_needed = name_padding.saturating_sub(name_width);
-            let desc_len = cmd.description.len();
-            let content_width = 1 + name_width + padding_needed + desc_len; // leading space + /name + padding + desc
+            let name_content_width = 1 + name_width + padding_needed; // leading space + /name + padding
+
+            // Truncate description to fit within terminal width
+            let max_desc_width = term_width.saturating_sub(name_content_width);
+            let desc_char_count = cmd.description.chars().count();
+            let desc: Cow<'_, str> = if desc_char_count > max_desc_width {
+                let truncated: String = cmd
+                    .description
+                    .chars()
+                    .take(max_desc_width.saturating_sub(1))
+                    .chain(std::iter::once('…'))
+                    .collect();
+                Cow::Owned(truncated)
+            } else {
+                Cow::Borrowed(&cmd.description)
+            };
+
+            let desc_width = if desc_char_count > max_desc_width {
+                max_desc_width
+            } else {
+                desc_char_count
+            };
+            let content_width = name_content_width + desc_width;
             let remaining_space = term_width.saturating_sub(content_width);
 
             let padding_str: String = " ".repeat(padding_needed);
@@ -195,7 +217,7 @@ impl SlashMenuState {
             write!(stdout, " /{}", cmd.name)?;
             write!(stdout, "{}", padding_str)?;
             queue!(stdout, SetForegroundColor(desc_color))?;
-            write!(stdout, "{}", cmd.description)?;
+            write!(stdout, "{}", desc)?;
             write!(stdout, "{}", trailing_str)?;
             queue!(stdout, ResetColor)?;
         }
