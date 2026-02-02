@@ -99,6 +99,14 @@ struct Args {
     batch: bool,
 
     #[arg(
+        long = "start-transaction-logging",
+        value_name = "FILE",
+        num_args = 0..=1,
+        help = "Start transaction logging on startup"
+    )]
+    start_transaction_logging: Option<Option<PathBuf>>,
+
+    #[arg(
         trailing_var_arg = true,
         help = "Prompt to send (non-interactive mode)"
     )]
@@ -310,6 +318,11 @@ async fn main() -> std::io::Result<()> {
     } else {
         None
     };
+
+    if let Some(opt_path) = args.start_transaction_logging {
+        let path = crate::provider::transaction_log::start(opt_path);
+        eprintln!("Transaction logging started: {}", path.display());
+    }
 
     // Run CLI
     cli::run(cli::CliArgs {
