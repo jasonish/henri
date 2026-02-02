@@ -311,7 +311,7 @@ impl Tool for Grep {
         &self,
         tool_use_id: &str,
         input: serde_json::Value,
-        _output: &crate::output::OutputContext,
+        output: &crate::output::OutputContext,
         _services: &crate::services::Services,
     ) -> ToolResult {
         let input: GrepInput = match super::deserialize_input(tool_use_id, input) {
@@ -333,7 +333,13 @@ impl Tool for Grep {
         };
 
         match result {
-            Ok(res) => res,
+            Ok(res) => {
+                // Emit first 3 lines of search results as preview
+                for line in res.content.lines().take(3) {
+                    crate::output::emit_tool_output(output, &format!("{}\n", line));
+                }
+                res
+            }
             Err(err_msg) => ToolResult::error(tool_use_id, err_msg),
         }
     }

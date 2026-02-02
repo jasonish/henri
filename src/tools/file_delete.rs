@@ -38,7 +38,7 @@ impl Tool for FileDelete {
         &self,
         tool_use_id: &str,
         input: serde_json::Value,
-        _output: &crate::output::OutputContext,
+        output: &crate::output::OutputContext,
         services: &crate::services::Services,
     ) -> ToolResult {
         if services.is_read_only() {
@@ -77,7 +77,9 @@ impl Tool for FileDelete {
             return ToolResult::error(tool_use_id, format!("Failed to delete file: {}", e));
         }
 
-        ToolResult::success(tool_use_id, format!("Deleted {}", input.file_path))
+        let message = format!("Deleted {}", input.file_path);
+        crate::output::emit_tool_output(output, &format!("{}\n", message));
+        ToolResult::success(tool_use_id, message.clone()).with_summary(message)
     }
 }
 

@@ -53,7 +53,7 @@ impl Tool for Fetch {
         &self,
         tool_use_id: &str,
         input: serde_json::Value,
-        _output: &crate::output::OutputContext,
+        output: &crate::output::OutputContext,
         _services: &crate::services::Services,
     ) -> ToolResult {
         let input: FetchInput = match super::deserialize_input(tool_use_id, input) {
@@ -111,7 +111,15 @@ impl Tool for Fetch {
             body
         };
 
-        ToolResult::success(tool_use_id, content)
+        // Emit first 3 lines of content for preview
+        for line in content.lines().take(3) {
+            crate::output::emit_tool_output(output, &format!("{}\n", line));
+        }
+
+        let line_count = content.lines().count();
+        let byte_count = content.len();
+        let summary = format!("[Fetched {} lines, {} bytes]", line_count, byte_count);
+        ToolResult::success(tool_use_id, content).with_summary(summary)
     }
 }
 

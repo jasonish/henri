@@ -86,7 +86,7 @@ impl Tool for ListDir {
         &self,
         tool_use_id: &str,
         input: serde_json::Value,
-        _output: &crate::output::OutputContext,
+        output: &crate::output::OutputContext,
         _services: &crate::services::Services,
     ) -> ToolResult {
         let input: ListDirInput = match super::deserialize_input(tool_use_id, input) {
@@ -134,7 +134,24 @@ impl Tool for ListDir {
         files.sort();
         dirs.sort();
 
-        let mut output = format!(
+        // Emit preview: first few directories and files (up to 3 total)
+        let mut preview_count = 0;
+        for dir in &dirs {
+            if preview_count >= 3 {
+                break;
+            }
+            crate::output::emit_tool_output(output, &format!("{}/\n", dir));
+            preview_count += 1;
+        }
+        for file in &files {
+            if preview_count >= 3 {
+                break;
+            }
+            crate::output::emit_tool_output(output, &format!("{}\n", file));
+            preview_count += 1;
+        }
+
+        let mut output_buf = format!(
             "Contents of {} ({} files, {} directories)\n\n",
             dir_path,
             files.len(),
@@ -142,22 +159,22 @@ impl Tool for ListDir {
         );
 
         if !dirs.is_empty() {
-            output.push_str("Directories:\n");
+            output_buf.push_str("Directories:\n");
             for dir in &dirs {
-                output.push_str(&format!("  {}/\n", dir));
+                output_buf.push_str(&format!("  {}/\n", dir));
             }
-            output.push('\n');
+            output_buf.push('\n');
         }
 
         if !files.is_empty() {
-            output.push_str("Files:\n");
+            output_buf.push_str("Files:\n");
             for file in &files {
-                output.push_str(&format!("  {}\n", file));
+                output_buf.push_str(&format!("  {}\n", file));
             }
         }
 
         if files.is_empty() && dirs.is_empty() {
-            output.push_str("(empty directory)\n");
+            output_buf.push_str("(empty directory)\n");
         }
 
         let summary = if files.is_empty() && dirs.is_empty() {
@@ -170,7 +187,7 @@ impl Tool for ListDir {
             )
         };
 
-        ToolResult::success(tool_use_id, output).with_summary(summary)
+        ToolResult::success(tool_use_id, output_buf).with_summary(summary)
     }
 }
 

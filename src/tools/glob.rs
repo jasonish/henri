@@ -81,7 +81,7 @@ impl Tool for Glob {
         &self,
         tool_use_id: &str,
         input: serde_json::Value,
-        _output: &crate::output::OutputContext,
+        output: &crate::output::OutputContext,
         _services: &crate::services::Services,
     ) -> ToolResult {
         let input: GlobInput = match super::deserialize_input(tool_use_id, input) {
@@ -148,6 +148,11 @@ impl Tool for Glob {
 
         files.sort();
 
+        // Emit first 3 files as preview
+        for file in files.iter().take(3) {
+            crate::output::emit_tool_output(output, &format!("{}\n", file));
+        }
+
         let summary = if files.is_empty() {
             format!("No files matching '{}'", input.pattern)
         } else if truncated {
@@ -156,22 +161,22 @@ impl Tool for Glob {
             format!("Found {} files", files.len())
         };
 
-        let mut output = String::new();
+        let mut output_buf = String::new();
 
         for file in &files {
-            output.push_str(file);
-            output.push('\n');
+            output_buf.push_str(file);
+            output_buf.push('\n');
         }
 
         if truncated {
-            output.push_str(&format!(
+            output_buf.push_str(&format!(
                 "\n(truncated: showing {} of more files, use a more specific pattern)\n",
                 limit
             ));
         }
 
-        if output.is_empty() {
-            output = format!(
+        if output_buf.is_empty() {
+            output_buf = format!(
                 "No files matching pattern '{}' found in {}\n",
                 input.pattern, base_path
             );
@@ -182,10 +187,10 @@ impl Tool for Glob {
                 input.pattern,
                 base_path
             );
-            output = output_header + &output;
+            output_buf = output_header + &output_buf;
         }
 
-        ToolResult::success(tool_use_id, output).with_summary(summary)
+        ToolResult::success(tool_use_id, output_buf).with_summary(summary)
     }
 }
 
