@@ -405,11 +405,9 @@ pub(crate) fn write_status_line(text: &str) {
         queue!(stdout, MoveTo(0, status_row), Clear(ClearType::CurrentLine))?;
         write!(stdout, "{}", text)?;
 
-        // Restore cursor
+        // Restore cursor only if we have a saved position (menu modes hide the cursor)
         if let Some((cursor_row, cursor_col)) = cursor_info {
             queue!(stdout, MoveTo(cursor_col, cursor_row), Show)?;
-        } else {
-            queue!(stdout, Show)?;
         }
 
         io::Result::Ok(())
@@ -462,11 +460,9 @@ pub(crate) fn update_bandwidth_display(text: &str) {
                 )?;
             }
 
-            // Restore cursor
+            // Restore cursor only if we have a saved position (menu modes hide the cursor)
             if let Some((cursor_row, cursor_col)) = cursor_info {
                 queue!(stdout, MoveTo(cursor_col, cursor_row), Show)?;
-            } else {
-                queue!(stdout, Show)?;
             }
 
             io::Result::Ok(())
@@ -519,11 +515,9 @@ pub(crate) fn update_bandwidth_display(text: &str) {
         write!(stdout, "{}", text)?;
         queue!(stdout, ResetColor)?;
 
-        // Restore cursor
+        // Restore cursor only if we have a saved position (menu modes hide the cursor)
         if let Some((cursor_row, cursor_col)) = cursor_info {
             queue!(stdout, MoveTo(cursor_col, cursor_row), Show)?;
-        } else {
-            queue!(stdout, Show)?;
         }
 
         io::Result::Ok(())
