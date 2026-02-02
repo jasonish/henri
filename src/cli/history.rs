@@ -67,25 +67,8 @@ pub(crate) enum HistoryEvent {
         /// Optional summary for display (e.g., lines added/removed)
         summary: Option<String>,
     },
-    /// Todo list update
-    TodoList { items: Vec<TodoItem> },
     /// Auto-compaction notification
     AutoCompact { message: String },
-}
-
-/// A todo item for display
-#[derive(Clone, Debug)]
-pub(crate) struct TodoItem {
-    pub content: String,
-    pub status: TodoStatus,
-}
-
-/// Todo item status
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum TodoStatus {
-    Pending,
-    InProgress,
-    Completed,
 }
 
 /// Stores the conversation history as semantic events.

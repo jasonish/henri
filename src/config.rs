@@ -151,9 +151,6 @@ pub(crate) struct ConfigFile {
     /// Auto-compaction settings
     #[serde(default, rename = "auto-compact")]
     pub auto_compact: AutoCompactConfig,
-    /// Enable the todo_read/todo_write tools (default: true)
-    #[serde(default = "default_todo_enabled", rename = "todo-enabled")]
-    pub todo_enabled: bool,
     /// List of disabled tool names
     #[serde(
         default,
@@ -178,7 +175,6 @@ impl Default for ConfigFile {
             hide_tool_output: default_hide_tool_output(),
             favorite_models: Vec::new(),
             auto_compact: AutoCompactConfig::default(),
-            todo_enabled: default_todo_enabled(),
             disabled_tools: Vec::new(),
         }
     }
@@ -189,10 +185,6 @@ fn default_show_network_stats() -> bool {
 }
 
 fn default_show_image_previews() -> bool {
-    true
-}
-
-fn default_todo_enabled() -> bool {
     true
 }
 
@@ -711,13 +703,6 @@ impl ConfigFile {
                 config.auto_compact = ac;
             }
 
-            // todo-enabled
-            if let Some(val) = table.get("todo-enabled")
-                && let Some(b) = val.as_bool()
-            {
-                config.todo_enabled = b;
-            }
-
             // disabled-tools
             if let Some(val) = table.get("disabled-tools")
                 && let Ok(dt) = val.clone().try_into()
@@ -797,15 +782,6 @@ impl ConfigFile {
         } else {
             self.disabled_tools.push(tool_name.to_string());
             false // now disabled
-        }
-    }
-
-    /// Set todo_enabled and ensure underlying tools are enabled when enabling.
-    pub(crate) fn set_todo_enabled(&mut self, enabled: bool) {
-        self.todo_enabled = enabled;
-        if enabled {
-            self.disabled_tools
-                .retain(|t| t != "todo_read" && t != "todo_write");
         }
     }
 

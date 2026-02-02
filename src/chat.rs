@@ -145,10 +145,7 @@ pub(crate) async fn run_chat_iteration<P: Provider>(
         }
 
         let description = tools::format_tool_call_description(&tool_call.name, &tool_call.input);
-        // Skip tool call banner for todo tools - they emit their own display
-        if !tool_call.name.starts_with("todo_") {
-            output::print_tool_call(output, &tool_call.name, &description);
-        }
+        output::print_tool_call(output, &tool_call.name, &description);
 
         let result = tools::execute(
             &tool_call.name,
@@ -166,17 +163,14 @@ pub(crate) async fn run_chat_iteration<P: Provider>(
                 } else {
                     None
                 };
-                // Skip tool result indicator for todo tools
-                if !tool_call.name.starts_with("todo_") {
-                    output::print_tool_result(
-                        output,
-                        &tool_call.name,
-                        tool_result.is_error,
-                        error_preview,
-                        tool_result.exit_code,
-                        tool_result.summary,
-                    );
-                }
+                output::print_tool_result(
+                    output,
+                    &tool_call.name,
+                    tool_result.is_error,
+                    error_preview,
+                    tool_result.exit_code,
+                    tool_result.summary,
+                );
 
                 tool_results.push(ContentBlock::ToolResult {
                     tool_use_id: tool_call.id.clone(),

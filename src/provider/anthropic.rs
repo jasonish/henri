@@ -42,8 +42,6 @@ fn to_claude_code_name(name: &str) -> String {
         "glob" => "Glob".to_string(),
         "list_dir" => "LS".to_string(),
         "fetch" => "Fetch".to_string(),
-        "todo_read" => "TodoRead".to_string(),
-        "todo_write" => "TodoWrite".to_string(),
         other => other.to_string(),
     }
 }
@@ -60,8 +58,6 @@ fn from_claude_code_name(name: &str) -> String {
         "Glob" => "glob".to_string(),
         "LS" => "list_dir".to_string(),
         "Fetch" => "fetch".to_string(),
-        "TodoRead" => "todo_read".to_string(),
-        "TodoWrite" => "todo_write".to_string(),
         other => other.to_string(),
     }
 }

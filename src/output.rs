@@ -55,8 +55,6 @@ pub(crate) enum OutputEvent {
         input_tokens: u64,
         context_limit: Option<u64>,
     },
-    /// Todo list updated
-    TodoList { todos: Vec<crate::tools::TodoItem> },
     /// File was modified, here's the diff
     FileDiff {
         diff: String,
@@ -279,11 +277,6 @@ pub(crate) fn emit_error(ctx: &OutputContext, message: &str) {
 /// Emit warning message (non-terminal - does not end chat loop)
 pub(crate) fn emit_warning(ctx: &OutputContext, message: &str) {
     ctx.emit(OutputEvent::Warning(message.to_string()));
-}
-
-/// Emit todo list update
-pub(crate) fn emit_todo_list(ctx: &OutputContext, todos: Vec<crate::tools::TodoItem>) {
-    ctx.emit(OutputEvent::TodoList { todos });
 }
 
 /// Emit auto-compaction starting

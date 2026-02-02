@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use base64::Engine;
-use colored::{Color, ColoredString, Colorize};
+use colored::{Color, Colorize};
 use tokio::sync::watch;
 use unicode_width::UnicodeWidthChar;
 
@@ -16,7 +16,7 @@ use crate::output::{OutputEvent, OutputListener};
 use crate::syntax;
 use crate::usage;
 
-use super::history::{self, HistoryEvent, TodoItem, TodoStatus};
+use super::history::{self, HistoryEvent};
 use super::markdown::{
     render_markdown_inlines, render_markdown_inlines_with_style, render_markdown_line,
 };
@@ -1142,15 +1142,11 @@ enum OutputState {
     Thinking { has_output: bool },
     Text { has_output: bool },
     ToolBlock,
-    AfterTodoList,
 }
 
 impl OutputState {
     fn start_thinking(&mut self) {
-        if matches!(
-            self,
-            OutputState::Idle | OutputState::Thinking { .. } | OutputState::AfterTodoList
-        ) {
+        if matches!(self, OutputState::Idle | OutputState::Thinking { .. }) {
             *self = OutputState::Thinking { has_output: false };
         }
     }
@@ -1176,10 +1172,7 @@ impl OutputState {
     fn start_text(&mut self) {
         if matches!(
             self,
-            OutputState::Idle
-                | OutputState::Thinking { .. }
-                | OutputState::Text { .. }
-                | OutputState::AfterTodoList
+            OutputState::Idle | OutputState::Thinking { .. } | OutputState::Text { .. }
         ) {
             *self = OutputState::Text { has_output: false };
         }
@@ -1207,9 +1200,7 @@ impl OutputState {
     fn start_tool_block(&mut self) -> bool {
         let needs_spacing = matches!(
             *self,
-            OutputState::Thinking { has_output: true }
-                | OutputState::Text { has_output: true }
-                | OutputState::AfterTodoList
+            OutputState::Thinking { has_output: true } | OutputState::Text { has_output: true }
         );
         *self = OutputState::ToolBlock;
         needs_spacing
@@ -1219,14 +1210,6 @@ impl OutputState {
         if matches!(*self, OutputState::ToolBlock) {
             *self = OutputState::Idle;
         }
-    }
-
-    fn take_after_todo_list(&mut self) -> bool {
-        if matches!(*self, OutputState::AfterTodoList) {
-            *self = OutputState::Idle;
-            return true;
-        }
-        false
     }
 }
 
@@ -1437,50 +1420,14 @@ impl CliListener {
         self.close_tool_block_inner(false);
     }
 
-    fn maybe_space_after_todo(&self) {
-        let needs_spacing = self
-            .state
-            .lock()
-            .map(|mut s| s.output_state.take_after_todo_list())
-            .unwrap_or(false);
-        if needs_spacing {
-            terminal::ensure_line_break();
-        }
-    }
-
     fn handle_event(&self, event: &OutputEvent) {
-        if matches!(
-            event,
-            OutputEvent::ThinkingStart
-                | OutputEvent::Thinking(_)
-                | OutputEvent::ThinkingEnd
-                | OutputEvent::Text(_)
-                | OutputEvent::TextEnd
-                | OutputEvent::ToolCall { .. }
-                | OutputEvent::ToolResult { .. }
-                | OutputEvent::ToolOutput { .. }
-                | OutputEvent::FileReadOutput { .. }
-                | OutputEvent::Info(_)
-                | OutputEvent::Error(_)
-                | OutputEvent::Warning(_)
-                | OutputEvent::TodoList { .. }
-                | OutputEvent::FileDiff { .. }
-                | OutputEvent::AutoCompactStarting { .. }
-                | OutputEvent::AutoCompactCompleted { .. }
-        ) {
-            self.maybe_space_after_todo();
-        }
-
         match event {
             OutputEvent::ThinkingStart => {
                 self.close_tool_block();
                 let Ok(mut state) = self.state.lock() else {
                     return;
                 };
-                if matches!(
-                    state.output_state,
-                    OutputState::Idle | OutputState::AfterTodoList
-                ) {
+                if matches!(state.output_state, OutputState::Idle) {
                     state.output_state.start_thinking();
                 }
                 spinner_thinking();
@@ -1565,7 +1512,7 @@ impl CliListener {
 
                 if matches!(
                     state.output_state,
-                    OutputState::Idle | OutputState::Thinking { .. } | OutputState::AfterTodoList
+                    OutputState::Idle | OutputState::Thinking { .. }
                 ) {
                     state.output_state.start_thinking();
                     if did_output {
@@ -2245,67 +2192,6 @@ impl CliListener {
                 history::push(HistoryEvent::Warning(msg.clone()));
                 if let Ok(mut state) = self.state.lock() {
                     state.last_block = Some(LastBlock::Info);
-                }
-            }
-
-            OutputEvent::TodoList { todos } => {
-                self.close_tool_block();
-
-                // Ensure we're on a new line before printing todo list
-                if let Ok(mut state) = self.state.lock() {
-                    let width = Self::terminal_width();
-                    if state.thinking.needs_line_break() {
-                        state.thinking.finish_line(width);
-                    }
-                    if state.response.needs_line_break() {
-                        state.response.finish_line(width);
-                    }
-                    terminal::ensure_line_break();
-                }
-
-                if let Ok(mut state) = self.state.lock() {
-                    state.output_state.end_tool_block();
-                }
-
-                // Spaced mode: no opening tag
-                terminal::println_above(&"Todo:".cyan().bold().to_string());
-
-                if todos.is_empty() {
-                    terminal::println_above(&"  (empty)".bright_black().to_string());
-                } else {
-                    for item in todos {
-                        let (indicator, styled_text): (&str, ColoredString) = match item.status {
-                            crate::tools::TodoStatus::Pending => ("[ ]", item.content.white()),
-                            crate::tools::TodoStatus::InProgress => {
-                                ("[-]", item.active_form.cyan().bold())
-                            }
-                            crate::tools::TodoStatus::Completed => {
-                                ("[✓]", item.content.bright_black())
-                            }
-                        };
-                        let line = format!("  {} {}", indicator, styled_text);
-                        terminal::println_above(&line);
-                    }
-                }
-
-                // Convert to history format
-                let history_items: Vec<TodoItem> = todos
-                    .iter()
-                    .map(|t| TodoItem {
-                        content: t.content.clone(),
-                        status: match t.status {
-                            crate::tools::TodoStatus::Pending => TodoStatus::Pending,
-                            crate::tools::TodoStatus::InProgress => TodoStatus::InProgress,
-                            crate::tools::TodoStatus::Completed => TodoStatus::Completed,
-                        },
-                    })
-                    .collect();
-                history::push(HistoryEvent::TodoList {
-                    items: history_items,
-                });
-
-                if let Ok(mut state) = self.state.lock() {
-                    state.output_state = OutputState::AfterTodoList;
                 }
             }
 

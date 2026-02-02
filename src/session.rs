@@ -27,24 +27,8 @@ use uuid::Uuid;
 use crate::cli::history::{HistoryEvent, ImageMeta};
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
 use crate::providers::ModelProvider;
-use crate::tools::TodoItem;
 
 use crate::tools::format_tool_call_description;
-use crate::tools::todo::{clear_todos, get_todos, set_todos};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SerializableHistoryTodoItem {
-    pub content: String,
-    pub status: SerializableHistoryTodoStatus,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SerializableHistoryTodoStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -98,9 +82,6 @@ pub(crate) enum SerializableHistoryEvent {
         language: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
-    },
-    TodoList {
-        items: Vec<SerializableHistoryTodoItem>,
     },
     AutoCompact {
         message: String,
@@ -200,25 +181,6 @@ impl From<&HistoryEvent> for SerializableHistoryEvent {
                 language: language.clone(),
                 summary: summary.clone(),
             },
-            HistoryEvent::TodoList { items } => SerializableHistoryEvent::TodoList {
-                items: items
-                    .iter()
-                    .map(|t| SerializableHistoryTodoItem {
-                        content: t.content.clone(),
-                        status: match t.status {
-                            crate::cli::history::TodoStatus::Pending => {
-                                SerializableHistoryTodoStatus::Pending
-                            }
-                            crate::cli::history::TodoStatus::InProgress => {
-                                SerializableHistoryTodoStatus::InProgress
-                            }
-                            crate::cli::history::TodoStatus::Completed => {
-                                SerializableHistoryTodoStatus::Completed
-                            }
-                        },
-                    })
-                    .collect(),
-            },
             HistoryEvent::AutoCompact { message } => SerializableHistoryEvent::AutoCompact {
                 message: message.clone(),
             },
@@ -286,25 +248,6 @@ impl From<&SerializableHistoryEvent> for HistoryEvent {
                 language: language.clone(),
                 summary: summary.clone(),
             },
-            SerializableHistoryEvent::TodoList { items } => HistoryEvent::TodoList {
-                items: items
-                    .iter()
-                    .map(|t| crate::cli::history::TodoItem {
-                        content: t.content.clone(),
-                        status: match t.status {
-                            SerializableHistoryTodoStatus::Pending => {
-                                crate::cli::history::TodoStatus::Pending
-                            }
-                            SerializableHistoryTodoStatus::InProgress => {
-                                crate::cli::history::TodoStatus::InProgress
-                            }
-                            SerializableHistoryTodoStatus::Completed => {
-                                crate::cli::history::TodoStatus::Completed
-                            }
-                        },
-                    })
-                    .collect(),
-            },
             SerializableHistoryEvent::AutoCompact { message } => HistoryEvent::AutoCompact {
                 message: message.clone(),
             },
@@ -344,11 +287,6 @@ pub(crate) struct SessionMeta {
     #[serde(default)]
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
-
-    /// Current todo list state
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub todos: Option<Vec<TodoItem>>,
 }
 
 /// Summary info for session listing (without loading full messages)
@@ -390,11 +328,6 @@ pub(crate) struct RestoredSession {
 impl RestoredSession {
     /// Create from a loaded SessionState.
     pub(crate) fn from_state(state: &SessionState) -> Self {
-        // Restore todo state if present
-        if let Some(todos) = &state.meta.todos {
-            set_todos(todos.clone());
-        }
-
         Self {
             session_id: state.meta.session_id.clone(),
             messages: restore_messages(state),
@@ -683,10 +616,6 @@ pub(crate) fn save_session(
         fs::create_dir_all(parent)?;
     }
 
-    // Get current todos
-    let todos = get_todos();
-    let todos = if todos.is_empty() { None } else { Some(todos) };
-
     let cli_history = crate::cli::history::snapshot();
     let cli_history = if cli_history.is_empty() {
         None
@@ -708,7 +637,6 @@ pub(crate) fn save_session(
         model_id: model_id.to_string(),
         thinking_enabled,
         read_only,
-        todos,
     };
 
     let state = SessionState {
@@ -969,10 +897,6 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
     if let Some(events) = &state.cli_history {
         // Replay exact CLI history captured at save time.
         history::clear();
-        clear_todos();
-        if let Some(todos) = &state.meta.todos {
-            set_todos(todos.clone());
-        }
 
         for ev in events {
             history::push(HistoryEvent::from(ev));
@@ -981,12 +905,8 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
         return;
     }
 
-    // Clear existing history and todos so the replay is the authoritative view.
+    // Clear existing history so the replay is the authoritative view.
     history::clear();
-    clear_todos();
-    if let Some(todos) = &state.meta.todos {
-        set_todos(todos.clone());
-    }
 
     // Header similar to the old stdout replay, but rendered as Info events.
     history::push(HistoryEvent::Info(
@@ -1208,28 +1128,6 @@ pub(crate) fn replay_session_into_output(state: &SessionState) {
     if in_tool_block {
         history::push(HistoryEvent::ToolEnd);
     }
-
-    // If we restored todos, emit them into history so redraw-from-history includes them.
-    let current_todos = get_todos();
-    if !current_todos.is_empty() {
-        use crate::cli::history::{TodoItem as HistoryTodoItem, TodoStatus as HistoryTodoStatus};
-        let items = current_todos
-            .iter()
-            .map(|t| HistoryTodoItem {
-                content: if matches!(t.status, crate::tools::TodoStatus::InProgress) {
-                    t.active_form.clone()
-                } else {
-                    t.content.clone()
-                },
-                status: match t.status {
-                    crate::tools::TodoStatus::Pending => HistoryTodoStatus::Pending,
-                    crate::tools::TodoStatus::InProgress => HistoryTodoStatus::InProgress,
-                    crate::tools::TodoStatus::Completed => HistoryTodoStatus::Completed,
-                },
-            })
-            .collect();
-        history::push(HistoryEvent::TodoList { items });
-    }
 }
 
 /// Collect tool results from a tool-result-only user message into a map of tool_use_id -> (is_error, content).
@@ -1446,7 +1344,6 @@ mod tests {
         // Ensure replay populates the CLI history with user/assistant/tool events.
         // This is a unit test for the semantic event generation, not terminal rendering.
         crate::cli::history::clear();
-        crate::tools::todo::clear_todos();
 
         let state = SessionState {
             meta: SessionMeta {
@@ -1458,11 +1355,6 @@ mod tests {
                 model_id: "claude-sonnet-4".to_string(),
                 thinking_enabled: true,
                 read_only: false,
-                todos: Some(vec![TodoItem {
-                    content: "Do the thing".to_string(),
-                    status: crate::tools::TodoStatus::Pending,
-                    active_form: "Doing the thing".to_string(),
-                }]),
             },
             messages: vec![
                 SerializableMessage {
@@ -1516,11 +1408,6 @@ mod tests {
             events
                 .iter()
                 .any(|e| matches!(e, crate::cli::history::HistoryEvent::ToolUse { .. }))
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, crate::cli::history::HistoryEvent::TodoList { .. }))
         );
     }
 

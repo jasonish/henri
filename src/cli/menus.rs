@@ -2009,13 +2009,7 @@ impl ToolsMenuState {
                 let is_read_only_locked =
                     read_only && crate::tools::READ_ONLY_DISABLED_TOOLS.contains(name);
 
-                let is_enabled = if *name == "todo" {
-                    config.todo_enabled
-                        && !config.is_tool_disabled("todo_read")
-                        && !config.is_tool_disabled("todo_write")
-                } else {
-                    !config.is_tool_disabled(name)
-                };
+                let is_enabled = !config.is_tool_disabled(name);
 
                 ToolEntry {
                     name: name.to_string(),
@@ -2046,16 +2040,9 @@ impl ToolsMenuState {
 
         // Toggle in config
         if let Ok(mut config) = crate::config::ConfigFile::load() {
-            if tool.name == "todo" {
-                let new_enabled = !config.todo_enabled;
-                config.set_todo_enabled(new_enabled);
-                let _ = config.save();
-                tool.is_enabled = new_enabled;
-            } else {
-                let is_enabled = config.toggle_tool_disabled(&tool.name);
-                let _ = config.save();
-                tool.is_enabled = is_enabled;
-            }
+            let is_enabled = config.toggle_tool_disabled(&tool.name);
+            let _ = config.save();
+            tool.is_enabled = is_enabled;
         }
     }
 

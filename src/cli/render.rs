@@ -6,10 +6,10 @@
 //! Converts semantic HistoryEvents into styled, wrapped text lines
 //! suitable for terminal display.
 
-use colored::{Color, ColoredString, Colorize};
+use colored::{Color, Colorize};
 use unicode_width::UnicodeWidthChar;
 
-use super::history::{HistoryEvent, ImageMeta, TodoStatus};
+use super::history::{HistoryEvent, ImageMeta};
 use super::markdown::{align_markdown_tables, render_markdown_line};
 use crate::cli::image_preview;
 use crate::cli::spacing::{LastBlock, needs_blank_line_before};
@@ -60,7 +60,6 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
             language,
             summary,
         } => render_file_diff(diff, language.as_deref(), summary.as_deref()),
-        HistoryEvent::TodoList { items } => render_todo_list(items),
         HistoryEvent::AutoCompact { message } => render_auto_compact(message),
     }
 }
@@ -83,7 +82,6 @@ fn last_block_for_event(event: &HistoryEvent) -> Option<LastBlock> {
         | HistoryEvent::ToolEnd
         | HistoryEvent::ThinkingEnd
         | HistoryEvent::ResponseEnd
-        | HistoryEvent::TodoList { .. }
         | HistoryEvent::AutoCompact { .. } => None,
     }
 }
@@ -979,26 +977,6 @@ fn render_diff_line_with_gutter(
     }
 
     result
-}
-
-/// Render todo list
-fn render_todo_list(items: &[super::history::TodoItem]) -> String {
-    let mut output = format!("{}\n", "Todo:".cyan().bold());
-
-    if items.is_empty() {
-        output.push_str(&format!("{}\n", "  (empty)".bright_black()));
-    } else {
-        for item in items {
-            let (indicator, content_styled): (&str, ColoredString) = match item.status {
-                TodoStatus::Pending => ("[ ]", item.content.white()),
-                TodoStatus::InProgress => ("[-]", item.content.cyan().bold()),
-                TodoStatus::Completed => ("[✓]", item.content.bright_black()),
-            };
-            output.push_str(&format!("  {} {}\n", indicator, content_styled));
-        }
-    }
-
-    output
 }
 
 /// Render auto-compact notification

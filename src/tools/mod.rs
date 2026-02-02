@@ -11,7 +11,6 @@ mod glob;
 mod grep;
 mod list_dir;
 mod sandbox;
-pub(crate) mod todo;
 
 pub(crate) use bash::Bash;
 pub(crate) use fetch::Fetch;
@@ -22,7 +21,6 @@ pub(crate) use file_write::FileWrite;
 pub(crate) use glob::Glob;
 pub(crate) use grep::Grep;
 pub(crate) use list_dir::ListDir;
-pub(crate) use todo::{TodoItem, TodoRead, TodoStatus, TodoWrite};
 
 use serde::{Deserialize, Serialize, de};
 
@@ -30,9 +28,6 @@ pub(crate) const READ_ONLY_DISABLED_TOOLS: &[&str] = &["file_delete", "file_edit
 
 /// Built-in tool names and their human-readable descriptions.
 /// This is the single source of truth for tool metadata used in menus and UIs.
-///
-/// Note: "todo" is a consolidated UI entry representing both `todo_read` and
-/// `todo_write` tools. The actual tools exposed to the AI remain separate.
 pub(crate) const TOOL_INFO: &[(&str, &str)] = &[
     ("bash", "Execute shell commands"),
     ("fetch", "Fetch URLs and convert to markdown"),
@@ -43,7 +38,6 @@ pub(crate) const TOOL_INFO: &[(&str, &str)] = &[
     ("glob", "Find files using glob patterns"),
     ("grep", "Search for patterns in files"),
     ("list_dir", "List directory contents"),
-    ("todo", "Todo list tools (read/write)"),
 ];
 
 const BUILTIN_TOOL_ALIASES: &[(&str, &str)] = &[
@@ -246,8 +240,6 @@ pub(crate) fn canonicalize_builtin_tool_name(name: &str) -> Option<&'static str>
         "glob" => Some("glob"),
         "grep" => Some("grep"),
         "list_dir" => Some("list_dir"),
-        "todo_read" => Some("todo_read"),
-        "todo_write" => Some("todo_write"),
         _ => BUILTIN_TOOL_ALIASES
             .iter()
             .find_map(|(alias, canonical)| (*alias == lower).then_some(*canonical)),
@@ -483,15 +475,6 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
             let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
             format!("Listing {}", path)
         }
-        "todo_read" => "Reading todo list".to_string(),
-        "todo_write" => {
-            let count = input
-                .get("todos")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            format!("Updating todo list ({} items)", count)
-        }
         name if name.starts_with("mcp_") => {
             // MCP tools: format as "tool_name via server_name"
             // Format: mcp_{server}_{tool}
@@ -515,7 +498,6 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
 /// Get all available tool definitions (built-in only)
 /// Takes config parameters to avoid redundant config loading.
 pub(crate) fn builtin_definitions(
-    todo_enabled: bool,
     disabled_tools: &[String],
     read_only: bool,
 ) -> Vec<ToolDefinition> {
@@ -553,12 +535,6 @@ pub(crate) fn builtin_definitions(
     if !is_disabled("list_dir") {
         tools.push(ListDir.definition());
     }
-    if todo_enabled && !is_disabled("todo_read") {
-        tools.push(TodoRead.definition());
-    }
-    if todo_enabled && !is_disabled("todo_write") {
-        tools.push(TodoWrite.definition());
-    }
     tools
 }
 
@@ -566,11 +542,7 @@ pub(crate) fn builtin_definitions(
 pub(crate) async fn all_definitions(services: &crate::services::Services) -> Vec<ToolDefinition> {
     // Load config once and extract all needed values
     let config = crate::config::ConfigFile::load().unwrap_or_default();
-    let mut defs = builtin_definitions(
-        config.todo_enabled,
-        &config.disabled_tools,
-        services.is_read_only(),
-    );
+    let mut defs = builtin_definitions(&config.disabled_tools, services.is_read_only());
     let mcp_defs = services.mcp.all_tool_definitions().await;
     defs.extend(mcp_defs);
     defs
@@ -631,23 +603,6 @@ pub(crate) async fn execute(
             "glob" => return Some(Glob.execute(tool_use_id, input, output, services).await),
             "grep" => return Some(Grep.execute(tool_use_id, input, output, services).await),
             "list_dir" => return Some(ListDir.execute(tool_use_id, input, output, services).await),
-            "todo_read" | "todo_write" => {
-                if !config.todo_enabled {
-                    return Some(ToolResult::error(
-                        tool_use_id,
-                        "Todo tools are disabled in configuration",
-                    ));
-                }
-                if name == "todo_read" {
-                    return Some(TodoRead.execute(tool_use_id, input, output, services).await);
-                } else {
-                    return Some(
-                        TodoWrite
-                            .execute(tool_use_id, input, output, services)
-                            .await,
-                    );
-                }
-            }
             _ => {}
         }
     }
@@ -693,7 +648,7 @@ mod tests {
 
     #[test]
     fn test_builtin_definitions_read_only() {
-        let defs = builtin_definitions(false, &[], true);
+        let defs = builtin_definitions(&[], true);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(!names.contains(&"file_write"));
         assert!(!names.contains(&"file_edit"));

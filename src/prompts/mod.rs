@@ -7,7 +7,6 @@ use std::path::PathBuf;
 
 use chrono::Local;
 
-use crate::config::ConfigFile;
 use crate::services::Services;
 
 /// Git guidelines embedded at compile time.
@@ -18,9 +17,6 @@ pub(crate) const BUILD_AGENTS_MD_PROMPT: &str = include_str!("build-agents-md.md
 
 /// Default system prompt for AI assistants.
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("system.md");
-
-/// Guidelines for using the todo tools (included only when todo tools are enabled).
-const TODO_TOOL_GUIDELINES: &str = include_str!("todo.md");
 
 /// Maximum depth for project structure tree.
 const MAX_DEPTH: usize = 2;
@@ -79,27 +75,10 @@ fn is_git_directory() -> bool {
         .unwrap_or(false)
 }
 
-fn todo_tools_enabled_for_prompt() -> bool {
-    let config = ConfigFile::load().unwrap_or_default();
-
-    if !config.todo_enabled {
-        return false;
-    }
-
-    let todo_read_enabled = !config.is_tool_disabled("todo_read");
-    let todo_write_enabled = !config.is_tool_disabled("todo_write");
-
-    todo_read_enabled && todo_write_enabled
-}
-
 pub(crate) fn system_prompt_with_services(services: Option<&Services>) -> Vec<String> {
     let mut prompt = vec![];
 
     prompt.push(default_system_prompt().to_string());
-
-    if todo_tools_enabled_for_prompt() {
-        prompt.push(TODO_TOOL_GUIDELINES.to_string());
-    }
 
     if let Ok(cwd) = std::env::current_dir() {
         prompt.push(format!("Current working directory: {}", cwd.display()));

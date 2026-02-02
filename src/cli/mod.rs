@@ -65,7 +65,6 @@ use crate::providers::{
 };
 use crate::services::Services;
 use crate::session;
-use crate::tools::todo::clear_todos;
 
 use crate::cli::terminal::update_terminal_title;
 
@@ -457,8 +456,6 @@ pub(crate) async fn run(args: CliArgs) -> std::io::Result<()> {
         messages = restored.messages;
         thinking_state.enabled = restored.thinking_enabled;
         current_session_id = Some(restored.session_id);
-    } else {
-        clear_todos();
     }
 
     if current_session_id.is_none() {
@@ -2123,7 +2120,6 @@ async fn run_event_loop(
                             services.set_session_id(current_session_id.clone());
                             crate::usage::reset_last_context_usage();
                             history::clear();
-                            clear_todos();
                             terminal::redraw_from_history(prompt_box.height());
                         }
                         InputAction::Submit => {
@@ -3487,7 +3483,6 @@ async fn handle_command(
             services.set_session_id(current_session_id.clone());
             crate::usage::reset_last_context_usage();
             history::clear();
-            clear_todos();
             terminal::redraw_from_history(prompt_box.height());
             CommandResult::Continue
         }
@@ -3554,7 +3549,6 @@ async fn handle_command(
                 }
                 // Clear display history and repopulate with the last message
                 history::clear();
-                clear_todos();
                 if let Some(msg) = messages.last() {
                     history::push_message(msg);
                 }
