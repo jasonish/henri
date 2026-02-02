@@ -42,11 +42,6 @@ const OPENAI_MODELS: &[&str] = &[
     "gpt-5.1-codex-mini#medium",
     "gpt-5.1-codex-mini#high",
 ];
-const CODEX_PROMPT_GPT_5_1: &str = include_str!("openai/gpt_5_1_prompt.md");
-const CODEX_PROMPT_GPT_5_CODEX: &str = include_str!("openai/gpt_5_codex_prompt.md");
-const CODEX_PROMPT_GPT_5_1_CODEX_MAX: &str = include_str!("openai/gpt-5.1-codex-max_prompt.md");
-const CODEX_PROMPT_GPT_5_2_CODEX: &str = include_str!("openai/gpt-5.2-codex_prompt.md");
-const CODEX_PROMPT_GPT_5_2: &str = include_str!("openai/gpt_5_2_prompt.md");
 
 /// Maximum number of retries for transient errors.
 const MAX_RETRIES: u32 = 3;
@@ -374,20 +369,6 @@ impl OpenAiProvider {
         input_items
     }
 
-    async fn codex_instructions(&self) -> String {
-        let base_model = model_utils::base_model_name(&self.model);
-        let instructions = match base_model.to_lowercase().as_ref() {
-            "gpt-5.2" => CODEX_PROMPT_GPT_5_2,
-            "gpt-5.2-codex" => CODEX_PROMPT_GPT_5_2_CODEX,
-            "gpt-5.1-codex" => CODEX_PROMPT_GPT_5_CODEX,
-            "gpt-5.1" => CODEX_PROMPT_GPT_5_1,
-            "gpt-5.1-codex-mini" => CODEX_PROMPT_GPT_5_CODEX,
-            "gpt-5.1-codex-max" => CODEX_PROMPT_GPT_5_1_CODEX_MAX,
-            _ => "",
-        };
-        instructions.trim().to_string()
-    }
-
     async fn ensure_access_token(&self) -> Result<String> {
         let mut state = self.state.lock().await;
         let now = SystemTime::now()
@@ -471,24 +452,8 @@ impl OpenAiProvider {
     }
 
     async fn build_request(&self, messages: &[Message]) -> CodexRequest {
-        let instructions = self.codex_instructions().await;
-
-        // OpenAI Codex Responses API: put application system prompt in `instructions`.
-        // This avoids smuggling the system prompt in as a fake user message.
-        let mut merged_instructions = Vec::new();
-        let model_instructions = instructions.trim();
-        if !model_instructions.is_empty() {
-            merged_instructions.push(model_instructions.to_string());
-        }
-
-        let mut app_instructions =
-            crate::prompts::system_prompt_with_services(Some(&self.services));
-        app_instructions.push(
-            "You do not have an `apply_patch` tool, instead use the `file_edit` tool.".to_string(),
-        );
-        merged_instructions.extend(app_instructions);
-
-        let instructions = merged_instructions.join("\n\n");
+        let instructions = crate::prompts::system_prompt_with_services(Some(&self.services));
+        let instructions = instructions.join("\n\n");
 
         let input = self.build_codex_input(messages);
         let prompt_cache_key = self.services.session_id();
