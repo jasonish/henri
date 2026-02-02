@@ -1219,6 +1219,8 @@ impl PromptBox {
         // since we've set the position explicitly
         let state = InputState::new(std::env::current_dir().unwrap_or_default());
         self.draw(&state, false)?;
+        super::listener::redraw_status_line();
+        super::listener::CliListener::flush_buffered();
 
         Ok(())
     }

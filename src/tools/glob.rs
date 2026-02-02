@@ -14,9 +14,37 @@ pub(crate) struct Glob;
 struct GlobInput {
     pattern: String,
     path: Option<String>,
+    #[serde(default, deserialize_with = "super::deserialize_optional_usize")]
     limit: Option<usize>,
     #[serde(default)]
     include_hidden: bool,
+}
+
+fn summary_from_message(message: &str) -> Option<String> {
+    let line = message.lines().next().unwrap_or("").trim();
+    if line.is_empty() {
+        return None;
+    }
+    Some(line.to_string())
+}
+
+fn error_with_summary(tool_use_id: &str, message: impl Into<String>) -> ToolResult {
+    let message = message.into();
+    let mut result = ToolResult::error(tool_use_id, message.clone());
+    if let Some(summary) = summary_from_message(&message) {
+        result.summary = Some(summary);
+    }
+    result
+}
+
+fn attach_summary_if_missing(mut result: ToolResult) -> ToolResult {
+    if result.is_error
+        && result.summary.is_none()
+        && let Some(summary) = summary_from_message(&result.content)
+    {
+        result.summary = Some(summary);
+    }
+    result
 }
 
 impl Tool for Glob {
@@ -58,7 +86,7 @@ impl Tool for Glob {
     ) -> ToolResult {
         let input: GlobInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return *e,
+            Err(e) => return attach_summary_if_missing(*e),
         };
 
         let base_path = super::expand_tilde(input.path.as_deref().unwrap_or("."));
@@ -66,10 +94,10 @@ impl Tool for Glob {
         let limit = input.limit.unwrap_or(DEFAULT_LIMIT);
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &base_path) {
-            return *e;
+            return attach_summary_if_missing(*e);
         }
         if let Err(e) = super::validate_is_directory(tool_use_id, path, &base_path) {
-            return *e;
+            return attach_summary_if_missing(*e);
         }
 
         // Build the full pattern by combining path and pattern
@@ -111,7 +139,7 @@ impl Tool for Glob {
                 }
             }
             Err(e) => {
-                return ToolResult::error(
+                return error_with_summary(
                     tool_use_id,
                     format!("Invalid glob pattern '{}': {}", input.pattern, e),
                 );
@@ -119,6 +147,14 @@ impl Tool for Glob {
         }
 
         files.sort();
+
+        let summary = if files.is_empty() {
+            format!("No files matching '{}'", input.pattern)
+        } else if truncated {
+            format!("Found {} files (truncated)", files.len())
+        } else {
+            format!("Found {} files", files.len())
+        };
 
         let mut output = String::new();
 
@@ -140,16 +176,16 @@ impl Tool for Glob {
                 input.pattern, base_path
             );
         } else {
-            let summary = format!(
+            let output_header = format!(
                 "Found {} files matching '{}' in {}\n\n",
                 files.len(),
                 input.pattern,
                 base_path
             );
-            output = summary + &output;
+            output = output_header + &output;
         }
 
-        ToolResult::success(tool_use_id, output)
+        ToolResult::success(tool_use_id, output).with_summary(summary)
     }
 }
 

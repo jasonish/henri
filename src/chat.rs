@@ -188,13 +188,14 @@ pub(crate) async fn run_chat_iteration<P: Provider>(
             }
             None => {
                 let error_msg = format!("Unknown tool: {}", tool_call.name);
+                let summary = Some(error_msg.clone());
                 output::print_tool_result(
                     output,
                     &tool_call.name,
                     true,
                     Some(error_msg.clone()),
                     None,
-                    None,
+                    summary,
                 );
 
                 tool_results.push(ContentBlock::ToolResult {

@@ -130,8 +130,6 @@ pub(crate) struct ConfigFile {
     pub lsp: Option<LspConfig>,
     #[serde(default = "default_show_network_stats")]
     pub show_network_stats: bool,
-    #[serde(default = "default_show_diffs")]
-    pub show_diffs: bool,
     #[serde(
         default = "default_show_image_previews",
         rename = "show-image-previews"
@@ -140,6 +138,9 @@ pub(crate) struct ConfigFile {
     /// Enable LSP integration for diagnostics (default: true)
     #[serde(default = "default_lsp_enabled", rename = "lsp-enabled")]
     pub lsp_enabled: bool,
+    /// Hide tool output like bash command output and file read previews (default: false)
+    #[serde(default = "default_hide_tool_output", rename = "hide-tool-output")]
+    pub hide_tool_output: bool,
     /// List of favorite model identifiers (e.g., "claude/claude-sonnet-4-5")
     #[serde(
         default,
@@ -172,9 +173,9 @@ impl Default for ConfigFile {
             mcp: None,
             lsp: None,
             show_network_stats: default_show_network_stats(),
-            show_diffs: default_show_diffs(),
             show_image_previews: default_show_image_previews(),
             lsp_enabled: default_lsp_enabled(),
+            hide_tool_output: default_hide_tool_output(),
             favorite_models: Vec::new(),
             auto_compact: AutoCompactConfig::default(),
             todo_enabled: default_todo_enabled(),
@@ -184,10 +185,6 @@ impl Default for ConfigFile {
 }
 
 fn default_show_network_stats() -> bool {
-    true
-}
-
-fn default_show_diffs() -> bool {
     true
 }
 
@@ -201,6 +198,10 @@ fn default_todo_enabled() -> bool {
 
 fn default_lsp_enabled() -> bool {
     true
+}
+
+fn default_hide_tool_output() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -675,13 +676,6 @@ impl ConfigFile {
                 config.show_network_stats = b;
             }
 
-            // show-diffs
-            if let Some(val) = table.get("show-diffs")
-                && let Some(b) = val.as_bool()
-            {
-                config.show_diffs = b;
-            }
-
             // show-image-previews
             if let Some(val) = table.get("show-image-previews")
                 && let Some(b) = val.as_bool()
@@ -694,6 +688,13 @@ impl ConfigFile {
                 && let Some(b) = val.as_bool()
             {
                 config.lsp_enabled = b;
+            }
+
+            // hide-tool-output
+            if let Some(val) = table.get("hide-tool-output")
+                && let Some(b) = val.as_bool()
+            {
+                config.hide_tool_output = b;
             }
 
             // favorite-models

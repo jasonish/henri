@@ -55,7 +55,11 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
         HistoryEvent::Error(msg) => render_error(msg),
         HistoryEvent::Warning(msg) => render_warning(msg),
         HistoryEvent::Info(msg) => render_info(msg),
-        HistoryEvent::FileDiff { diff, language } => render_file_diff(diff, language.as_deref()),
+        HistoryEvent::FileDiff {
+            diff,
+            language,
+            summary,
+        } => render_file_diff(diff, language.as_deref(), summary.as_deref()),
         HistoryEvent::TodoList { items } => render_todo_list(items),
         HistoryEvent::AutoCompact { message } => render_auto_compact(message),
     }
@@ -133,13 +137,7 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
     // Mirrors `CliListener`'s one-shot diff_shown behavior so we don't suppress multiple ✓'s.
     let mut diff_shown = false;
 
-    for (idx, event) in events.iter().enumerate() {
-        let prev = if idx > 0 {
-            Some(&events[idx - 1])
-        } else {
-            None
-        };
-
+    for event in events.iter() {
         match event {
             HistoryEvent::ToolStart => {
                 in_tool_block = true;
@@ -183,16 +181,10 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
             ensure_trailing_newlines(&mut output, 2);
         }
 
-        let next = events.get(idx + 1);
-
         let rendered = match event {
             HistoryEvent::ToolUse { description } => {
                 let mut s = render_tool_use(description);
-                // If next event is not a ToolResult, add newline to terminate the line.
-                // This handles batched tool calls where results come later.
-                if !matches!(next, Some(HistoryEvent::ToolResult { .. })) {
-                    s.push('\n');
-                }
+                s.push('\n');
                 s
             }
             HistoryEvent::ToolResult {
@@ -203,9 +195,7 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
                 if suppressed_tool_result {
                     String::new()
                 } else {
-                    // Only add leading space if previous was ToolUse (inline display).
-                    let inline = matches!(prev, Some(HistoryEvent::ToolUse { .. }));
-                    render_tool_result_with_context(*is_error, output, summary.as_deref(), inline)
+                    render_tool_result_with_context(*is_error, output, summary.as_deref(), false)
                 }
             }
             _ => render_event(event, width),
@@ -661,6 +651,11 @@ pub(crate) fn format_scrolled_indicator(hidden: usize, visible: usize) -> String
 
 /// Render tool output tail (up to the configured viewport height).
 fn render_tool_output(text: &str, width: usize) -> String {
+    // Skip rendering if tool output is hidden
+    if super::listener::is_tool_output_hidden() {
+        return String::new();
+    }
+
     let wrapped = wrap_text(text, width);
     if wrapped.is_empty() {
         return String::new();
@@ -689,6 +684,11 @@ fn render_tool_output(text: &str, width: usize) -> String {
 
 /// Render file read output with syntax highlighting based on file extension.
 fn render_file_read_output(filename: &str, text: &str, width: usize) -> String {
+    // Skip rendering if tool output is hidden
+    if super::listener::is_tool_output_hidden() {
+        return String::new();
+    }
+
     let wrapped = wrap_text(text, width);
     if wrapped.is_empty() {
         return String::new();
@@ -803,8 +803,18 @@ pub(crate) fn highlight_line_content(line: &str, language: &str) -> String {
 }
 
 /// Render file diff with colored +/- lines and syntax highlighting
-fn render_file_diff(diff: &str, language: Option<&str>) -> String {
-    let mut output = format!(" {}\n", "✓".green());
+fn render_file_diff(diff: &str, language: Option<&str>, summary: Option<&str>) -> String {
+    let summary_suffix = summary
+        .map(|text| format!(" {}", text.bright_black()))
+        .unwrap_or_default();
+    let checkmark = format!("{}{}\n", "✓".green(), summary_suffix);
+
+    // Always show the checkmark, but skip the diff content if tool output is hidden
+    if super::listener::is_tool_output_hidden() {
+        return checkmark;
+    }
+
+    let mut output = String::new();
 
     // Track line numbers by parsing hunk headers
     let mut old_line_num = 0usize;
@@ -831,6 +841,7 @@ fn render_file_diff(diff: &str, language: Option<&str>) -> String {
         output.push('\n');
     }
 
+    output.push_str(&checkmark);
     output
 }
 
@@ -1543,6 +1554,7 @@ const x = 42;
             HistoryEvent::FileDiff {
                 diff: "some diff".to_string(),
                 language: None,
+                summary: None,
             },
             HistoryEvent::ToolResult {
                 output: "".to_string(),

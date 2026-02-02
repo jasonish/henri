@@ -96,6 +96,8 @@ pub(crate) enum SerializableHistoryEvent {
     FileDiff {
         diff: String,
         language: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
     },
     TodoList {
         items: Vec<SerializableHistoryTodoItem>,
@@ -189,9 +191,14 @@ impl From<&HistoryEvent> for SerializableHistoryEvent {
             HistoryEvent::Info(msg) => SerializableHistoryEvent::Info {
                 message: msg.clone(),
             },
-            HistoryEvent::FileDiff { diff, language } => SerializableHistoryEvent::FileDiff {
+            HistoryEvent::FileDiff {
+                diff,
+                language,
+                summary,
+            } => SerializableHistoryEvent::FileDiff {
                 diff: diff.clone(),
                 language: language.clone(),
+                summary: summary.clone(),
             },
             HistoryEvent::TodoList { items } => SerializableHistoryEvent::TodoList {
                 items: items
@@ -270,9 +277,14 @@ impl From<&SerializableHistoryEvent> for HistoryEvent {
             SerializableHistoryEvent::Error { message } => HistoryEvent::Error(message.clone()),
             SerializableHistoryEvent::Warning { message } => HistoryEvent::Warning(message.clone()),
             SerializableHistoryEvent::Info { message } => HistoryEvent::Info(message.clone()),
-            SerializableHistoryEvent::FileDiff { diff, language } => HistoryEvent::FileDiff {
+            SerializableHistoryEvent::FileDiff {
+                diff,
+                language,
+                summary,
+            } => HistoryEvent::FileDiff {
                 diff: diff.clone(),
                 language: language.clone(),
+                summary: summary.clone(),
             },
             SerializableHistoryEvent::TodoList { items } => HistoryEvent::TodoList {
                 items: items

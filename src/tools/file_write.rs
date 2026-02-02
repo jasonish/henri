@@ -153,6 +153,10 @@ impl Tool for FileWrite {
                 _output.emit(crate::output::OutputEvent::FileDiff {
                     diff: diff.unified_diff,
                     language: crate::syntax::language_from_path(&input.file_path),
+                    summary: crate::diff::format_diff_summary(
+                        diff._lines_added,
+                        diff._lines_removed,
+                    ),
                 });
             }
         }

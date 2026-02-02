@@ -619,9 +619,9 @@ async fn run_event_loop(
         listener::init_spinner();
     }
 
-    // Load show_diffs setting (needed for both interactive and batch mode)
-    listener::reload_show_diffs();
+    // Load settings (needed for both interactive and batch mode)
     listener::reload_show_image_previews();
+    listener::reload_hide_tool_output();
 
     // Submit initial prompt if provided
     if let Some(prompt) = initial_prompt {
@@ -1758,8 +1758,8 @@ async fn run_event_loop(
                                 // Reload settings after changes
                                 prompt_box.reload_settings();
                                 listener::reload_show_network_stats();
-                                listener::reload_show_diffs();
                                 listener::reload_show_image_previews();
+                                listener::reload_hide_tool_output();
                                 refresh_prompt_status(
                                     &mut prompt_box,
                                     &provider_manager,
@@ -2669,6 +2669,25 @@ async fn run_event_loop(
                                         .to_string(),
                                 );
                                 prompt_box.draw(&input_state, false)?;
+                            }
+                        }
+                        InputAction::ToggleHideToolOutput => {
+                            // Toggle the setting
+                            if let Ok(mut config) = crate::config::ConfigFile::load() {
+                                config.hide_tool_output = !config.hide_tool_output;
+                                let _ = config.save();
+                                listener::reload_hide_tool_output();
+
+                                // Show feedback message
+                                let status = if config.hide_tool_output {
+                                    "hidden"
+                                } else {
+                                    "visible"
+                                };
+                                terminal::println_above(&format!("Tool output is now {}", status));
+
+                                // Redraw history to reflect the change
+                                prompt_box.redraw_history().ok();
                             }
                         }
                         InputAction::Quit => {
@@ -3801,6 +3820,8 @@ fn show_help(_custom_commands: &[CustomCommand]) {
         "  {} Edit prompt in $VISUAL/$EDITOR",
         shortcut.yellow()
     ));
+    let shortcut = format!("{:<21}", "Ctrl+H");
+    terminal::println_above(&format!("  {} Toggle hide tool output", shortcut.yellow()));
 }
 
 #[cfg(test)]

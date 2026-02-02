@@ -39,6 +39,32 @@ pub(crate) fn unified_diff(_path: &Path, old: &str, new: &str, context_lines: us
     }
 }
 
+fn format_line_count(count: usize) -> String {
+    if count == 1 {
+        "1 line".to_string()
+    } else {
+        format!("{} lines", count)
+    }
+}
+
+pub(crate) fn format_diff_summary(lines_added: usize, lines_removed: usize) -> Option<String> {
+    if lines_added == 0 && lines_removed == 0 {
+        return None;
+    }
+
+    Some(if lines_added > 0 && lines_removed > 0 {
+        format!(
+            "Added {}, removed {}",
+            format_line_count(lines_added),
+            format_line_count(lines_removed)
+        )
+    } else if lines_added > 0 {
+        format!("Added {}", format_line_count(lines_added))
+    } else {
+        format!("Removed {}", format_line_count(lines_removed))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

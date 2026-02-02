@@ -58,7 +58,9 @@ pub(crate) struct FileRead;
 #[derive(Debug, Deserialize)]
 struct FileReadInput {
     filename: String,
+    #[serde(default, deserialize_with = "super::deserialize_optional_usize")]
     offset: Option<usize>,
+    #[serde(default, deserialize_with = "super::deserialize_optional_usize")]
     limit: Option<usize>,
 }
 
@@ -70,6 +72,33 @@ struct OutputLine {
     content: String,
     /// True if this line's content was truncated due to output/size constraints.
     truncated: bool,
+}
+
+fn summary_from_message(message: &str) -> Option<String> {
+    let line = message.lines().next().unwrap_or("").trim();
+    if line.is_empty() {
+        return None;
+    }
+    Some(line.to_string())
+}
+
+fn error_with_summary(tool_use_id: &str, message: impl Into<String>) -> ToolResult {
+    let message = message.into();
+    let mut result = ToolResult::error(tool_use_id, message.clone());
+    if let Some(summary) = summary_from_message(&message) {
+        result.summary = Some(summary);
+    }
+    result
+}
+
+fn attach_summary_if_missing(mut result: ToolResult) -> ToolResult {
+    if result.is_error
+        && result.summary.is_none()
+        && let Some(summary) = summary_from_message(&result.content)
+    {
+        result.summary = Some(summary);
+    }
+    result
 }
 
 impl Tool for FileRead {
@@ -108,22 +137,24 @@ impl Tool for FileRead {
     ) -> ToolResult {
         let input: FileReadInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return *e,
+            Err(e) => return attach_summary_if_missing(*e),
         };
 
         let expanded_filename = super::expand_tilde(&input.filename);
         let path = Path::new(&expanded_filename);
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &input.filename) {
-            return *e;
+            return attach_summary_if_missing(*e);
         }
         if let Err(e) = super::validate_is_file(tool_use_id, path, &input.filename) {
-            return *e;
+            return attach_summary_if_missing(*e);
         }
 
         let mut file = match std::fs::File::open(path) {
             Ok(f) => f,
-            Err(e) => return ToolResult::error(tool_use_id, format!("Failed to open file: {}", e)),
+            Err(e) => {
+                return error_with_summary(tool_use_id, format!("Failed to open file: {}", e));
+            }
         };
 
         let size_bytes = file.metadata().ok().map(|m| m.len());
@@ -131,7 +162,9 @@ impl Tool for FileRead {
         let mut sniff_buf = vec![0u8; BINARY_DETECT_BYTES];
         let sniff_len = match file.read(&mut sniff_buf) {
             Ok(n) => n,
-            Err(e) => return ToolResult::error(tool_use_id, format!("Failed to read file: {}", e)),
+            Err(e) => {
+                return error_with_summary(tool_use_id, format!("Failed to read file: {}", e));
+            }
         };
         sniff_buf.truncate(sniff_len);
 
@@ -153,7 +186,7 @@ impl Tool for FileRead {
             let (bytes, truncated) = match read_binary_bytes(file, sniff_buf) {
                 Ok(result) => result,
                 Err(e) => {
-                    return ToolResult::error(tool_use_id, format!("Failed to read file: {}", e));
+                    return error_with_summary(tool_use_id, format!("Failed to read file: {}", e));
                 }
             };
 
@@ -187,7 +220,7 @@ impl Tool for FileRead {
             file = match std::fs::File::open(path) {
                 Ok(f) => f,
                 Err(e) => {
-                    return ToolResult::error(tool_use_id, format!("Failed to open file: {}", e));
+                    return error_with_summary(tool_use_id, format!("Failed to open file: {}", e));
                 }
             };
         }
@@ -202,7 +235,7 @@ impl Tool for FileRead {
             let advanced = match skip_one_line(&mut reader) {
                 Ok(a) => a,
                 Err(e) => {
-                    return ToolResult::error(
+                    return error_with_summary(
                         tool_use_id,
                         format!("Error reading line {}: {}", line_idx + 1, e),
                     );
@@ -255,7 +288,7 @@ impl Tool for FileRead {
             let line = match read_one_line_lossy(&mut reader, max_line_output_bytes) {
                 Ok(l) => l,
                 Err(e) => {
-                    return ToolResult::error(
+                    return error_with_summary(
                         tool_use_id,
                         format!("Error reading line {}: {}", line_idx + 1, e),
                     );
@@ -294,7 +327,7 @@ impl Tool for FileRead {
         }
 
         if output_lines.is_empty() && offset > 0 {
-            return ToolResult::error(
+            return error_with_summary(
                 tool_use_id,
                 format!("Offset {} is beyond the end of the file", offset),
             );
@@ -332,7 +365,7 @@ fn read_image_file(
     let (bytes, truncated) = match read_binary_bytes(file, sniff_buf) {
         Ok(result) => result,
         Err(e) => {
-            return ToolResult::error(tool_use_id, format!("Failed to read file: {}", e));
+            return error_with_summary(tool_use_id, format!("Failed to read file: {}", e));
         }
     };
 

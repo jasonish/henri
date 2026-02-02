@@ -83,6 +83,7 @@ struct CapturedOutput {
 #[derive(Debug, Deserialize)]
 struct BashInput {
     command: String,
+    #[serde(default, deserialize_with = "super::deserialize_optional_u64")]
     timeout: Option<u64>,
     cwd: Option<String>,
 }

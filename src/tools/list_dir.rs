@@ -17,6 +17,49 @@ struct ListDirInput {
     include_hidden: bool,
 }
 
+fn summary_from_message(message: &str) -> Option<String> {
+    let line = message.lines().next().unwrap_or("").trim();
+    if line.is_empty() {
+        return None;
+    }
+    Some(line.to_string())
+}
+
+fn error_with_summary(tool_use_id: &str, message: impl Into<String>) -> ToolResult {
+    let message = message.into();
+    let mut result = ToolResult::error(tool_use_id, message.clone());
+    if let Some(summary) = summary_from_message(&message) {
+        result.summary = Some(summary);
+    }
+    result
+}
+
+fn attach_summary_if_missing(mut result: ToolResult) -> ToolResult {
+    if result.is_error
+        && result.summary.is_none()
+        && let Some(summary) = summary_from_message(&result.content)
+    {
+        result.summary = Some(summary);
+    }
+    result
+}
+
+fn format_file_count(count: usize) -> String {
+    if count == 1 {
+        "1 file".to_string()
+    } else {
+        format!("{} files", count)
+    }
+}
+
+fn format_dir_count(count: usize) -> String {
+    if count == 1 {
+        "1 directory".to_string()
+    } else {
+        format!("{} directories", count)
+    }
+}
+
 impl Tool for ListDir {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -48,23 +91,23 @@ impl Tool for ListDir {
     ) -> ToolResult {
         let input: ListDirInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return *e,
+            Err(e) => return attach_summary_if_missing(*e),
         };
 
         let dir_path = super::expand_tilde(input.path.as_deref().unwrap_or("."));
         let path = Path::new(&dir_path);
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &dir_path) {
-            return *e;
+            return attach_summary_if_missing(*e);
         }
         if let Err(e) = super::validate_is_directory(tool_use_id, path, &dir_path) {
-            return *e;
+            return attach_summary_if_missing(*e);
         }
 
         let entries = match fs::read_dir(path) {
             Ok(e) => e,
             Err(e) => {
-                return ToolResult::error(tool_use_id, format!("Failed to read directory: {}", e));
+                return error_with_summary(tool_use_id, format!("Failed to read directory: {}", e));
             }
         };
 
@@ -117,7 +160,17 @@ impl Tool for ListDir {
             output.push_str("(empty directory)\n");
         }
 
-        ToolResult::success(tool_use_id, output)
+        let summary = if files.is_empty() && dirs.is_empty() {
+            "Empty directory".to_string()
+        } else {
+            format!(
+                "Found {}, {}",
+                format_file_count(files.len()),
+                format_dir_count(dirs.len())
+            )
+        };
+
+        ToolResult::success(tool_use_id, output).with_summary(summary)
     }
 }
 

@@ -457,27 +457,27 @@ impl ModelMenuState {
 #[derive(Clone, Debug)]
 pub(super) enum SettingOption {
     ShowNetworkStats(bool),
-    ShowDiffs(bool),
     ShowImagePreviews(bool),
     LspEnabled(bool),
+    HideToolOutput(bool),
 }
 
 impl SettingOption {
     fn label(&self) -> &'static str {
         match self {
             SettingOption::ShowNetworkStats(_) => "Network Stats",
-            SettingOption::ShowDiffs(_) => "Show Diffs",
             SettingOption::ShowImagePreviews(_) => "Image Previews",
             SettingOption::LspEnabled(_) => "LSP Integration",
+            SettingOption::HideToolOutput(_) => "Hide Tool Output",
         }
     }
 
     fn value_display(&self) -> String {
         match self {
             SettingOption::ShowNetworkStats(enabled)
-            | SettingOption::ShowDiffs(enabled)
             | SettingOption::ShowImagePreviews(enabled)
-            | SettingOption::LspEnabled(enabled) => {
+            | SettingOption::LspEnabled(enabled)
+            | SettingOption::HideToolOutput(enabled) => {
                 if *enabled { "Enabled" } else { "Disabled" }.to_string()
             }
         }
@@ -486,9 +486,9 @@ impl SettingOption {
     fn toggle(&mut self) {
         match self {
             SettingOption::ShowNetworkStats(enabled)
-            | SettingOption::ShowDiffs(enabled)
             | SettingOption::ShowImagePreviews(enabled)
-            | SettingOption::LspEnabled(enabled) => {
+            | SettingOption::LspEnabled(enabled)
+            | SettingOption::HideToolOutput(enabled) => {
                 *enabled = !*enabled;
             }
         }
@@ -500,14 +500,14 @@ impl SettingOption {
                 SettingOption::ShowNetworkStats(enabled) => {
                     config.show_network_stats = *enabled;
                 }
-                SettingOption::ShowDiffs(enabled) => {
-                    config.show_diffs = *enabled;
-                }
                 SettingOption::ShowImagePreviews(enabled) => {
                     config.show_image_previews = *enabled;
                 }
                 SettingOption::LspEnabled(enabled) => {
                     config.lsp_enabled = *enabled;
+                }
+                SettingOption::HideToolOutput(enabled) => {
+                    config.hide_tool_output = *enabled;
                 }
             }
             let _ = config.save();
@@ -619,9 +619,9 @@ impl SettingsMenuState {
         Self {
             options: vec![
                 SettingOption::ShowNetworkStats(config.show_network_stats),
-                SettingOption::ShowDiffs(config.show_diffs),
                 SettingOption::ShowImagePreviews(config.show_image_previews),
                 SettingOption::LspEnabled(config.lsp_enabled),
+                SettingOption::HideToolOutput(config.hide_tool_output),
             ],
             selected_index: 0,
             default_model_submenu: None,

@@ -472,6 +472,8 @@ pub(super) enum InputAction {
     CycleFavoritesForward,
     /// Cycle backward through favorite models (Shift+Ctrl+Y)
     CycleFavoritesBackward,
+    /// Toggle hide tool output (Ctrl+H)
+    ToggleHideToolOutput,
 }
 
 /// State for multi-line input
@@ -1182,6 +1184,9 @@ impl InputState {
                 // Shift+Ctrl+Y may come as capital 'Y' with CONTROL modifier
                 InputAction::CycleFavoritesBackward
             }
+
+            // Ctrl+H - Toggle hide tool output
+            (KeyCode::Char('h'), KeyModifiers::CONTROL) => InputAction::ToggleHideToolOutput,
 
             // Alt+B - Backward word (treats image markers as single tokens)
             (KeyCode::Char('b'), KeyModifiers::ALT) => {

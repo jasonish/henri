@@ -37,11 +37,11 @@ static BANDWIDTH_TX_DISPLAY: AtomicU64 = AtomicU64::new(0);
 // Whether to show network stats (loaded from config)
 static SHOW_NETWORK_STATS: AtomicBool = AtomicBool::new(false);
 
-// Whether to show file diffs (loaded from config)
-static SHOW_DIFFS: AtomicBool = AtomicBool::new(true);
-
 // Whether to show image previews (loaded from config)
 static SHOW_IMAGE_PREVIEWS: AtomicBool = AtomicBool::new(true);
+
+// Whether to hide tool output (loaded from config)
+static HIDE_TOOL_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 // Context/token tracking state for status line display
 static CONTEXT_TOKENS: AtomicU64 = AtomicU64::new(0);
@@ -65,20 +65,25 @@ pub(crate) fn reload_show_network_stats() {
     SHOW_NETWORK_STATS.store(enabled, Ordering::Relaxed);
 }
 
-/// Reload the show_diffs setting from config
-pub(crate) fn reload_show_diffs() {
-    let enabled = crate::config::ConfigFile::load()
-        .map(|c| c.show_diffs)
-        .unwrap_or(true);
-    SHOW_DIFFS.store(enabled, Ordering::Relaxed);
-}
-
 /// Reload the show_image_previews setting from config
 pub(crate) fn reload_show_image_previews() {
     let enabled = crate::config::ConfigFile::load()
         .map(|c| c.show_image_previews)
         .unwrap_or(true);
     SHOW_IMAGE_PREVIEWS.store(enabled, Ordering::Relaxed);
+}
+
+/// Reload the hide_tool_output setting from config
+pub(crate) fn reload_hide_tool_output() {
+    let enabled = crate::config::ConfigFile::load()
+        .map(|c| c.hide_tool_output)
+        .unwrap_or(false);
+    HIDE_TOOL_OUTPUT.store(enabled, Ordering::Relaxed);
+}
+
+/// Check if tool output should be hidden
+pub(crate) fn is_tool_output_hidden() -> bool {
+    HIDE_TOOL_OUTPUT.load(Ordering::Relaxed)
 }
 
 /// Render a single diff line with syntax highlighting.
@@ -1836,7 +1841,8 @@ impl CliListener {
                 // above the prompt when a turn ends with just a tool call.
                 // If there's a summary and we're still on the tool header line,
                 // force a newline so the summary appears on its own line.
-                let force_newline = pending_tool_line && summary.is_some();
+                // Also force newline when hiding tool output for consistent appearance.
+                let force_newline = pending_tool_line;
 
                 let text = if *is_error {
                     if pending_tool_line && !force_newline {
@@ -1889,6 +1895,22 @@ impl CliListener {
 
             OutputEvent::ToolOutput { text } => {
                 if text.is_empty() {
+                    return;
+                }
+
+                // If hiding tool output, skip rendering but still record to history
+                if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+                    // Still mark tool output as active so ToolResult rendering works correctly
+                    if let Ok(mut state) = self.state.lock() {
+                        state.last_tool_call_open = false;
+                        if !state.tool_output.active {
+                            state.tool_output.active = true;
+                        }
+                        // Keep the full buffer so toggling visibility can render past output
+                        state.tool_output.append(text);
+                    }
+                    // Record to history so toggling the setting can show it later
+                    history::append_tool_output(text);
                     return;
                 }
 
@@ -2014,6 +2036,22 @@ impl CliListener {
 
             OutputEvent::FileReadOutput { filename, text } => {
                 if text.is_empty() {
+                    return;
+                }
+
+                // If hiding tool output, skip rendering but still record to history
+                if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+                    // Still mark tool output as active so ToolResult rendering works correctly
+                    if let Ok(mut state) = self.state.lock() {
+                        state.last_tool_call_open = false;
+                        if !state.tool_output.active {
+                            state.tool_output.active = true;
+                        }
+                        // Keep the full buffer so toggling visibility can render past output
+                        state.tool_output.append(text);
+                    }
+                    // Record to history so toggling the setting can show it later
+                    history::append_file_read_output(filename, text);
                     return;
                 }
 
@@ -2271,7 +2309,11 @@ impl CliListener {
                 }
             }
 
-            OutputEvent::FileDiff { diff, language, .. } => {
+            OutputEvent::FileDiff {
+                diff,
+                language,
+                summary,
+            } => {
                 let pending_tool_line = self
                     .state
                     .lock()
@@ -2282,17 +2324,17 @@ impl CliListener {
                     })
                     .unwrap_or(false);
 
-                // If the tool-use line is still open ("▶ ..."), append ✓ inline; otherwise
-                // print it on its own line.
                 if pending_tool_line {
-                    terminal::print_above(&format!(" {}\n", "✓".green()));
-                } else {
-                    terminal::ensure_line_break();
-                    terminal::println_above(&format!(" {}", "✓".green()));
+                    if terminal::prompt_visible() {
+                        terminal::ensure_line_break();
+                    } else {
+                        println!();
+                        let _ = io::stdout().flush();
+                    }
                 }
 
-                // Only render the diff if show_diffs is enabled
-                if SHOW_DIFFS.load(Ordering::Relaxed) {
+                // Only render the diff if tool output is not hidden
+                if !HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
                     // Track line numbers across the diff
                     let mut old_line_num = 0usize;
                     let mut new_line_num = 0usize;
@@ -2308,9 +2350,21 @@ impl CliListener {
                         }
                     }
                 }
+                let summary_suffix = summary
+                    .as_ref()
+                    .map(|s| format!(" {}", s.bright_black()))
+                    .unwrap_or_default();
+                let checkmark = format!("{}{}", "✓".green(), summary_suffix);
+                if terminal::prompt_visible() {
+                    terminal::println_above(&checkmark);
+                } else {
+                    println!("{}", checkmark);
+                    let _ = io::stdout().flush();
+                }
                 history::push(HistoryEvent::FileDiff {
                     diff: diff.clone(),
                     language: language.clone(),
+                    summary: summary.clone(),
                 });
                 // Mark that diff was shown so ToolResult skips its checkmark
                 if let Ok(mut state) = self.state.lock() {

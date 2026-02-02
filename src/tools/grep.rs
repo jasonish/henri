@@ -222,13 +222,15 @@ impl Grep {
 
                 // Both grep and rg return 1 for "no matches found", which is not a tool error
                 if exit_code == 1 {
+                    let summary = "No matches".to_string();
                     return Ok(ToolResult::success(
                         tool_use_id,
                         format!(
                             "No matches found for '{}' in {}",
                             input.pattern, search_path
                         ),
-                    ));
+                    )
+                    .with_summary(summary));
                 }
 
                 if exit_code > 1 {
@@ -241,6 +243,7 @@ impl Grep {
                 }
 
                 let mut output = stdout_output;
+                let mut summary = format!("Matched {} lines, {} bytes", line_count, byte_count);
                 if truncated_lines || truncated_bytes {
                     let mut reasons = Vec::new();
                     if truncated_lines {
@@ -258,9 +261,10 @@ impl Grep {
                     output.push_str("\n\n[Output truncated: ");
                     output.push_str(&reasons.join(", "));
                     output.push(']');
+                    summary.push_str(" (truncated)");
                 }
 
-                Ok(ToolResult::success(tool_use_id, output))
+                Ok(ToolResult::success(tool_use_id, output).with_summary(summary))
             }
             Err(_) => {
                 let _ = child.kill().await;

@@ -64,6 +64,8 @@ pub(crate) enum HistoryEvent {
         diff: String,
         /// Language for syntax highlighting
         language: Option<String>,
+        /// Optional summary for display (e.g., lines added/removed)
+        summary: Option<String>,
     },
     /// Todo list update
     TodoList { items: Vec<TodoItem> },

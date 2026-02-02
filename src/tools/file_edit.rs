@@ -21,6 +21,33 @@ struct FileEditInput {
     replace_all: bool,
 }
 
+fn summary_from_message(message: &str) -> Option<String> {
+    let line = message.lines().next().unwrap_or("").trim();
+    if line.is_empty() {
+        return None;
+    }
+    Some(line.to_string())
+}
+
+fn error_with_summary(tool_use_id: &str, message: impl Into<String>) -> ToolResult {
+    let message = message.into();
+    let mut result = ToolResult::error(tool_use_id, message.clone());
+    if let Some(summary) = summary_from_message(&message) {
+        result.summary = Some(summary);
+    }
+    result
+}
+
+fn attach_summary_if_missing(mut result: ToolResult) -> ToolResult {
+    if result.is_error
+        && result.summary.is_none()
+        && let Some(summary) = summary_from_message(&result.content)
+    {
+        result.summary = Some(summary);
+    }
+    result
+}
+
 impl Tool for FileEdit {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -61,52 +88,54 @@ impl Tool for FileEdit {
         services: &crate::services::Services,
     ) -> ToolResult {
         if services.is_read_only() {
-            return ToolResult::error(tool_use_id, "Read-only mode is enabled");
+            return error_with_summary(tool_use_id, "Read-only mode is enabled");
         }
 
         let input: FileEditInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return *e,
+            Err(e) => return attach_summary_if_missing(*e),
         };
 
         // Validate that old_string != new_string
         if input.old_string == input.new_string {
-            return ToolResult::error(tool_use_id, "oldString and newString must be different");
+            return error_with_summary(tool_use_id, "oldString and newString must be different");
         }
 
         // Validate old_string is not empty
         if input.old_string.is_empty() {
-            return ToolResult::error(tool_use_id, "oldString cannot be empty");
+            return error_with_summary(tool_use_id, "oldString cannot be empty");
         }
 
         let expanded_path = super::expand_tilde(&input.file_path);
         let path = Path::new(&expanded_path);
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &input.file_path) {
-            return *e;
+            return attach_summary_if_missing(*e);
         }
         if let Err(e) = super::validate_is_file(tool_use_id, path, &input.file_path) {
-            return *e;
+            return attach_summary_if_missing(*e);
         }
 
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         if let Err(message) = sandbox::check_write_access(path, &cwd, services.is_sandbox_enabled())
         {
-            return ToolResult::error(tool_use_id, message);
+            return error_with_summary(tool_use_id, message);
         }
 
         // Read the file contents
         let old_contents = match fs::read_to_string(path) {
             Ok(c) => c,
-            Err(e) => return ToolResult::error(tool_use_id, format!("Failed to read file: {}", e)),
+            Err(e) => {
+                return error_with_summary(tool_use_id, format!("Failed to read file: {}", e));
+            }
         };
 
         // Count occurrences
         let count = old_contents.matches(&input.old_string).count();
 
         if count == 0 {
-            return ToolResult::error(
+            return error_with_summary(
                 tool_use_id,
                 "oldString not found in file. Make sure the string matches exactly, \
                 including whitespace and line endings.",
@@ -115,7 +144,7 @@ impl Tool for FileEdit {
 
         // If not replace_all and multiple occurrences, error
         if !input.replace_all && count > 1 {
-            return ToolResult::error(
+            return error_with_summary(
                 tool_use_id,
                 format!(
                     "oldString appears {} times in the file. Use replaceAll: true to replace \
@@ -134,7 +163,7 @@ impl Tool for FileEdit {
 
         // Write the file back
         if let Err(e) = fs::write(path, &new_contents) {
-            return ToolResult::error(tool_use_id, format!("Failed to write file: {}", e));
+            return error_with_summary(tool_use_id, format!("Failed to write file: {}", e));
         }
 
         let diff = crate::diff::unified_diff(path, &old_contents, &new_contents, 3);
@@ -142,6 +171,7 @@ impl Tool for FileEdit {
             _output.emit(crate::output::OutputEvent::FileDiff {
                 diff: diff.unified_diff,
                 language: crate::syntax::language_from_path(&input.file_path),
+                summary: crate::diff::format_diff_summary(diff._lines_added, diff._lines_removed),
             });
         }
 

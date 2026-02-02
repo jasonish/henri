@@ -24,7 +24,7 @@ pub(crate) use grep::Grep;
 pub(crate) use list_dir::ListDir;
 pub(crate) use todo::{TodoItem, TodoRead, TodoStatus, TodoWrite};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 
 pub(crate) const READ_ONLY_DISABLED_TOOLS: &[&str] = &["file_delete", "file_edit", "file_write"];
 
@@ -44,6 +44,22 @@ pub(crate) const TOOL_INFO: &[(&str, &str)] = &[
     ("grep", "Search for patterns in files"),
     ("list_dir", "List directory contents"),
     ("todo", "Todo list tools (read/write)"),
+];
+
+const BUILTIN_TOOL_ALIASES: &[(&str, &str)] = &[
+    ("edit", "file_edit"),
+    ("read", "file_read"),
+    ("cat", "file_read"),
+    ("write", "file_write"),
+    ("delete", "file_delete"),
+    ("del", "file_delete"),
+    ("rm", "file_delete"),
+    ("remove", "file_delete"),
+    ("ls", "list_dir"),
+    ("list", "list_dir"),
+    ("dir", "list_dir"),
+    ("find", "glob"),
+    ("search", "grep"),
 ];
 
 /// Tool definition for AI model consumption
@@ -141,6 +157,101 @@ pub(crate) fn deserialize_input<T: serde::de::DeserializeOwned>(
             format!("Invalid input: {}", e),
         ))
     })
+}
+
+pub(crate) fn deserialize_optional_usize<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => parse_usize_value(&value)
+            .map(Some)
+            .map_err(de::Error::custom),
+    }
+}
+
+pub(crate) fn deserialize_optional_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(value) => parse_u64_value(&value).map(Some).map_err(de::Error::custom),
+    }
+}
+
+pub(crate) fn parse_usize_value(value: &serde_json::Value) -> Result<usize, String> {
+    let parsed = parse_u64_value(value)?;
+    if parsed > usize::MAX as u64 {
+        Err("value is too large".to_string())
+    } else {
+        Ok(parsed as usize)
+    }
+}
+
+pub(crate) fn parse_u64_value(value: &serde_json::Value) -> Result<u64, String> {
+    match value {
+        serde_json::Value::Number(num) => {
+            if let Some(n) = num.as_u64() {
+                Ok(n)
+            } else if let Some(n) = num.as_i64() {
+                if n < 0 {
+                    Err("value must be a non-negative integer".to_string())
+                } else {
+                    Ok(n as u64)
+                }
+            } else if let Some(n) = num.as_f64() {
+                if n.is_finite() && n >= 0.0 && n.fract() == 0.0 {
+                    if n > u64::MAX as f64 {
+                        Err("value is too large".to_string())
+                    } else {
+                        Ok(n as u64)
+                    }
+                } else {
+                    Err("value must be a non-negative integer".to_string())
+                }
+            } else {
+                Err("value must be a non-negative integer".to_string())
+            }
+        }
+        serde_json::Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err("value must be a non-negative integer".to_string());
+            }
+            trimmed
+                .parse::<u64>()
+                .map_err(|_| "value must be a non-negative integer".to_string())
+        }
+        _ => Err("value must be a non-negative integer".to_string()),
+    }
+}
+
+pub(crate) fn optional_usize_from_value(value: Option<&serde_json::Value>) -> Option<usize> {
+    value.and_then(|v| parse_usize_value(v).ok())
+}
+
+pub(crate) fn canonicalize_builtin_tool_name(name: &str) -> Option<&'static str> {
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
+        "bash" => Some("bash"),
+        "fetch" => Some("fetch"),
+        "file_delete" => Some("file_delete"),
+        "file_edit" => Some("file_edit"),
+        "file_read" => Some("file_read"),
+        "file_write" => Some("file_write"),
+        "glob" => Some("glob"),
+        "grep" => Some("grep"),
+        "list_dir" => Some("list_dir"),
+        "todo_read" => Some("todo_read"),
+        "todo_write" => Some("todo_write"),
+        _ => BUILTIN_TOOL_ALIASES
+            .iter()
+            .find_map(|(alias, canonical)| (*alias == lower).then_some(*canonical)),
+    }
 }
 
 /// Validate that a path exists, returning an error ToolResult if not
@@ -279,6 +390,7 @@ pub(crate) fn format_message_with_diagnostics(
 
 /// Generates a one-liner description for a tool call (used for UI display)
 pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::Value) -> String {
+    let tool_name = canonicalize_builtin_tool_name(tool_name).unwrap_or(tool_name);
     match tool_name {
         "bash" => {
             let command = input
@@ -311,8 +423,8 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
                 .get("filename")
                 .and_then(|v| v.as_str())
                 .unwrap_or("file");
-            let offset = input.get("offset").and_then(|v| v.as_u64());
-            let limit = input.get("limit").and_then(|v| v.as_u64());
+            let offset = optional_usize_from_value(input.get("offset"));
+            let limit = optional_usize_from_value(input.get("limit"));
             match (offset, limit) {
                 (Some(o), Some(l)) => format!("Reading {} (offset: {}, limit: {})", filename, o, l),
                 (Some(o), None) => format!("Reading {} (offset: {})", filename, o),
@@ -474,63 +586,70 @@ pub(crate) async fn execute(
 ) -> Option<ToolResult> {
     // Load config once and check all conditions
     let config = crate::config::ConfigFile::load().unwrap_or_default();
+    let canonical_name = canonicalize_builtin_tool_name(name);
 
-    // Check if tool is disabled
-    if config.disabled_tools.iter().any(|t| t == name) {
-        return Some(ToolResult::error(
-            tool_use_id,
-            format!("Tool '{}' is disabled in configuration", name),
-        ));
-    }
-
-    if services.is_read_only() && READ_ONLY_DISABLED_TOOLS.contains(&name) {
-        return Some(ToolResult::error(
-            tool_use_id,
-            format!("Read-only mode: tool '{}' is disabled", name),
-        ));
-    }
-
-    // First try built-in tools
-    match name {
-        "bash" => return Some(Bash.execute(tool_use_id, input, output, services).await),
-        "fetch" => return Some(Fetch.execute(tool_use_id, input, output, services).await),
-        "file_delete" => {
-            return Some(
-                FileDelete
-                    .execute(tool_use_id, input, output, services)
-                    .await,
-            );
+    if let Some(name) = canonical_name {
+        // Check if tool is disabled
+        if config.disabled_tools.iter().any(|t| t == name) {
+            return Some(ToolResult::error(
+                tool_use_id,
+                format!("Tool '{}' is disabled in configuration", name),
+            ));
         }
-        "file_edit" => return Some(FileEdit.execute(tool_use_id, input, output, services).await),
-        "file_read" => return Some(FileRead.execute(tool_use_id, input, output, services).await),
-        "file_write" => {
-            return Some(
-                FileWrite
-                    .execute(tool_use_id, input, output, services)
-                    .await,
-            );
+
+        if services.is_read_only() && READ_ONLY_DISABLED_TOOLS.contains(&name) {
+            return Some(ToolResult::error(
+                tool_use_id,
+                format!("Read-only mode: tool '{}' is disabled", name),
+            ));
         }
-        "glob" => return Some(Glob.execute(tool_use_id, input, output, services).await),
-        "grep" => return Some(Grep.execute(tool_use_id, input, output, services).await),
-        "list_dir" => return Some(ListDir.execute(tool_use_id, input, output, services).await),
-        "todo_read" | "todo_write" => {
-            if !config.todo_enabled {
-                return Some(ToolResult::error(
-                    tool_use_id,
-                    "Todo tools are disabled in configuration",
-                ));
-            }
-            if name == "todo_read" {
-                return Some(TodoRead.execute(tool_use_id, input, output, services).await);
-            } else {
+
+        // First try built-in tools (including aliases)
+        match name {
+            "bash" => return Some(Bash.execute(tool_use_id, input, output, services).await),
+            "fetch" => return Some(Fetch.execute(tool_use_id, input, output, services).await),
+            "file_delete" => {
                 return Some(
-                    TodoWrite
+                    FileDelete
                         .execute(tool_use_id, input, output, services)
                         .await,
                 );
             }
+            "file_edit" => {
+                return Some(FileEdit.execute(tool_use_id, input, output, services).await);
+            }
+            "file_read" => {
+                return Some(FileRead.execute(tool_use_id, input, output, services).await);
+            }
+            "file_write" => {
+                return Some(
+                    FileWrite
+                        .execute(tool_use_id, input, output, services)
+                        .await,
+                );
+            }
+            "glob" => return Some(Glob.execute(tool_use_id, input, output, services).await),
+            "grep" => return Some(Grep.execute(tool_use_id, input, output, services).await),
+            "list_dir" => return Some(ListDir.execute(tool_use_id, input, output, services).await),
+            "todo_read" | "todo_write" => {
+                if !config.todo_enabled {
+                    return Some(ToolResult::error(
+                        tool_use_id,
+                        "Todo tools are disabled in configuration",
+                    ));
+                }
+                if name == "todo_read" {
+                    return Some(TodoRead.execute(tool_use_id, input, output, services).await);
+                } else {
+                    return Some(
+                        TodoWrite
+                            .execute(tool_use_id, input, output, services)
+                            .await,
+                    );
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
 
     // Try MCP tools

@@ -1220,8 +1220,19 @@ fn redraw_from_history_with_size_inner(
     let rendered = render::render_all(&events, width);
     let normalized = normalize_newlines(&rendered);
 
-    // Add a blank line for visual separation between output and prompt.
-    let with_gap = format!("{}\n", normalized);
+    let status_active = PROMPT_STATE
+        .lock()
+        .map(|s| s.status_line_active)
+        .unwrap_or(false);
+
+    // Add a blank line for visual separation between output and prompt when the
+    // streaming status line is inactive. When active, the spacer row already
+    // provides that separation.
+    let with_gap = if status_active {
+        normalized.clone()
+    } else {
+        format!("{}\n", normalized)
+    };
 
     let (lines_used, end_col) = calculate_output_size(0, &with_gap, width as u16);
     // `calculate_output_size` returns the number of line breaks/wraps encountered;
@@ -1232,10 +1243,6 @@ fn redraw_from_history_with_size_inner(
 
     // Calculate where output should start so it ends just above the prompt.
     // Reserve space for the streaming status line row when it is active.
-    let status_active = PROMPT_STATE
-        .lock()
-        .map(|s| s.status_line_active)
-        .unwrap_or(false);
     let reserved_above_prompt = if status_active {
         STREAMING_STATUS_LINE_ROWS
     } else {

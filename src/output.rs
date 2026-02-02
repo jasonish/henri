@@ -62,6 +62,8 @@ pub(crate) enum OutputEvent {
         diff: String,
         /// Language for syntax highlighting (derived from file extension)
         language: Option<String>,
+        /// Optional summary for display (e.g., lines added/removed)
+        summary: Option<String>,
     },
     /// Image preview (for terminals that support inline images)
     ImagePreview {
