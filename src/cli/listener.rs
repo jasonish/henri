@@ -1255,7 +1255,7 @@ struct StreamState {
 impl StreamState {
     fn new() -> Self {
         Self {
-            thinking: WordWrapper::new(Some("\x1b[90m"), 0),
+            thinking: WordWrapper::new(Some("\x1b[3;90m"), 0),
             response: WordWrapper::new(None, 0),
             last_block: None,
             thinking_pending_newlines: 0,
@@ -1548,7 +1548,7 @@ impl CliListener {
                         terminal::ensure_line_break();
                     }
 
-                    terminal::println_above("\x1b[90mThinking...\x1b[0m");
+                    terminal::println_above("\x1b[3;90mThinking...\x1b[0m");
                     history::append_thinking("Thinking...");
                     state.thinking_pending_newlines = 0;
                     state.output_state.mark_thinking_output();

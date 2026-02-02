@@ -464,13 +464,13 @@ fn highlight_code_block(code: &str, language: Option<&str>) -> String {
     result
 }
 
-/// Render thinking text - dimmed
+/// Render thinking text - dimmed and italic
 fn render_thinking(text: &str, _is_streaming: bool, width: usize) -> String {
     let wrapped = wrap_text(text, width);
     let mut output = String::new();
 
     for line in &wrapped {
-        output.push_str(&format!("{}\n", line.bright_black()));
+        output.push_str(&format!("{}\n", line.bright_black().italic()));
     }
 
     output
