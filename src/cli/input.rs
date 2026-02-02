@@ -1166,8 +1166,8 @@ impl InputState {
             // Ctrl+G - edit prompt in editor
             (KeyCode::Char('g'), KeyModifiers::CONTROL) => InputAction::EditInEditor,
 
-            // Ctrl+O
-            (KeyCode::Char('o'), KeyModifiers::CONTROL) => InputAction::OpenModelMenu,
+            // Ctrl+P - open model menu (fallback for Ctrl+M on older terminals)
+            (KeyCode::Char('p'), KeyModifiers::CONTROL) => InputAction::OpenModelMenu,
 
             // Ctrl+Y - Cycle forward through favorite models
             (KeyCode::Char('y'), mods) if mods == KeyModifiers::CONTROL => {

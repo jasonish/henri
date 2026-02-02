@@ -1444,10 +1444,10 @@ async fn run_event_loop(
                         continue;
                     }
 
-                    // Handle Ctrl+M (via keyboard enhancement) or Ctrl+O to open model menu
+                    // Handle Ctrl+M (via keyboard enhancement) or Ctrl+P to open model menu
                     if ((key.code == KeyCode::Char('m')
                         && key.modifiers.contains(KeyModifiers::CONTROL))
-                        || (key.code == KeyCode::Char('o')
+                        || (key.code == KeyCode::Char('p')
                             && key.modifiers.contains(KeyModifiers::CONTROL)))
                         && model_menu.is_none()
                     {

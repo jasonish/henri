@@ -202,9 +202,9 @@ impl ModelMenuState {
             // Escape - cancel
             (KeyCode::Esc, _) => ModelMenuAction::Cancel,
 
-            // Ctrl+M (if keyboard enhancement is enabled) or Ctrl+O - close (toggle)
+            // Ctrl+M (if keyboard enhancement is enabled) or Ctrl+P - close (toggle)
             (KeyCode::Char('m'), KeyModifiers::CONTROL)
-            | (KeyCode::Char('o'), KeyModifiers::CONTROL) => ModelMenuAction::Cancel,
+            | (KeyCode::Char('p'), KeyModifiers::CONTROL) => ModelMenuAction::Cancel,
 
             // Up arrow
             (KeyCode::Up, _) => {
