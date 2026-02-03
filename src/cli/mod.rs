@@ -2938,25 +2938,14 @@ fn spawn_chat_task(
     // streaming status line while we're waiting for the model.
     let mut prompt_lines: Vec<String> = Vec::new();
 
-    // Add a padding row above the prompt block (same background as prompt).
-    //
-    // Include a single space so the output cursor is mid-line; this avoids leaving the
-    // cursor sitting on an empty trailing row in the reserved status area.
-    let prompt_padding_line = format!("{} \x1b[K\x1b[0m", render::BG_GREY_ANSI);
-    terminal::print_above(&format!("{}\n", prompt_padding_line));
-
-    for (i, line) in display_prompt.lines().enumerate() {
+    for line in display_prompt.lines() {
         // Wrap each logical line to fit terminal width
         let wrapped = render::wrap_text(line, content_width);
         for wrapped_line in &wrapped {
             let prefix = if is_first_row {
                 is_first_row = false;
                 prompt_prefix
-            } else if i == 0 {
-                // Continuation of first line (wrapped)
-                input::CONTINUATION
             } else {
-                // Continuation of subsequent lines
                 input::CONTINUATION
             };
             // Colorize image markers, restoring grey background after each marker.
@@ -2975,6 +2964,17 @@ fn spawn_chat_task(
         }
     }
 
+    // Empty prompt: still render a single prompt row.
+    if prompt_lines.is_empty() {
+        let line = format!(
+            "{}{}{}\x1b[K\x1b[0m",
+            render::BG_GREY_ANSI,
+            prompt_prefix,
+            render::BG_GREY_ANSI,
+        );
+        prompt_lines.push(line);
+    }
+
     for (idx, line) in prompt_lines.iter().enumerate() {
         if idx + 1 < prompt_lines.len() {
             terminal::print_above(&format!("{}\n", line));
@@ -2982,13 +2982,6 @@ fn spawn_chat_task(
             terminal::print_above(line);
         }
     }
-
-    // Add a padding row below the prompt block (same background as prompt).
-    // Do not print a trailing newline so the cursor stays mid-line (see comment above).
-    if !prompt_lines.is_empty() {
-        terminal::ensure_line_break();
-    }
-    terminal::print_above(&prompt_padding_line);
 
     // Tell the CLI listener that the most recent output is now the user prompt.
     // This keeps spacing decisions between streaming blocks correct.

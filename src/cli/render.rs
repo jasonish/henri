@@ -225,7 +225,7 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
 ///
 /// The text may contain inline image markers like `Image#1` which are colorized.
 fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String {
-    let arrow = if text.starts_with('!') {
+    let mut prefix = if text.starts_with('!') {
         super::input::SHELL_PROMPT
     } else {
         super::input::PROMPT
@@ -236,17 +236,20 @@ fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String
     // Use a slightly reduced width to avoid terminals auto-wrapping when the last column
     // is filled. We still paint the rest of the line using `\x1b[K`.
     let safe_width = width.saturating_sub(1).max(1);
-    let content_width = safe_width.saturating_sub(2); // arrow/continuation is 2 chars
+    let content_width = safe_width.saturating_sub(2); // prefix/continuation is 2 chars
 
     let mut output = String::new();
 
-    // Padding row above the prompt block. Include a single space so the output cursor is mid-line
-    // (mirrors the interactive prompt rendering path).
-    output.push_str(BG_GREY_ANSI);
-    output.push_str(" \x1b[K\x1b[0m\n");
+    if text.is_empty() {
+        // Empty prompt: still render a single prompt row.
+        output.push_str(BG_GREY_ANSI);
+        output.push_str(prefix);
+        output.push_str(BG_GREY_ANSI);
+        output.push_str("\x1b[K\x1b[0m\n");
+        return output;
+    }
 
-    for (i, line) in text.lines().enumerate() {
-        let prefix = if i == 0 { arrow } else { continuation };
+    for line in text.lines() {
         let wrapped = wrap_text(line, content_width);
         for (j, wrapped_line) in wrapped.iter().enumerate() {
             let p = if j == 0 { prefix } else { continuation };
@@ -261,11 +264,10 @@ fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String
             output.push_str(BG_GREY_ANSI);
             output.push_str("\x1b[K\x1b[0m\n");
         }
-    }
 
-    // Padding row below the prompt block.
-    output.push_str(BG_GREY_ANSI);
-    output.push_str(" \x1b[K\x1b[0m\n");
+        // After the first logical line, subsequent lines start with continuation.
+        prefix = continuation;
+    }
 
     output
 }
