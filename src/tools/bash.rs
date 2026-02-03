@@ -373,7 +373,15 @@ Web content fetching:
 
                 let total_lines = stdout_output.line_count + stderr_output.line_count;
                 let total_bytes = stdout_output.byte_count + stderr_output.byte_count;
-                let summary = Some(format!("[read {total_lines} lines, {total_bytes} bytes]"));
+
+                let exit_code = status.code().unwrap_or(-1);
+                let summary = if exit_code == 0 {
+                    Some(format!("[Read {total_lines} lines, {total_bytes} bytes]"))
+                } else {
+                    Some(format!(
+                        "[Read {total_lines} lines, {total_bytes} bytes, exit code {exit_code}]"
+                    ))
+                };
 
                 let mut combined = stdout_output.text;
                 if !stderr_output.text.is_empty() {
@@ -415,7 +423,6 @@ Web content fetching:
                     content.push_str(&notice);
                 }
 
-                let exit_code = status.code().unwrap_or(-1);
                 if exit_code == 0 {
                     ToolResult {
                         tool_use_id: tool_use_id.to_string(),
@@ -492,7 +499,7 @@ mod tests {
         assert!(!result.is_error);
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.content.trim(), "hello");
-        assert_eq!(result.summary, Some("[read 1 lines, 6 bytes]".to_string()));
+        assert_eq!(result.summary, Some("[Read 1 lines, 6 bytes]".to_string()));
     }
 
     #[tokio::test]

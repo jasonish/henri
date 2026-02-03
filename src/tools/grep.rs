@@ -24,6 +24,9 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 const MAX_OUTPUT_LINES: usize = 2_000;
 
+// Number of lines emitted in the CLI preview (via ToolOutput).
+const PREVIEW_LINES: usize = 3;
+
 pub(crate) struct Grep;
 
 #[derive(Debug, Deserialize)]
@@ -216,7 +219,6 @@ impl Grep {
                     stdout_res.unwrap_or_else(|_| (String::new(), false, false, 0, 0));
                 let stderr_output = stderr_res.unwrap_or_default();
 
-                // Use ExitStatusExt to construct a default status if needed, but here we just need to check codes
                 let status = status_res.map_err(|e| format!("Failed to wait for child: {}", e))?;
                 let exit_code = status.code().unwrap_or(-1);
 
@@ -243,6 +245,7 @@ impl Grep {
                 }
 
                 let mut output = stdout_output;
+
                 let mut summary = format!("Matched {} lines, {} bytes", line_count, byte_count);
                 if truncated_lines || truncated_bytes {
                     let mut reasons = Vec::new();
@@ -334,8 +337,8 @@ impl Tool for Grep {
 
         match result {
             Ok(res) => {
-                // Emit first 3 lines of search results as preview
-                for line in res.content.lines().take(3) {
+                // Emit first PREVIEW_LINES lines of search results as preview
+                for line in res.content.lines().take(PREVIEW_LINES) {
                     crate::output::emit_tool_output(output, &format!("{}\n", line));
                 }
                 res

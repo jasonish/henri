@@ -488,11 +488,31 @@ fn render_tool_use(description: &str) -> String {
     format!("▶ {}", description)
 }
 
+/// Format the optional tool summary for display after a ✓/✗.
+///
+/// Returns a leading-space suffix like ` [Read 3 lines]` or an empty string.
+pub(super) fn format_summary_suffix(summary: Option<&str>) -> String {
+    let Some(text) = summary else {
+        return String::new();
+    };
+
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let bracketed = if text.starts_with('[') && text.ends_with(']') {
+        text.to_string()
+    } else {
+        format!("[{}]", text)
+    };
+
+    format!(" {}", bracketed.bright_black())
+}
+
 /// Render tool result - checkmark or X
 fn render_tool_result(is_error: bool, _output: &str, summary: Option<&str>) -> String {
-    let summary_suffix = summary
-        .map(|text| format!(" {}", text.bright_black()))
-        .unwrap_or_default();
+    let summary_suffix = format_summary_suffix(summary);
     if is_error {
         format!(" {}{}\n", "✗".red(), summary_suffix)
     } else {
@@ -507,9 +527,7 @@ fn render_tool_result_with_context(
     summary: Option<&str>,
     inline: bool,
 ) -> String {
-    let summary_suffix = summary
-        .map(|text| format!(" {}", text.bright_black()))
-        .unwrap_or_default();
+    let summary_suffix = format_summary_suffix(summary);
     let symbol = if is_error {
         "✗".red().to_string()
     } else {
@@ -918,9 +936,7 @@ pub(crate) fn highlight_line_content(line: &str, language: &str) -> String {
 
 /// Render file diff with colored +/- lines and syntax highlighting
 fn render_file_diff(diff: &str, language: Option<&str>, summary: Option<&str>) -> String {
-    let summary_suffix = summary
-        .map(|text| format!(" {}", text.bright_black()))
-        .unwrap_or_default();
+    let summary_suffix = format_summary_suffix(summary);
     let checkmark = format!("{}{}\n", "✓".green(), summary_suffix);
 
     // Always show the checkmark, but skip the diff content if tool output is hidden

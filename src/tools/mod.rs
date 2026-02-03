@@ -326,6 +326,33 @@ pub(crate) fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
+/// Collapse the user's home directory to `~` for display purposes.
+fn collapse_home_for_display(path: &str) -> String {
+    // If the input already uses ~, don't expand and re-collapse it.
+    if path.starts_with('~') {
+        return path.to_string();
+    }
+
+    let Some(home) = dirs::home_dir() else {
+        return path.to_string();
+    };
+
+    let path = std::path::Path::new(path);
+    if path == home {
+        return "~".to_string();
+    }
+
+    if let Ok(rest) = path.strip_prefix(&home) {
+        if rest.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
+        }
+    } else {
+        path.to_string_lossy().to_string()
+    }
+}
+
 /// Notify the LSP about a file change and return diagnostics.
 ///
 /// This handles:
@@ -415,6 +442,7 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
                 .get("filename")
                 .and_then(|v| v.as_str())
                 .unwrap_or("file");
+            let filename = collapse_home_for_display(filename);
             let offset = optional_usize_from_value(input.get("offset"));
             let limit = optional_usize_from_value(input.get("limit"));
             match (offset, limit) {
@@ -429,6 +457,7 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
                 .get("filePath")
                 .and_then(|v| v.as_str())
                 .unwrap_or("file");
+            let filepath = collapse_home_for_display(filepath);
             format!("Editing {}", filepath)
         }
         "file_write" => {
@@ -436,6 +465,7 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
                 .get("filePath")
                 .and_then(|v| v.as_str())
                 .unwrap_or("file");
+            let filepath = collapse_home_for_display(filepath);
             format!("Writing {}", filepath)
         }
         "glob" => {
@@ -445,7 +475,11 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
                 .unwrap_or("pattern");
             let path = input.get("path").and_then(|v| v.as_str());
             match path {
-                Some(p) => format!("Finding \"{}\" in {}", pattern, p),
+                Some(p) => format!(
+                    "Finding \"{}\" in {}",
+                    pattern,
+                    collapse_home_for_display(p)
+                ),
                 None => format!("Finding \"{}\"", pattern),
             }
         }
@@ -456,7 +490,7 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
                 .unwrap_or("pattern");
             let path = input.get("path").and_then(|v| v.as_str());
             match path {
-                Some(p) => format!("Grep \"{}\" in {}", pattern, p),
+                Some(p) => format!("Grep \"{}\" in {}", pattern, collapse_home_for_display(p)),
                 None => format!("Grep \"{}\"", pattern),
             }
         }
@@ -465,6 +499,7 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
                 .get("filePath")
                 .and_then(|v| v.as_str())
                 .unwrap_or("file");
+            let filepath = collapse_home_for_display(filepath);
             format!("Deleting {}", filepath)
         }
         "fetch" => {
@@ -473,6 +508,7 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
         }
         "list_dir" => {
             let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            let path = collapse_home_for_display(path);
             format!("Listing {}", path)
         }
         name if name.starts_with("mcp_") => {

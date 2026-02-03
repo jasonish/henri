@@ -118,7 +118,7 @@ impl Tool for Fetch {
 
         let line_count = content.lines().count();
         let byte_count = content.len();
-        let summary = format!("[Fetched {} lines, {} bytes]", line_count, byte_count);
+        let summary = format!("Fetched {} lines, {} bytes", line_count, byte_count);
         ToolResult::success(tool_use_id, content).with_summary(summary)
     }
 }

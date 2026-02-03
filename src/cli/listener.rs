@@ -20,7 +20,7 @@ use super::history::{self, HistoryEvent};
 use super::markdown::{
     render_markdown_inlines, render_markdown_inlines_with_style, render_markdown_line,
 };
-use super::render::{BG_DARK_GREEN, BG_DARK_RED, style_file_read_line};
+use super::render::{BG_DARK_GREEN, BG_DARK_RED, format_summary_suffix, style_file_read_line};
 use super::spacing::{LastBlock, needs_blank_line_before};
 use super::terminal;
 
@@ -2052,26 +2052,29 @@ impl CliListener {
                     .unwrap_or(false);
 
                 let exit_code_suffix = if *is_error && tool_name == "bash" {
-                    exit_code
-                        .as_ref()
-                        .map(|code| format!(" {}", format!("(exit code {})", code).bright_black()))
-                        .unwrap_or_default()
+                    match (exit_code.as_ref(), summary.as_deref()) {
+                        (Some(code), Some(summary))
+                            if !summary.to_ascii_lowercase().contains("exit code") =>
+                        {
+                            format!(" {}", format!("(exit code {})", code).bright_black())
+                        }
+                        (Some(code), None) => {
+                            format!(" {}", format!("(exit code {})", code).bright_black())
+                        }
+                        _ => String::new(),
+                    }
                 } else {
                     String::new()
                 };
 
-                let summary_suffix = summary
-                    .as_ref()
-                    .map(|s| format!(" {}", s.bright_black()))
-                    .unwrap_or_default();
-
-                // We intentionally avoid printing a trailing newline here.
+                let summary_suffix = format_summary_suffix(summary.as_deref());
                 // Leaving the cursor at end-of-line prevents a "dangling" empty line
                 // above the prompt when a turn ends with just a tool call.
                 // If there's a summary and we're still on the tool header line,
                 // force a newline so the summary appears on its own line.
-                // Also force newline when hiding tool output for consistent appearance.
-                let force_newline = pending_tool_line;
+                // Also force newline when the tool output viewport is active.
+                let force_newline =
+                    pending_tool_line && (!summary_suffix.is_empty() || tool_output_active);
 
                 let text = if *is_error {
                     if pending_tool_line && !force_newline {
@@ -2578,10 +2581,7 @@ impl CliListener {
                         }
                     }
                 }
-                let summary_suffix = summary
-                    .as_ref()
-                    .map(|s| format!(" {}", s.bright_black()))
-                    .unwrap_or_default();
+                let summary_suffix = format_summary_suffix(summary.as_deref());
                 let checkmark = format!("{}{}", "✓".green(), summary_suffix);
                 if terminal::prompt_visible() {
                     terminal::println_above(&checkmark);
