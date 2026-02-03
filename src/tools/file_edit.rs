@@ -146,11 +146,9 @@ impl Tool for FileEdit {
         if !input.replace_all && count > 1 {
             return error_with_summary(
                 tool_use_id,
-                format!(
-                    "oldString appears {} times in the file. Use replaceAll: true to replace \
-                    all occurrences, or provide a more specific string that appears only once.",
-                    count
-                ),
+                "oldString appears multiple times. Use replaceAll to replace \
+                    all occurrences, or provide a more specific string."
+                    .to_string(),
             );
         }
 
@@ -278,7 +276,8 @@ mod tests {
             )
             .await;
         assert!(result.is_error);
-        assert!(result.content.contains("appears 2 times"));
+        assert!(result.content.contains("oldString appears multiple times"));
+        assert!(result.content.contains("replaceAll"));
     }
 
     #[tokio::test]
