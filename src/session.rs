@@ -59,10 +59,14 @@ pub(crate) enum SerializableHistoryEvent {
     },
     ToolOutput {
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total_lines: Option<usize>,
     },
     FileReadOutput {
         filename: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total_lines: Option<usize>,
     },
     ImagePreview {
         data: Vec<u8>,
@@ -148,15 +152,22 @@ impl From<&HistoryEvent> for SerializableHistoryEvent {
                 is_error: *is_error,
                 summary: summary.clone(),
             },
-            HistoryEvent::ToolOutput { text } => {
-                SerializableHistoryEvent::ToolOutput { text: text.clone() }
-            }
-            HistoryEvent::FileReadOutput { filename, text } => {
-                SerializableHistoryEvent::FileReadOutput {
-                    filename: filename.clone(),
-                    text: text.clone(),
-                }
-            }
+            HistoryEvent::ToolOutput {
+                text, total_lines, ..
+            } => SerializableHistoryEvent::ToolOutput {
+                text: text.clone(),
+                total_lines: Some(*total_lines),
+            },
+            HistoryEvent::FileReadOutput {
+                filename,
+                text,
+                total_lines,
+                ..
+            } => SerializableHistoryEvent::FileReadOutput {
+                filename: filename.clone(),
+                text: text.clone(),
+                total_lines: Some(*total_lines),
+            },
             HistoryEvent::ImagePreview { data, mime_type } => {
                 SerializableHistoryEvent::ImagePreview {
                     data: data.clone(),
@@ -190,6 +201,10 @@ impl From<&HistoryEvent> for SerializableHistoryEvent {
 
 impl From<&SerializableHistoryEvent> for HistoryEvent {
     fn from(event: &SerializableHistoryEvent) -> Self {
+        fn count_newlines(text: &str) -> usize {
+            text.bytes().filter(|&b| b == b'\n').count()
+        }
+
         match event {
             SerializableHistoryEvent::UserPrompt { text, images } => HistoryEvent::UserPrompt {
                 text: text.clone(),
@@ -221,13 +236,25 @@ impl From<&SerializableHistoryEvent> for HistoryEvent {
                 is_error: *is_error,
                 summary: summary.clone(),
             },
-            SerializableHistoryEvent::ToolOutput { text } => {
-                HistoryEvent::ToolOutput { text: text.clone() }
+            SerializableHistoryEvent::ToolOutput { text, total_lines } => {
+                let stored_lines = count_newlines(text);
+                HistoryEvent::ToolOutput {
+                    text: text.clone(),
+                    total_lines: total_lines.unwrap_or(stored_lines),
+                    stored_lines,
+                }
             }
-            SerializableHistoryEvent::FileReadOutput { filename, text } => {
+            SerializableHistoryEvent::FileReadOutput {
+                filename,
+                text,
+                total_lines,
+            } => {
+                let stored_lines = count_newlines(text);
                 HistoryEvent::FileReadOutput {
                     filename: filename.clone(),
                     text: text.clone(),
+                    total_lines: total_lines.unwrap_or(stored_lines),
+                    stored_lines,
                 }
             }
             SerializableHistoryEvent::ImagePreview { data, mime_type } => {

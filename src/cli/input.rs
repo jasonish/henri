@@ -474,6 +474,8 @@ pub(super) enum InputAction {
     CycleFavoritesBackward,
     /// Toggle hide tool output (Ctrl+H)
     ToggleHideToolOutput,
+    /// Toggle expanded tool output view (Ctrl+O)
+    ToggleToolOutputExpanded,
 }
 
 /// State for multi-line input
@@ -1187,6 +1189,9 @@ impl InputState {
 
             // Ctrl+H - Toggle hide tool output
             (KeyCode::Char('h'), KeyModifiers::CONTROL) => InputAction::ToggleHideToolOutput,
+
+            // Ctrl+O - Toggle expanded tool output view (10 lines <-> full output)
+            (KeyCode::Char('o'), KeyModifiers::CONTROL) => InputAction::ToggleToolOutputExpanded,
 
             // Alt+B - Backward word (treats image markers as single tokens)
             (KeyCode::Char('b'), KeyModifiers::ALT) => {

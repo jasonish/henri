@@ -8,6 +8,8 @@
 
 use std::sync::Mutex;
 
+use super::TOOL_OUTPUT_MAX_BUFFER_LINES;
+
 /// Global history storage
 static HISTORY: Mutex<History> = Mutex::new(History::new());
 
@@ -48,9 +50,20 @@ pub(crate) enum HistoryEvent {
         summary: Option<String>,
     },
     /// Tool output text (may be streamed)
-    ToolOutput { text: String },
+    ToolOutput {
+        text: String,
+        total_lines: usize,
+        /// Lines currently stored in `text` (for O(1) truncation checks)
+        stored_lines: usize,
+    },
     /// File read output with filename for syntax highlighting
-    FileReadOutput { filename: String, text: String },
+    FileReadOutput {
+        filename: String,
+        text: String,
+        total_lines: usize,
+        /// Lines currently stored in `text` (for O(1) truncation checks)
+        stored_lines: usize,
+    },
     /// Image preview (for terminals that support inline images)
     ImagePreview { data: Vec<u8>, mime_type: String },
     /// An error occurred
@@ -151,32 +164,91 @@ impl History {
     }
 
     /// Append tool output to the last ToolOutput event, or create a new one.
+    /// Truncates to keep only the last TOOL_OUTPUT_MAX_BUFFER_LINES lines.
     pub(crate) fn append_tool_output(&mut self, text: &str) {
-        if let Some(HistoryEvent::ToolOutput { text: existing }) = self.events.last_mut() {
+        let new_lines = text.bytes().filter(|&b| b == b'\n').count();
+
+        if let Some(HistoryEvent::ToolOutput {
+            text: existing,
+            total_lines,
+            stored_lines,
+        }) = self.events.last_mut()
+        {
             existing.push_str(text);
+            *total_lines += new_lines;
+            *stored_lines += new_lines;
+            *stored_lines =
+                truncate_to_last_lines(existing, *stored_lines, TOOL_OUTPUT_MAX_BUFFER_LINES);
         } else {
+            let mut new_text = text.to_string();
+            let stored =
+                truncate_to_last_lines(&mut new_text, new_lines, TOOL_OUTPUT_MAX_BUFFER_LINES);
             self.push(HistoryEvent::ToolOutput {
-                text: text.to_string(),
+                text: new_text,
+                total_lines: new_lines,
+                stored_lines: stored,
             });
         }
     }
 
     /// Append file read output to the last FileReadOutput event with the same filename, or create a new one.
+    /// Truncates to keep only the last TOOL_OUTPUT_MAX_BUFFER_LINES lines.
     pub(crate) fn append_file_read_output(&mut self, filename: &str, text: &str) {
+        let new_lines = text.bytes().filter(|&b| b == b'\n').count();
+
         if let Some(HistoryEvent::FileReadOutput {
             filename: existing_filename,
             text: existing,
+            total_lines,
+            stored_lines,
         }) = self.events.last_mut()
             && existing_filename == filename
         {
             existing.push_str(text);
+            *total_lines += new_lines;
+            *stored_lines += new_lines;
+            *stored_lines =
+                truncate_to_last_lines(existing, *stored_lines, TOOL_OUTPUT_MAX_BUFFER_LINES);
             return;
         }
+        let mut new_text = text.to_string();
+        let stored = truncate_to_last_lines(&mut new_text, new_lines, TOOL_OUTPUT_MAX_BUFFER_LINES);
         self.push(HistoryEvent::FileReadOutput {
             filename: filename.to_string(),
-            text: text.to_string(),
+            text: new_text,
+            total_lines: new_lines,
+            stored_lines: stored,
         });
     }
+}
+
+/// Truncate a string to keep only the last `max_lines` lines.
+/// Takes the current line count to avoid rescanning.
+/// Returns the new line count after truncation.
+fn truncate_to_last_lines(text: &mut String, line_count: usize, max_lines: usize) -> usize {
+    if line_count <= max_lines {
+        return line_count;
+    }
+
+    let lines_to_skip = line_count - max_lines;
+    let mut skipped = 0;
+    let mut start_offset = 0;
+
+    for (i, c) in text.char_indices() {
+        if c == '\n' {
+            skipped += 1;
+            if skipped >= lines_to_skip {
+                start_offset = i + 1;
+                break;
+            }
+        }
+    }
+
+    if start_offset > 0 && start_offset < text.len() {
+        *text = text[start_offset..].to_string();
+    }
+
+    max_lines
 }
 
 // ============================================================================

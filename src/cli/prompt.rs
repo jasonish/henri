@@ -1073,6 +1073,17 @@ impl PromptBox {
         // Redraw everything from history at new width.
         // Use a conservative prompt height based on the current input state so
         // history output does not render into the spacer/status rows above the prompt.
+        //
+        // If tool output is actively streaming in *viewport mode*, add its viewport height so
+        // history leaves space for it. In expanded mode, tool output is printed as normal
+        // scrolling output and should be included in the history render.
+        let tool_output_active = super::listener::is_tool_output_viewport_active();
+        let tool_output_height = if tool_output_active {
+            super::listener::active_tool_output_height()
+        } else {
+            0
+        };
+
         let prompt_height = {
             let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(cols as usize);
             let menu_height = state
@@ -1098,6 +1109,7 @@ impl PromptBox {
                 .saturating_add(menu_height)
                 .saturating_add(pending_extra)
                 .saturating_add(1)
+                .saturating_add(tool_output_height) // Reserve space for tool output viewport
                 .max(4)
         };
 
@@ -1106,6 +1118,14 @@ impl PromptBox {
             Some(cols),
             Some(rows),
         );
+
+        // Tool output is skipped in history render when streaming in viewport mode.
+        // Set reserved_lines to match what we reserved in prompt_height.
+        if tool_output_active {
+            super::listener::set_tool_output_reserved(tool_output_height);
+        } else {
+            super::listener::reset_tool_output_viewport();
+        }
 
         self.refresh_dimensions();
         self.reset_position();
@@ -1119,6 +1139,10 @@ impl PromptBox {
             self.draw_with_pending(state, pending_prompts)?;
             super::listener::redraw_status_line();
             super::listener::CliListener::flush_buffered();
+            // Render tool output viewport after prompt is visible
+            if tool_output_active {
+                super::listener::force_tool_output_rerender();
+            }
             drop(_buffer_guard);
             super::listener::CliListener::flush_buffered();
             return Ok(());
@@ -1126,6 +1150,10 @@ impl PromptBox {
         drop(_output_guard);
         super::listener::redraw_status_line();
         super::listener::CliListener::flush_buffered();
+        // Render tool output viewport after prompt is visible
+        if tool_output_active {
+            super::listener::force_tool_output_rerender();
+        }
         drop(_buffer_guard);
         super::listener::CliListener::flush_buffered();
         Ok(())

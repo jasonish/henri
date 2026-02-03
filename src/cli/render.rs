@@ -47,10 +47,15 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
             output,
             summary,
         } => render_tool_result(*is_error, output, summary.as_deref()),
-        HistoryEvent::ToolOutput { text } => render_tool_output(text, width),
-        HistoryEvent::FileReadOutput { filename, text } => {
-            render_file_read_output(filename, text, width)
-        }
+        HistoryEvent::ToolOutput {
+            text, total_lines, ..
+        } => render_tool_output(text, *total_lines, width),
+        HistoryEvent::FileReadOutput {
+            filename,
+            text,
+            total_lines,
+            ..
+        } => render_file_read_output(filename, text, *total_lines, width),
         HistoryEvent::ImagePreview { data, mime_type } => render_image_preview(data, mime_type),
         HistoryEvent::Error(msg) => render_error(msg),
         HistoryEvent::Warning(msg) => render_warning(msg),
@@ -640,17 +645,63 @@ pub(crate) fn style_tool_output_line(line: &str) -> String {
 }
 
 /// Format the scroll indicator shown when output is truncated.
-pub(crate) fn format_scrolled_indicator(hidden: usize, visible: usize) -> String {
-    let total = hidden + visible;
-    format!("(Showing last {} of {} lines)", visible, total)
-        .bright_black()
-        .to_string()
+/// `hidden` - lines hidden above the viewport (within the buffer)
+/// `visible` - lines currently shown in viewport
+/// `total_seen` - total lines ever seen (including truncated from memory)
+pub(crate) fn format_scrolled_indicator(
+    hidden: usize,
+    visible: usize,
+    total_seen: Option<usize>,
+) -> String {
+    let buffer_total = hidden + visible;
+    if let Some(total) = total_seen {
+        if total > buffer_total {
+            // Lines have been truncated from memory
+            format!(
+                "(Showing last {} of {} lines, {} truncated)",
+                visible,
+                buffer_total,
+                total - buffer_total
+            )
+            .bright_black()
+            .to_string()
+        } else {
+            format!("(Showing last {} of {} lines)", visible, total)
+                .bright_black()
+                .to_string()
+        }
+    } else {
+        format!("(Showing last {} of {} lines)", visible, buffer_total)
+            .bright_black()
+            .to_string()
+    }
 }
 
-/// Render tool output tail (up to the configured viewport height).
-fn render_tool_output(text: &str, width: usize) -> String {
+fn format_viewport_tail_indicator(hidden: usize, visible: usize, older_truncated: bool) -> String {
+    let buffer_total = hidden + visible;
+    let mut msg = if hidden > 0 {
+        format!("(Showing last {} of {} lines)", visible, buffer_total)
+    } else {
+        format!("(Showing {} lines)", visible)
+    };
+
+    if older_truncated {
+        msg.push_str(" (older output truncated)");
+    }
+
+    msg.bright_black().to_string()
+}
+
+/// Render tool output (tail or full, depending on Ctrl+O).
+fn render_tool_output(text: &str, total_lines: usize, width: usize) -> String {
     // Skip rendering if tool output is hidden
     if super::listener::is_tool_output_hidden() {
+        return String::new();
+    }
+
+    // Skip rendering in history if tool output is actively streaming *in viewport mode*.
+    // The live viewport will render it instead, avoiding duplication.
+    if super::listener::is_tool_output_viewport_active() {
         return String::new();
     }
 
@@ -659,7 +710,34 @@ fn render_tool_output(text: &str, width: usize) -> String {
         return String::new();
     }
 
-    let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
+    let stored_lines = text.bytes().filter(|&b| b == b'\n').count();
+    let older_truncated = total_lines > stored_lines;
+    let expanded = super::listener::is_tool_output_expanded();
+
+    if expanded {
+        let mut output = String::new();
+
+        if older_truncated {
+            let msg = format!(
+                "(Older output truncated: {} lines dropped; showing last {} lines)",
+                total_lines - stored_lines,
+                stored_lines
+            )
+            .bright_black()
+            .to_string();
+            output.push_str(&style_tool_output_line(&msg));
+            output.push('\n');
+        }
+
+        for line in &wrapped {
+            output.push_str(&style_tool_output_line(line));
+            output.push('\n');
+        }
+
+        return output;
+    }
+
+    let max_lines = super::listener::tool_output_viewport_lines();
     let start = wrapped.len().saturating_sub(max_lines);
     let visible = wrapped.len() - start;
     let mut output = String::new();
@@ -669,10 +747,11 @@ fn render_tool_output(text: &str, width: usize) -> String {
         output.push('\n');
     }
 
-    // Show indicator at the bottom if lines were scrolled out of view
-    if start > 0 {
-        output.push_str(&style_tool_output_line(&format_scrolled_indicator(
-            start, visible,
+    if start > 0 || older_truncated {
+        output.push_str(&style_tool_output_line(&format_viewport_tail_indicator(
+            start,
+            visible,
+            older_truncated,
         )));
         output.push('\n');
     }
@@ -681,9 +760,15 @@ fn render_tool_output(text: &str, width: usize) -> String {
 }
 
 /// Render file read output with syntax highlighting based on file extension.
-fn render_file_read_output(filename: &str, text: &str, width: usize) -> String {
+fn render_file_read_output(filename: &str, text: &str, total_lines: usize, width: usize) -> String {
     // Skip rendering if tool output is hidden
     if super::listener::is_tool_output_hidden() {
+        return String::new();
+    }
+
+    // Skip rendering in history if tool output is actively streaming *in viewport mode*.
+    // The live viewport will render it instead, avoiding duplication.
+    if super::listener::is_tool_output_viewport_active() {
         return String::new();
     }
 
@@ -692,10 +777,38 @@ fn render_file_read_output(filename: &str, text: &str, width: usize) -> String {
         return String::new();
     }
 
-    let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
+    let language = syntax::language_from_path(filename);
+    let stored_lines = text.bytes().filter(|&b| b == b'\n').count();
+    let older_truncated = total_lines > stored_lines;
+    let expanded = super::listener::is_tool_output_expanded();
+
+    if expanded {
+        let mut output = String::new();
+
+        if older_truncated {
+            let msg = format!(
+                "(Older output truncated: {} lines dropped; showing last {} lines)",
+                total_lines - stored_lines,
+                stored_lines
+            )
+            .bright_black()
+            .to_string();
+            output.push_str(&style_tool_output_line(&msg));
+            output.push('\n');
+        }
+
+        for line in &wrapped {
+            let styled = style_file_read_line(line, language.as_deref());
+            output.push_str(&styled);
+            output.push('\n');
+        }
+
+        return output;
+    }
+
+    let max_lines = super::listener::tool_output_viewport_lines();
     let start = wrapped.len().saturating_sub(max_lines);
     let visible = wrapped.len() - start;
-    let language = syntax::language_from_path(filename);
     let mut output = String::new();
 
     for line in &wrapped[start..] {
@@ -704,10 +817,11 @@ fn render_file_read_output(filename: &str, text: &str, width: usize) -> String {
         output.push('\n');
     }
 
-    // Show indicator at the bottom if lines were scrolled out of view
-    if start > 0 {
-        output.push_str(&style_tool_output_line(&format_scrolled_indicator(
-            start, visible,
+    if start > 0 || older_truncated {
+        output.push_str(&style_tool_output_line(&format_viewport_tail_indicator(
+            start,
+            visible,
+            older_truncated,
         )));
         output.push('\n');
     }

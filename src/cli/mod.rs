@@ -22,8 +22,8 @@ pub(crate) mod terminal;
 
 pub(crate) const TOOL_OUTPUT_VIEWPORT_LINES: usize = 10;
 pub(crate) const TOOL_OUTPUT_VIEWPORT_SPACER_LINES: u16 = 1;
-/// Minimum buffer size before forcing a render (for partial lines without newlines).
-pub(crate) const TOOL_OUTPUT_RENDER_THRESHOLD: usize = 4096;
+/// Maximum lines to keep in buffer (matches model context limit)
+pub(crate) const TOOL_OUTPUT_MAX_BUFFER_LINES: usize = 2000;
 
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
@@ -2668,22 +2668,33 @@ async fn run_event_loop(
                             }
                         }
                         InputAction::ToggleHideToolOutput => {
-                            // Toggle the setting
-                            if let Ok(mut config) = crate::config::ConfigFile::load() {
-                                config.hide_tool_output = !config.hide_tool_output;
-                                let _ = config.save();
-                                listener::reload_hide_tool_output();
+                            // Toggle runtime state only (don't persist to config)
+                            let now_hidden = listener::toggle_hide_tool_output();
 
-                                // Show feedback message
-                                let status = if config.hide_tool_output {
-                                    "hidden"
-                                } else {
-                                    "visible"
-                                };
-                                terminal::println_above(&format!("Tool output is now {}", status));
+                            // Show feedback message
+                            let status = if now_hidden { "hidden" } else { "visible" };
+                            terminal::println_above(&format!("Tool output is now {}", status));
 
-                                // Redraw history to reflect the change
-                                prompt_box.redraw_history().ok();
+                            // Redraw history to reflect the change
+                            prompt_box.redraw_history().ok();
+                        }
+                        InputAction::ToggleToolOutputExpanded => {
+                            // Hold the viewport transition lock for the entire toggle operation
+                            // to prevent racing with streaming output rendering
+                            let _viewport_guard = listener::lock_viewport_transition();
+
+                            let now_expanded = listener::toggle_tool_output_expanded();
+
+                            // Redraw to reflect the new mode immediately:
+                            // - Expanded: tool output is rendered as normal scrolling output.
+                            // - Collapsed: tool output is rendered in the 10-line viewport.
+                            prompt_box.redraw_history().ok();
+                            listener::reset_tool_output_viewport();
+
+                            // If tool output is actively streaming and we just collapsed back to
+                            // viewport mode, re-render the live viewport now.
+                            if listener::is_tool_output_active() && !now_expanded {
+                                listener::force_tool_output_rerender();
                             }
                         }
                         InputAction::Quit => {

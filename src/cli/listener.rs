@@ -43,6 +43,12 @@ static SHOW_IMAGE_PREVIEWS: AtomicBool = AtomicBool::new(true);
 // Whether to hide tool output (loaded from config)
 static HIDE_TOOL_OUTPUT: AtomicBool = AtomicBool::new(false);
 
+// Whether tool output is currently expanded (full output vs 10-line viewport)
+static TOOL_OUTPUT_EXPANDED: AtomicBool = AtomicBool::new(false);
+
+// Lock to prevent racing between viewport toggle and streaming output rendering
+static VIEWPORT_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
+
 // Context/token tracking state for status line display
 static CONTEXT_TOKENS: AtomicU64 = AtomicU64::new(0);
 static CONTEXT_LIMIT: AtomicU64 = AtomicU64::new(0); // 0 = unknown
@@ -84,6 +90,223 @@ pub(crate) fn reload_hide_tool_output() {
 /// Check if tool output should be hidden
 pub(crate) fn is_tool_output_hidden() -> bool {
     HIDE_TOOL_OUTPUT.load(Ordering::Relaxed)
+}
+
+/// Toggle hide tool output state at runtime.
+/// Returns the new hidden state (true = hidden, false = visible).
+pub(crate) fn toggle_hide_tool_output() -> bool {
+    let was_hidden = HIDE_TOOL_OUTPUT.fetch_xor(true, Ordering::Relaxed);
+    !was_hidden
+}
+
+pub(crate) fn is_tool_output_expanded() -> bool {
+    TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed)
+}
+
+/// Toggle tool output viewport expanded state.
+/// Returns the new expanded state (true = expanded, false = collapsed).
+pub(crate) fn toggle_tool_output_expanded() -> bool {
+    let was_expanded = TOOL_OUTPUT_EXPANDED.fetch_xor(true, Ordering::Relaxed);
+    // Note: We don't reset reserved_lines here because force_tool_output_rerender
+    // needs the old value to know how many lines to clear when collapsing.
+    !was_expanded
+}
+
+/// Acquire the viewport transition lock.
+/// Returns a guard that must be held during viewport state changes.
+pub(crate) fn lock_viewport_transition() -> std::sync::MutexGuard<'static, ()> {
+    VIEWPORT_TRANSITION_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Reset the tool output viewport reserved lines.
+/// Called after redraw_history to avoid stale reserved_lines causing
+/// unwanted scrolling.
+pub(crate) fn reset_tool_output_viewport() {
+    if let Some(listener) = ACTIVE_LISTENER.get()
+        && let Ok(mut state) = listener.state.lock()
+    {
+        state.tool_output.reset_reserved();
+    }
+}
+
+/// Set the tool output reserved lines to a specific value.
+/// Used after resize to sync with the space already reserved by history rendering.
+pub(crate) fn set_tool_output_reserved(reserved: u16) {
+    if let Some(listener) = ACTIVE_LISTENER.get()
+        && let Ok(mut state) = listener.state.lock()
+    {
+        state.tool_output.reserved_lines = reserved;
+    }
+}
+
+/// Check if tool output is actively streaming.
+/// Uses try_lock to avoid deadlock when called while holding the output lock.
+/// Returns true if the lock cannot be acquired (safe default for callers that
+/// skip rendering when active).
+pub(crate) fn is_tool_output_active() -> bool {
+    let Some(listener) = ACTIVE_LISTENER.get() else {
+        return false;
+    };
+    // Use try_lock to avoid deadlock - if streaming task holds this lock
+    // while waiting for output lock, and we hold output lock, we'd deadlock.
+    match listener.state.try_lock() {
+        Ok(state) => state.tool_output.active,
+        Err(_) => true, // Can't get lock, assume active (safe for skip-rendering callers)
+    }
+}
+
+/// Check if tool output is actively streaming and being rendered in the live viewport.
+///
+/// When expanded, tool output is printed as normal scrolling output and is not
+/// rendered in the viewport.
+pub(crate) fn is_tool_output_viewport_active() -> bool {
+    if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+        return false;
+    }
+    if TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed) {
+        return false;
+    }
+
+    let Some(listener) = ACTIVE_LISTENER.get() else {
+        return false;
+    };
+
+    match listener.state.try_lock() {
+        Ok(state) => state.tool_output.active,
+        Err(_) => true, // Can't get lock, assume active (safe for skip-rendering callers)
+    }
+}
+
+/// Get the current tool output viewport height (including spacer) if active.
+/// Returns 0 if tool output is not active.
+pub(crate) fn active_tool_output_height() -> u16 {
+    if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+        return 0;
+    }
+    if TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed) {
+        return 0;
+    }
+
+    let Some(listener) = ACTIVE_LISTENER.get() else {
+        return 0;
+    };
+    let Ok(state) = listener.state.lock() else {
+        return 0;
+    };
+    if !state.tool_output.active {
+        return 0;
+    }
+
+    let max_lines = tool_output_viewport_lines();
+    let line_count = state.tool_output.line_count;
+    let visible_lines = line_count.min(max_lines);
+
+    // Add 1 for scroll indicator if there are hidden lines
+    let has_scroll_indicator = line_count > max_lines || state.tool_output.total_lines > line_count;
+    let viewport_height = if has_scroll_indicator {
+        visible_lines + 1
+    } else {
+        visible_lines
+    };
+
+    let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES as usize;
+    (viewport_height + spacer) as u16
+}
+
+/// Force a re-render of the tool output viewport with the current size settings.
+/// Called when toggling viewport size during active streaming.
+pub(crate) fn force_tool_output_rerender() {
+    if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+        return;
+    }
+    if TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let Some(listener) = ACTIVE_LISTENER.get() else {
+        return;
+    };
+
+    let (buffer, line_count, total_lines, old_reserved_lines) = {
+        let Ok(state) = listener.state.lock() else {
+            return;
+        };
+        if !state.tool_output.active {
+            return;
+        }
+        (
+            state.tool_output.buffer.clone(),
+            state.tool_output.line_count,
+            state.tool_output.total_lines,
+            state.tool_output.reserved_lines,
+        )
+    };
+
+    let max_lines = tool_output_viewport_lines();
+    let width = CliListener::terminal_width();
+
+    // Use fast tail extraction with hard wrapping for long lines
+    let (tail_lines, hidden) =
+        crate::cli::render::tail_lines_fast(&buffer, line_count, max_lines, Some(width));
+
+    // Build visible lines with scrolled indicator at bottom
+    let mut visible: Vec<String> = Vec::with_capacity(tail_lines.len() + 1);
+    visible.extend(
+        tail_lines
+            .iter()
+            .map(|line| crate::cli::render::style_tool_output_line(line)),
+    );
+    if hidden > 0 || total_lines > line_count {
+        visible.push(crate::cli::render::style_tool_output_line(
+            &crate::cli::render::format_scrolled_indicator(
+                hidden,
+                tail_lines.len(),
+                Some(total_lines),
+            ),
+        ));
+    }
+    let viewport_height = visible.len() as u16;
+
+    // Keep a spacer row between the tool viewport and where subsequent
+    // output (✓/✗, messages, etc.) is printed.
+    let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;
+    let new_reserved = viewport_height.saturating_add(spacer);
+
+    // If collapsing (new size < old size), clear the extra lines first
+    if new_reserved < old_reserved_lines {
+        let lines_to_clear = old_reserved_lines - new_reserved;
+        super::terminal::clear_viewport_lines(lines_to_clear, old_reserved_lines);
+    }
+
+    // Update reserved_lines in state
+    if let Ok(mut state) = listener.state.lock() {
+        state.tool_output.reserved_lines = new_reserved;
+    }
+
+    // If expanding, reserve additional space
+    if new_reserved > old_reserved_lines {
+        let reserve_delta = new_reserved - old_reserved_lines;
+        let reserved = super::terminal::reserve_output_lines(reserve_delta);
+        if !reserved {
+            // Can't reserve space, fall back to simple output
+            return;
+        }
+    }
+
+    super::terminal::render_tool_viewport(&visible, viewport_height, spacer);
+}
+
+/// Get the current tool output viewport line count
+pub(crate) fn tool_output_viewport_lines() -> usize {
+    // Cap to available terminal space (leave room for prompt + status + spacer)
+    // Prompt: ~4 lines, status: 1 line, spacer: 1 line, scroll indicator: 1 line
+    let term_height = super::terminal::term_height() as usize;
+    let reserved_for_ui = 8; // prompt + status + spacer + some buffer
+    let available = term_height.saturating_sub(reserved_for_ui).max(1);
+
+    crate::cli::TOOL_OUTPUT_VIEWPORT_LINES.min(available)
 }
 
 /// Render a single diff line with syntax highlighting.
@@ -1288,9 +1511,13 @@ impl StreamState {
 #[derive(Debug, Default)]
 struct ToolOutputState {
     active: bool,
+    /// Set when ToolResult is received - prevents late-arriving output from rendering
+    completed: bool,
     buffer: String,
     reserved_lines: u16,
-    /// Running count of complete lines (newlines seen)
+    /// Running count of complete lines (newlines seen) - includes truncated lines
+    total_lines: usize,
+    /// Lines currently in buffer (may be less than total_lines after truncation)
     line_count: usize,
 }
 
@@ -1298,24 +1525,71 @@ impl ToolOutputState {
     fn new() -> Self {
         Self {
             active: false,
+            completed: false,
             buffer: String::new(),
             reserved_lines: 0,
+            total_lines: 0,
             line_count: 0,
         }
     }
 
     fn reset(&mut self) {
         self.active = false;
+        self.completed = false;
         self.buffer.clear();
         self.reserved_lines = 0;
+        self.total_lines = 0;
         self.line_count = 0;
     }
 
-    /// Append text to buffer and update line count
+    /// Mark the tool as completed - late-arriving output will be ignored
+    fn mark_completed(&mut self) {
+        self.completed = true;
+        self.active = false;
+    }
+
+    /// Reset only the reserved lines count without clearing the buffer.
+    /// Used when toggling viewport size to force re-reservation.
+    fn reset_reserved(&mut self) {
+        self.reserved_lines = 0;
+    }
+
+    /// Append text to buffer and update line count.
     fn append(&mut self, text: &str) {
         // Count newlines in the new text
-        self.line_count += text.bytes().filter(|&b| b == b'\n').count();
+        let new_lines = text.bytes().filter(|&b| b == b'\n').count();
+        self.total_lines += new_lines;
+        self.line_count += new_lines;
         self.buffer.push_str(text);
+    }
+
+    /// Truncate buffer to keep only the last `max_lines` lines.
+    /// Updates line_count to reflect the truncated state (total_lines preserved).
+    fn truncate_to_last_lines(&mut self, max_lines: usize) {
+        if self.line_count <= max_lines {
+            return;
+        }
+
+        // Find the byte offset where we should start keeping content
+        let lines_to_skip = self.line_count - max_lines;
+        let mut skipped = 0;
+        let mut start_offset = 0;
+
+        for (i, c) in self.buffer.char_indices() {
+            if c == '\n' {
+                skipped += 1;
+                if skipped >= lines_to_skip {
+                    start_offset = i + 1;
+                    break;
+                }
+            }
+        }
+
+        if start_offset > 0 && start_offset < self.buffer.len() {
+            self.buffer = self.buffer[start_offset..].to_string();
+            self.line_count = max_lines;
+            // total_lines is preserved to show how many lines were seen overall
+        }
     }
 }
 
@@ -1702,6 +1976,9 @@ impl CliListener {
                         }
                     }
 
+                    // Reset tool output state for the new tool
+                    state.tool_output.reset();
+
                     state.info_since_last_tool_call = false;
 
                     let text = format!("▶ {}", description);
@@ -1727,6 +2004,11 @@ impl CliListener {
                 exit_code,
                 summary,
             } => {
+                // Acquire viewport lock to prevent racing with streaming output
+                let _viewport_guard = VIEWPORT_TRANSITION_LOCK
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+
                 let pending_tool_line = self
                     .state
                     .lock()
@@ -1835,13 +2117,26 @@ impl CliListener {
                     summary: summary.clone(),
                 });
 
+                // Mark as completed to prevent late-arriving output from rendering
                 if let Ok(mut state) = self.state.lock() {
-                    state.tool_output.reset();
+                    state.tool_output.mark_completed();
                 }
             }
 
             OutputEvent::ToolOutput { text } => {
                 if text.is_empty() {
+                    return;
+                }
+
+                // Check if tool has already completed (late-arriving output after interrupt)
+                let is_completed = self
+                    .state
+                    .lock()
+                    .map(|s| s.tool_output.completed)
+                    .unwrap_or(false);
+                if is_completed {
+                    // Still record to history but don't render
+                    history::append_tool_output(text);
                     return;
                 }
 
@@ -1853,29 +2148,70 @@ impl CliListener {
                         if !state.tool_output.active {
                             state.tool_output.active = true;
                         }
-                        // Keep the full buffer so toggling visibility can render past output
+                        // Keep the last N lines so toggling visibility can show recent output
                         state.tool_output.append(text);
+                        state
+                            .tool_output
+                            .truncate_to_last_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
                     }
                     // Record to history so toggling the setting can show it later
                     history::append_tool_output(text);
                     return;
                 }
 
-                // Batch process: accumulate all segments, then render once per complete line.
-                // This avoids expensive per-segment wrap_text calls on the entire buffer.
-                let segments: Vec<&str> = text.split_inclusive('\n').collect();
-                let has_trailing_newline = text.ends_with('\n');
+                // Acquire viewport transition lock to prevent racing with toggle
+                let _viewport_guard = VIEWPORT_TRANSITION_LOCK
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
 
-                // If there's no newline at all, we still need to update state but can skip
-                // expensive viewport rendering until we get a complete line.
-                if segments.is_empty() {
+                let expanded = TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed);
+
+                // EXPANDED MODE: Print tool output as normal scrolling text.
+                // This allows the user to scroll back through up to the last 2000 buffered lines
+                // (and more if their terminal scrollback retains it).
+                if expanded {
+                    {
+                        let Ok(mut state) = self.state.lock() else {
+                            return;
+                        };
+
+                        state.last_tool_call_open = false;
+
+                        if !state.tool_output.active {
+                            state.tool_output.active = true;
+                        }
+
+                        state.tool_output.append(text);
+                        state
+                            .tool_output
+                            .truncate_to_last_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
+                    }
+
+                    // Render complete lines only (leave partial trailing line buffered).
+                    let mut rendered = String::new();
+                    for chunk in text.split_inclusive('\n') {
+                        let Some(line) = chunk.strip_suffix('\n') else {
+                            continue;
+                        };
+                        rendered.push_str(&crate::cli::render::style_tool_output_line(line));
+                        rendered.push('\n');
+                    }
+
+                    if !rendered.is_empty() {
+                        terminal::ensure_line_break();
+                        terminal::print_above(&rendered);
+                    }
+
+                    history::append_tool_output(text);
+                    if let Ok(mut state) = self.state.lock() {
+                        state.last_block = Some(LastBlock::Tool);
+                    }
                     return;
                 }
 
-                // Accumulate content and only render on complete lines
-                let should_render;
+                // VIEWPORT MODE: Show only the last N lines in a fixed viewport.
+                let has_trailing_newline = text.ends_with('\n');
 
-                // Single lock acquisition to update buffer
                 {
                     let Ok(mut state) = self.state.lock() else {
                         return;
@@ -1887,57 +2223,50 @@ impl CliListener {
                         state.tool_output.active = true;
                     }
 
-                    // Append all segments to buffer with line counting
-                    for segment in &segments {
-                        state.tool_output.append(segment);
-                    }
+                    state.tool_output.append(text);
 
-                    // Only render if we have a complete line (ends with newline)
-                    // or if the buffer has grown significantly (every ~50 lines for partial lines)
-                    should_render = has_trailing_newline
-                        || state.tool_output.buffer.len()
-                            > crate::cli::TOOL_OUTPUT_RENDER_THRESHOLD;
+                    // Truncate buffer to save memory.
+                    state
+                        .tool_output
+                        .truncate_to_last_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
                 }
 
-                if should_render {
+                // Only render viewport on complete lines
+                if has_trailing_newline {
                     let (reserve_delta, visible_lines, viewport_height, spacer_lines) = {
                         let Ok(mut state) = self.state.lock() else {
                             return;
                         };
 
-                        let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
-                        let total_lines = state.tool_output.line_count;
+                        let max_lines = tool_output_viewport_lines();
+                        let buffer_lines = state.tool_output.line_count;
+                        let total_seen = state.tool_output.total_lines;
                         let width = Self::terminal_width();
 
-                        // Use fast tail extraction with hard wrapping for long lines
                         let (tail_lines, hidden) = crate::cli::render::tail_lines_fast(
                             &state.tool_output.buffer,
-                            total_lines,
+                            buffer_lines,
                             max_lines,
                             Some(width),
                         );
 
-                        // Build visible lines with scrolled indicator at bottom
                         let mut visible: Vec<String> = Vec::with_capacity(tail_lines.len() + 1);
                         visible.extend(
                             tail_lines
                                 .iter()
                                 .map(|line| crate::cli::render::style_tool_output_line(line)),
                         );
-                        if hidden > 0 {
+                        if hidden > 0 || total_seen > buffer_lines {
                             visible.push(crate::cli::render::style_tool_output_line(
                                 &crate::cli::render::format_scrolled_indicator(
                                     hidden,
                                     tail_lines.len(),
+                                    Some(total_seen),
                                 ),
                             ));
                         }
                         let viewport_height = visible.len() as u16;
 
-                        // Keep a spacer row between the tool viewport and where subsequent
-                        // output (✓/✗, messages, etc.) is printed. This prevents the tool
-                        // result indicator from overwriting the last viewport line when the
-                        // streaming status line is active.
                         let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;
                         let desired_total = viewport_height.saturating_add(spacer);
                         let reserve_delta =
@@ -1948,27 +2277,7 @@ impl CliListener {
                     };
 
                     if reserve_delta > 0 {
-                        let reserved = terminal::reserve_output_lines(reserve_delta);
-                        if !reserved {
-                            if let Ok(mut state) = self.state.lock() {
-                                state.tool_output.reset();
-                            }
-                            terminal::ensure_line_break();
-                            let mut display = String::new();
-                            for seg in text.split_inclusive('\n') {
-                                let (line, has_nl) = seg
-                                    .strip_suffix('\n')
-                                    .map(|l| (l, true))
-                                    .unwrap_or((seg, false));
-                                display.push_str(&crate::cli::render::style_tool_output_line(line));
-                                if has_nl {
-                                    display.push('\n');
-                                }
-                            }
-                            terminal::print_above(&display);
-                            history::append_tool_output(text);
-                            return;
-                        }
+                        terminal::reserve_output_lines(reserve_delta);
                     }
 
                     terminal::render_tool_viewport(&visible_lines, viewport_height, spacer_lines);
@@ -1986,6 +2295,18 @@ impl CliListener {
                     return;
                 }
 
+                // Check if tool has already completed (late-arriving output after interrupt)
+                let is_completed = self
+                    .state
+                    .lock()
+                    .map(|s| s.tool_output.completed)
+                    .unwrap_or(false);
+                if is_completed {
+                    // Still record to history but don't render
+                    history::append_file_read_output(filename, text);
+                    return;
+                }
+
                 // If hiding tool output, skip rendering but still record to history
                 if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
                     // Still mark tool output as active so ToolResult rendering works correctly
@@ -1994,26 +2315,70 @@ impl CliListener {
                         if !state.tool_output.active {
                             state.tool_output.active = true;
                         }
-                        // Keep the full buffer so toggling visibility can render past output
+                        // Keep the last N lines so toggling visibility can show recent output
                         state.tool_output.append(text);
+                        state
+                            .tool_output
+                            .truncate_to_last_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
                     }
                     // Record to history so toggling the setting can show it later
                     history::append_file_read_output(filename, text);
                     return;
                 }
 
-                let language = syntax::language_from_path(filename);
-                let has_trailing_newline = text.ends_with('\n');
+                // Acquire viewport transition lock to prevent racing with toggle
+                let _viewport_guard = VIEWPORT_TRANSITION_LOCK
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
 
-                // Batch process: accumulate all segments, then render once per complete line.
-                let segments: Vec<&str> = text.split_inclusive('\n').collect();
-                if segments.is_empty() {
+                let language = syntax::language_from_path(filename);
+
+                let expanded = TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed);
+
+                // EXPANDED MODE: Print output as normal scrolling text.
+                if expanded {
+                    {
+                        let Ok(mut state) = self.state.lock() else {
+                            return;
+                        };
+
+                        state.last_tool_call_open = false;
+
+                        if !state.tool_output.active {
+                            state.tool_output.active = true;
+                        }
+
+                        state.tool_output.append(text);
+                        state
+                            .tool_output
+                            .truncate_to_last_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
+                    }
+
+                    // Render complete lines only (leave partial trailing line buffered).
+                    let mut rendered = String::new();
+                    for chunk in text.split_inclusive('\n') {
+                        let Some(line) = chunk.strip_suffix('\n') else {
+                            continue;
+                        };
+                        rendered.push_str(&style_file_read_line(line, language.as_deref()));
+                        rendered.push('\n');
+                    }
+
+                    if !rendered.is_empty() {
+                        terminal::ensure_line_break();
+                        terminal::print_above(&rendered);
+                    }
+
+                    history::append_file_read_output(filename, text);
+                    if let Ok(mut state) = self.state.lock() {
+                        state.last_block = Some(LastBlock::Tool);
+                    }
                     return;
                 }
 
-                let should_render;
+                // VIEWPORT MODE: Show only the last N lines in a fixed viewport.
+                let has_trailing_newline = text.ends_with('\n');
 
-                // Single lock acquisition to update buffer
                 {
                     let Ok(mut state) = self.state.lock() else {
                         return;
@@ -2025,47 +2390,44 @@ impl CliListener {
                         state.tool_output.active = true;
                     }
 
-                    // Append all segments to buffer with line counting
-                    for segment in &segments {
-                        state.tool_output.append(segment);
-                    }
+                    state.tool_output.append(text);
 
-                    // Only render if we have a complete line or buffer is large
-                    should_render = has_trailing_newline
-                        || state.tool_output.buffer.len()
-                            > crate::cli::TOOL_OUTPUT_RENDER_THRESHOLD;
+                    // Truncate buffer to save memory.
+                    state
+                        .tool_output
+                        .truncate_to_last_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
                 }
 
-                if should_render {
+                if has_trailing_newline {
                     let (reserve_delta, visible_lines, viewport_height, spacer_lines) = {
                         let Ok(mut state) = self.state.lock() else {
                             return;
                         };
 
-                        let max_lines = crate::cli::TOOL_OUTPUT_VIEWPORT_LINES;
-                        let total_lines = state.tool_output.line_count;
+                        let max_lines = tool_output_viewport_lines();
+                        let buffer_lines = state.tool_output.line_count;
+                        let total_seen = state.tool_output.total_lines;
                         let width = Self::terminal_width();
 
-                        // Use fast tail extraction with hard wrapping for long lines
                         let (tail_lines, hidden) = crate::cli::render::tail_lines_fast(
                             &state.tool_output.buffer,
-                            total_lines,
+                            buffer_lines,
                             max_lines,
                             Some(width),
                         );
 
-                        // Build visible lines with scrolled indicator at bottom
                         let mut visible: Vec<String> = Vec::with_capacity(tail_lines.len() + 1);
                         visible.extend(
                             tail_lines
                                 .iter()
                                 .map(|line| style_file_read_line(line, language.as_deref())),
                         );
-                        if hidden > 0 {
+                        if hidden > 0 || total_seen > buffer_lines {
                             visible.push(crate::cli::render::style_tool_output_line(
                                 &crate::cli::render::format_scrolled_indicator(
                                     hidden,
                                     tail_lines.len(),
+                                    Some(total_seen),
                                 ),
                             ));
                         }
@@ -2081,27 +2443,7 @@ impl CliListener {
                     };
 
                     if reserve_delta > 0 {
-                        let reserved = terminal::reserve_output_lines(reserve_delta);
-                        if !reserved {
-                            if let Ok(mut state) = self.state.lock() {
-                                state.tool_output.reset();
-                            }
-                            terminal::ensure_line_break();
-                            let mut display = String::new();
-                            for seg in text.split_inclusive('\n') {
-                                let (line, has_nl) = seg
-                                    .strip_suffix('\n')
-                                    .map(|l| (l, true))
-                                    .unwrap_or((seg, false));
-                                display.push_str(&style_file_read_line(line, language.as_deref()));
-                                if has_nl {
-                                    display.push('\n');
-                                }
-                            }
-                            terminal::print_above(&display);
-                            history::append_file_read_output(filename, text);
-                            return;
-                        }
+                        terminal::reserve_output_lines(reserve_delta);
                     }
 
                     terminal::render_tool_viewport(&visible_lines, viewport_height, spacer_lines);

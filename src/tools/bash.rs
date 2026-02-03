@@ -466,7 +466,7 @@ Web content fetching:
             WaitOutcome::Interrupted => {
                 stdout_task.abort();
                 stderr_task.abort();
-                ToolResult::error(tool_use_id, "Interrupted by user")
+                ToolResult::error(tool_use_id, "Interrupted by user").with_summary("Interrupted")
             }
         }
     }

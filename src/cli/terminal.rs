@@ -538,7 +538,7 @@ pub(crate) fn prompt_visible() -> bool {
 }
 
 fn calculate_output_size(mut col: u16, text: &str, width: u16) -> (u16, u16) {
-    let mut lines = 0;
+    let mut lines: u16 = 0;
     let mut chars = text.chars().peekable();
 
     while let Some(ch) = chars.next() {
@@ -574,7 +574,7 @@ fn calculate_output_size(mut col: u16, text: &str, width: u16) -> (u16, u16) {
 
         match ch {
             '\n' => {
-                lines += 1;
+                lines = lines.saturating_add(1);
                 col = 0;
             }
             '\r' => {
@@ -582,10 +582,10 @@ fn calculate_output_size(mut col: u16, text: &str, width: u16) -> (u16, u16) {
             }
             _ => {
                 if col >= width {
-                    lines += 1;
+                    lines = lines.saturating_add(1);
                     col = 0;
                 }
-                col += 1;
+                col = col.saturating_add(1);
             }
         }
     }
@@ -811,6 +811,70 @@ pub(crate) fn reserve_output_lines(lines: u16) -> bool {
     }
 
     success
+}
+
+/// Clear lines at the top of the old viewport when collapsing to a smaller size.
+/// `lines_to_clear` is how many lines to clear, `old_reserved` is the old total reserved lines.
+pub(crate) fn clear_viewport_lines(lines_to_clear: u16, old_reserved: u16) {
+    use crossterm::SynchronizedUpdate;
+
+    let _guard = lock_output();
+
+    let (start_row, status_active, cursor_pos, visible) = {
+        let state = PROMPT_STATE.lock().unwrap();
+        (
+            state.start_row,
+            state.status_line_active,
+            state.cursor_pos,
+            state.visible,
+        )
+    };
+
+    if !visible || lines_to_clear == 0 {
+        return;
+    }
+
+    let reserved_rows = if status_active {
+        STREAMING_STATUS_LINE_ROWS
+    } else {
+        0
+    };
+
+    // Calculate where the old viewport top was
+    let spacer_bottom = start_row.saturating_sub(reserved_rows).saturating_sub(1);
+    let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;
+    let old_viewport_bottom = spacer_bottom.saturating_sub(spacer);
+    let old_viewport_height = old_reserved.saturating_sub(spacer);
+
+    if old_viewport_bottom + 1 < old_viewport_height {
+        return;
+    }
+
+    let old_viewport_top =
+        old_viewport_bottom.saturating_sub(old_viewport_height.saturating_sub(1));
+
+    let mut stdout = io::stdout();
+    let _ = stdout.sync_update(|stdout| {
+        use crossterm::queue;
+        use crossterm::terminal::{Clear, ClearType};
+
+        queue!(stdout, Hide)?;
+
+        // Clear the lines at the top of the old viewport that are no longer needed
+        for idx in 0..lines_to_clear {
+            let row = old_viewport_top.saturating_add(idx);
+            queue!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine))?;
+        }
+
+        // Restore cursor
+        if let Some((off, col)) = cursor_pos {
+            queue!(stdout, MoveTo(col, start_row + off), Show)?;
+        } else {
+            queue!(stdout, Show)?;
+        }
+
+        io::Result::Ok(())
+    });
 }
 
 /// Render a viewport above the prompt.
