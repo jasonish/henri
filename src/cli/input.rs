@@ -476,6 +476,8 @@ pub(super) enum InputAction {
     ToggleHideToolOutput,
     /// Toggle expanded tool output view (Ctrl+O)
     ToggleToolOutputExpanded,
+    /// Force full UI redraw (Ctrl+L)
+    RedrawAll,
 }
 
 /// State for multi-line input
@@ -1192,6 +1194,13 @@ impl InputState {
 
             // Ctrl+O - Toggle expanded tool output view (10 lines <-> full output)
             (KeyCode::Char('o'), KeyModifiers::CONTROL) => InputAction::ToggleToolOutputExpanded,
+
+            // Ctrl+L - force a full UI redraw
+            (KeyCode::Char('l'), KeyModifiers::CONTROL) => InputAction::RedrawAll,
+            (KeyCode::Char('L'), mods) if mods.contains(KeyModifiers::CONTROL) => {
+                // Shift+Ctrl+L may come as capital 'L' with CONTROL modifier
+                InputAction::RedrawAll
+            }
 
             // Alt+B - Backward word (treats image markers as single tokens)
             (KeyCode::Char('b'), KeyModifiers::ALT) => {

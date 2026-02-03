@@ -1904,6 +1904,33 @@ async fn run_event_loop(
                                 prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
                             }
                         }
+                        InputAction::RedrawAll => {
+                            // Force a full redraw, same as resize (history + prompt).
+                            // If a menu/overlay is active, keep it visible.
+                            //
+                            // In batch mode the prompt is never shown; ignore redraw events.
+                            // Handling redraws here can force a prompt redraw and make it visible.
+                            if !batch {
+                                let (cols, rows) = crossterm_terminal::size().unwrap_or((0, 0));
+                                prompt_box
+                                    .handle_resize(&input_state, &pending_prompts, cols, rows)
+                                    .await?;
+
+                                if let Some(ref menu) = history_search {
+                                    prompt_box.draw_with_history_search(&input_state, menu)?;
+                                } else if let Some(ref menu) = model_menu {
+                                    prompt_box.draw_with_model_menu(&input_state, menu)?;
+                                } else if let Some(ref menu) = session_menu {
+                                    prompt_box.draw_with_sessions_menu(&input_state, menu)?;
+                                } else if let Some(ref menu) = settings_menu {
+                                    prompt_box.draw_with_settings_menu(&input_state, menu)?;
+                                } else if let Some(ref menu) = mcp_menu {
+                                    prompt_box.draw_with_mcp_menu(&input_state, menu)?;
+                                } else if let Some(ref menu) = tools_menu {
+                                    prompt_box.draw_with_tools_menu(&input_state, menu)?;
+                                }
+                            }
+                        }
                         InputAction::MoveCursor => {
                             // Redraw on cursor moves so the input viewport scrolls as needed.
                             if pending_prompts.is_empty() {
@@ -3849,6 +3876,11 @@ fn show_help(_custom_commands: &[CustomCommand]) {
     ));
     let shortcut = format!("{:<21}", "Ctrl+H");
     terminal::println_above(&format!("  {} Toggle hide tool output", shortcut.yellow()));
+    let shortcut = format!("{:<21}", "Ctrl+L");
+    terminal::println_above(&format!(
+        "  {} Force redraw (repaint screen)",
+        shortcut.yellow()
+    ));
 }
 
 #[cfg(test)]
