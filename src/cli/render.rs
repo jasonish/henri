@@ -483,9 +483,9 @@ fn render_thinking(text: &str, _is_streaming: bool, width: usize) -> String {
     output
 }
 
-/// Render tool use - "▶ {description}"
+/// Render tool use - "{TOOL_USE_PREFIX}{description}".
 fn render_tool_use(description: &str) -> String {
-    format!("▶ {}", description)
+    format!("{}{}", super::TOOL_USE_PREFIX, description)
 }
 
 /// Format the optional tool summary for display after a ✓/✗.

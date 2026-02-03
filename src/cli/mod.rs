@@ -25,6 +25,9 @@ pub(crate) const TOOL_OUTPUT_VIEWPORT_SPACER_LINES: u16 = 1;
 /// Maximum lines to keep in buffer (matches model context limit)
 pub(crate) const TOOL_OUTPUT_MAX_BUFFER_LINES: usize = 2000;
 
+// Shared UI prefixes/symbols (kept here to avoid drift between renderer/listener).
+const TOOL_USE_PREFIX: &str = "● ";
+
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;

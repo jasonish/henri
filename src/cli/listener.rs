@@ -1981,7 +1981,7 @@ impl CliListener {
 
                     state.info_since_last_tool_call = false;
 
-                    let text = format!("▶ {}", description);
+                    let text = format!("{}{}", super::TOOL_USE_PREFIX, description);
                     terminal::print_above(&text);
                     state.last_tool_call_open = true;
                     state.last_block = Some(LastBlock::Tool);

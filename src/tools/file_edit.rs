@@ -146,9 +146,11 @@ impl Tool for FileEdit {
         if !input.replace_all && count > 1 {
             return error_with_summary(
                 tool_use_id,
-                "oldString appears multiple times. Use replaceAll to replace \
-                    all occurrences, or provide a more specific string."
-                    .to_string(),
+                format!(
+                    "oldString appears {} times. Use replaceAll to replace \
+                    all occurrences, or provide a more specific string.",
+                    count
+                ),
             );
         }
 
