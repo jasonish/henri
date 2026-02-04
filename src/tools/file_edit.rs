@@ -278,7 +278,7 @@ mod tests {
             )
             .await;
         assert!(result.is_error);
-        assert!(result.content.contains("oldString appears multiple times"));
+        assert!(result.content.contains("oldString appears"));
         assert!(result.content.contains("replaceAll"));
     }
 

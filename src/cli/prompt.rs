@@ -190,7 +190,10 @@ impl PromptBox {
 
         // Update tracked cursor position using the same viewport calculation as draw_with_stdout
         if let Some(start_row) = self.last_start_row {
-            let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(self.width);
+            // Wrap one column early to avoid terminals auto-wrapping when the
+            // last column is filled.
+            let wrap_width = self.input_wrap_width();
+            let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(wrap_width);
             let menu_height = state
                 .slash_menu
                 .as_ref()
@@ -228,8 +231,12 @@ impl PromptBox {
         // Refresh dimensions before computing wrapped display so our width is current.
         self.refresh_dimensions();
 
+        // Wrap one column early to avoid terminals auto-wrapping when the
+        // last column is filled.
+        let wrap_width = self.input_wrap_width();
+
         // Compute wrapped display
-        let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(self.width);
+        let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(wrap_width);
 
         let menu_height = state
             .slash_menu
@@ -377,8 +384,12 @@ impl PromptBox {
         // Refresh dimensions before computing wrapped display so our width is current.
         self.refresh_dimensions();
 
+        // Wrap one column early to avoid terminals auto-wrapping when the
+        // last column is filled.
+        let wrap_width = self.input_wrap_width();
+
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
-        let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
+        let (wrapped_rows, _) = state.display_lines_and_cursor(wrap_width);
 
         let menu_height = model_menu.display_height();
 
@@ -463,8 +474,12 @@ impl PromptBox {
         // Refresh dimensions before computing wrapped display so our width is current.
         self.refresh_dimensions();
 
+        // Wrap one column early to avoid terminals auto-wrapping when the
+        // last column is filled.
+        let wrap_width = self.input_wrap_width();
+
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
-        let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
+        let (wrapped_rows, _) = state.display_lines_and_cursor(wrap_width);
 
         let menu_height = history_search.display_height();
 
@@ -549,7 +564,11 @@ impl PromptBox {
         // Refresh dimensions before computing wrapped display so our width is current.
         self.refresh_dimensions();
 
-        let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
+        // Wrap one column early to avoid terminals auto-wrapping when the
+        // last column is filled.
+        let wrap_width = self.input_wrap_width();
+
+        let (wrapped_rows, _) = state.display_lines_and_cursor(wrap_width);
 
         let menu_height = sessions_menu.display_height();
 
@@ -631,8 +650,12 @@ impl PromptBox {
         // Refresh dimensions before computing wrapped display so our width is current.
         self.refresh_dimensions();
 
+        // Wrap one column early to avoid terminals auto-wrapping when the
+        // last column is filled.
+        let wrap_width = self.input_wrap_width();
+
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
-        let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
+        let (wrapped_rows, _) = state.display_lines_and_cursor(wrap_width);
 
         let menu_height = settings_menu.display_height();
 
@@ -717,8 +740,12 @@ impl PromptBox {
         // Refresh dimensions before computing wrapped display so our width is current.
         self.refresh_dimensions();
 
+        // Wrap one column early to avoid terminals auto-wrapping when the
+        // last column is filled.
+        let wrap_width = self.input_wrap_width();
+
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
-        let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
+        let (wrapped_rows, _) = state.display_lines_and_cursor(wrap_width);
 
         let menu_height = mcp_menu.display_height();
 
@@ -803,8 +830,12 @@ impl PromptBox {
         // Refresh dimensions before computing wrapped display so our width is current.
         self.refresh_dimensions();
 
+        // Wrap one column early to avoid terminals auto-wrapping when the
+        // last column is filled.
+        let wrap_width = self.input_wrap_width();
+
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
-        let (wrapped_rows, _) = state.display_lines_and_cursor(self.width);
+        let (wrapped_rows, _) = state.display_lines_and_cursor(wrap_width);
 
         let menu_height = tools_menu.display_height();
 
@@ -887,8 +918,12 @@ impl PromptBox {
         let mut stdout = io::stdout();
         self.sync_prompt_position();
 
+        // Wrap one column early to avoid terminals auto-wrapping when the
+        // last column is filled.
+        let wrap_width = self.input_wrap_width();
+
         // Compute wrapped display
-        let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(self.width);
+        let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(wrap_width);
 
         // Each pending prompt takes one line (no wrapping)
         let pending_height: u16 = pending_prompts.len() as u16;
@@ -1085,7 +1120,8 @@ impl PromptBox {
         };
 
         let prompt_height = {
-            let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(cols as usize);
+            let wrap_width = (cols as usize).saturating_sub(1).max(1);
+            let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(wrap_width);
             let menu_height = state
                 .slash_menu
                 .as_ref()
@@ -1256,6 +1292,11 @@ impl PromptBox {
     fn refresh_dimensions(&mut self) {
         self.width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
         self.border = "─".repeat(self.width);
+    }
+
+    fn input_wrap_width(&self) -> usize {
+        // Avoid terminals auto-wrapping when the last column is filled.
+        self.width.saturating_sub(1).max(1)
     }
 
     fn sync_prompt_position(&mut self) {
