@@ -3560,8 +3560,24 @@ async fn handle_command(
         }
 
         Command::Undo => {
-            if crate::provider::remove_last_turn(messages) > 0 {
-                terminal::println_above("Removed the most recent turn.");
+            let removed = crate::provider::remove_last_turn(messages);
+            if removed > 0 {
+                // Remove the last turn from the on-screen history as well.
+                // If the history is unexpectedly missing a `UserPrompt` marker, fall back
+                // to rebuilding from the remaining messages so the display stays in sync.
+                if !history::undo_last_turn() {
+                    history::clear();
+                    for msg in messages.iter() {
+                        history::push_message(msg);
+                    }
+                }
+
+                // Add an info event so the user can see what happened.
+                history::push(history::HistoryEvent::Info(
+                    "Removed the most recent turn.".to_string(),
+                ));
+
+                prompt_box.redraw_history().ok();
             } else {
                 terminal::println_above("No turns to undo.");
             }

@@ -6,12 +6,19 @@
 //! Stores events as semantic units rather than raw text, allowing
 //! re-rendering at any width on terminal resize.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 use super::TOOL_OUTPUT_MAX_BUFFER_LINES;
 
 /// Global history storage
 static HISTORY: Mutex<History> = Mutex::new(History::new());
+
+fn lock_history() -> MutexGuard<'static, History> {
+    match HISTORY.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
 /// Metadata about an attached image (for display only, no data)
 #[derive(Clone, Debug)]
@@ -105,10 +112,21 @@ impl History {
         self.events.clear();
     }
 
-    /// Iterate over all events.
-    #[cfg(test)]
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &HistoryEvent> {
-        self.events.iter()
+    /// Undo the most recent turn from this history.
+    ///
+    /// A "turn" in the rendered CLI history starts at the most recent
+    /// `UserPrompt` event and includes everything after it.
+    pub(crate) fn undo_last_turn(&mut self) -> bool {
+        let Some(idx) = self
+            .events
+            .iter()
+            .rposition(|e| matches!(e, HistoryEvent::UserPrompt { .. }))
+        else {
+            return false;
+        };
+
+        self.events.truncate(idx);
+        true
     }
 
     /// Get events as a slice.
@@ -257,28 +275,31 @@ fn truncate_to_last_lines(text: &mut String, line_count: usize, max_lines: usize
 
 /// Push an event to the global history.
 pub(crate) fn push(event: HistoryEvent) {
-    if let Ok(mut history) = HISTORY.lock() {
-        history.push(event);
-    }
+    let mut history = lock_history();
+    history.push(event);
 }
 
 /// Clear the global history.
 pub(crate) fn clear() {
-    if let Ok(mut history) = HISTORY.lock() {
-        history.clear();
-    }
+    let mut history = lock_history();
+    history.clear();
 }
 
 /// Get a snapshot of all events for rendering.
 pub(crate) fn snapshot() -> Vec<HistoryEvent> {
-    HISTORY.lock().map(|h| h.events.clone()).unwrap_or_default()
+    lock_history().events.clone()
 }
 
 pub(crate) fn has_events() -> bool {
-    HISTORY
-        .lock()
-        .map(|h| !h.events.is_empty())
-        .unwrap_or(false)
+    !lock_history().events.is_empty()
+}
+
+/// Undo the most recent turn in the global history.
+///
+/// This removes the most recent `UserPrompt` event and everything after it.
+pub(crate) fn undo_last_turn() -> bool {
+    let mut history = lock_history();
+    history.undo_last_turn()
 }
 
 /// Push a user prompt event.
@@ -291,42 +312,36 @@ pub(crate) fn push_user_prompt(text: &str, images: Vec<ImageMeta>) {
 
 /// Append text to the last AssistantText event, or create a new one.
 pub(crate) fn append_assistant_text(text: &str) {
-    if let Ok(mut history) = HISTORY.lock() {
-        history.append_assistant_text(text);
-    }
+    let mut history = lock_history();
+    history.append_assistant_text(text);
 }
 
 pub(crate) fn finish_assistant_text() {
-    if let Ok(mut history) = HISTORY.lock() {
-        history.finish_assistant_text();
-    }
+    let mut history = lock_history();
+    history.finish_assistant_text();
 }
 
 /// Append text to the last Thinking event, or create a new one.
 pub(crate) fn append_thinking(text: &str) {
-    if let Ok(mut history) = HISTORY.lock() {
-        history.append_thinking(text);
-    }
+    let mut history = lock_history();
+    history.append_thinking(text);
 }
 
 pub(crate) fn finish_thinking() {
-    if let Ok(mut history) = HISTORY.lock() {
-        history.finish_thinking();
-    }
+    let mut history = lock_history();
+    history.finish_thinking();
 }
 
 /// Append tool output to the last ToolOutput event, or create a new one.
 pub(crate) fn append_tool_output(text: &str) {
-    if let Ok(mut history) = HISTORY.lock() {
-        history.append_tool_output(text);
-    }
+    let mut history = lock_history();
+    history.append_tool_output(text);
 }
 
 /// Append file read output to the last FileReadOutput event, or create a new one.
 pub(crate) fn append_file_read_output(filename: &str, text: &str) {
-    if let Ok(mut history) = HISTORY.lock() {
-        history.append_file_read_output(filename, text);
-    }
+    let mut history = lock_history();
+    history.append_file_read_output(filename, text);
 }
 
 use crate::provider::{ContentBlock, Message, MessageContent, Role};
@@ -451,7 +466,7 @@ mod tests {
             is_streaming: false,
         });
 
-        let events: Vec<_> = history.iter().collect();
+        let events: Vec<_> = history.events().iter().collect();
         assert_eq!(events.len(), 2);
     }
 
