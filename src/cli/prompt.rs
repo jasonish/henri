@@ -1333,8 +1333,9 @@ impl PromptBox {
         let _guard = cli_terminal::lock_output();
         self.sync_prompt_position();
 
+        let mut stdout = io::stdout();
+
         if let Some(start_row) = self.last_start_row {
-            let mut stdout = io::stdout();
             let below_prompt = start_row.saturating_add(self.last_height);
             let term_height = cli_terminal::term_height();
 
@@ -1345,6 +1346,9 @@ impl PromptBox {
                 execute!(stdout, cursor::MoveTo(0, below_prompt))?;
             }
         }
+
+        // Ensure cursor is visible on exit
+        execute!(stdout, cursor::Show)?;
 
         cli_terminal::set_prompt_hidden();
         Ok(())
