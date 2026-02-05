@@ -1325,6 +1325,7 @@ impl PromptBox {
         // Reset position tracking since we've cleared the prompt
         self.reset_position();
         cli_terminal::set_prompt_hidden();
+        cli_terminal::reset_output_cursor_tracking();
         Ok(())
     }
 
@@ -1351,6 +1352,7 @@ impl PromptBox {
         execute!(stdout, cursor::Show)?;
 
         cli_terminal::set_prompt_hidden();
+        cli_terminal::reset_output_cursor_tracking();
         Ok(())
     }
 

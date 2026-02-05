@@ -188,8 +188,7 @@ pub(crate) fn ensure_trailing_newlines(min: u8) {
 /// Notify the terminal manager that the prompt box is now visible.
 /// `start_row` is the 0-indexed row where the prompt begins.
 pub(super) fn set_prompt_visible(height: u16, start_row: u16, status_row_offset: u16) {
-    let was_visible = if let Ok(mut state) = PROMPT_STATE.lock() {
-        let was = state.visible;
+    if let Ok(mut state) = PROMPT_STATE.lock() {
         state.visible = true;
         state.height = height;
         state.start_row = start_row;
@@ -198,15 +197,6 @@ pub(super) fn set_prompt_visible(height: u16, start_row: u16, status_row_offset:
         } else {
             status_row_offset.min(height.saturating_sub(1))
         };
-        was
-    } else {
-        false
-    };
-    // Only reset output cursor when prompt transitions from hidden to visible,
-    // not on every redraw. Resetting during redraw causes streaming output to
-    // overwrite itself when user is typing.
-    if !was_visible {
-        reset_output_cursor();
     }
 }
 
@@ -232,6 +222,13 @@ pub(super) fn set_prompt_hidden() {
         state.bandwidth_min_col = 0;
         state.bandwidth_col = None;
     }
+}
+
+/// Reset the tracked output cursor state.
+///
+/// Use this when external UI clears or otherwise disrupts the terminal output area
+/// (e.g. `hide_and_clear` / `hide_and_exit`).
+pub(super) fn reset_output_cursor_tracking() {
     reset_output_cursor();
 }
 
