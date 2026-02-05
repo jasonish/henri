@@ -207,7 +207,7 @@ impl PromptBox {
 
             let display_cursor_row = cursor_pos.row.saturating_sub(viewport_start);
             let cursor_row = start_row + 1 + display_cursor_row as u16;
-            let prefix_width = state.display_prefix_width(&cursor_pos);
+            let prefix_width = state.display_prefix_width();
             let cursor_col = prefix_width + cursor_pos.col;
             cli_terminal::set_prompt_cursor(
                 cursor_row.saturating_sub(start_row),
@@ -307,9 +307,8 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let prefix = state.display_prefix_for_row(row);
                 let styled_text = colorize_image_markers(&row.text, None);
-                write!(stdout, "{}{}", prefix, styled_text)?;
+                write!(stdout, "{}", styled_text)?;
             }
 
             let input_bottom_row = start_row + 1 + rows_to_display as u16;
@@ -327,15 +326,14 @@ impl PromptBox {
                     cursor::MoveTo(0, hint_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let prefix = state.display_prefix_for_row(&wrapped_rows[0]);
-                let max_text_width = self.width.saturating_sub(display_width(prefix));
+                let max_text_width = self.width;
                 let display_text = if display_width(hint_text) > max_text_width {
                     truncate_to_width(hint_text, max_text_width.saturating_sub(1))
                 } else {
                     hint_text.to_string()
                 };
                 queue!(stdout, SetAttribute(Attribute::Dim))?;
-                write!(stdout, "{}{}", prefix, display_text)?;
+                write!(stdout, "{}", display_text)?;
                 queue!(stdout, SetAttribute(Attribute::Reset))?;
             }
             self.draw_bottom_border_line(stdout, input_bottom_row, border_indicator.as_deref())?;
@@ -355,7 +353,7 @@ impl PromptBox {
             // Position cursor in input - adjust for viewport offset
             let display_cursor_row = cursor_pos.row.saturating_sub(viewport_start);
             let cursor_row = start_row + 1 + display_cursor_row as u16;
-            let prefix_width = state.display_prefix_width(&cursor_pos);
+            let prefix_width = state.display_prefix_width();
             let cursor_col = prefix_width + cursor_pos.col;
             queue!(
                 stdout,
@@ -432,8 +430,7 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let prefix = state.display_prefix_for_row(row);
-                write!(stdout, "{}{}", prefix, row.text)?;
+                write!(stdout, "{}", row.text)?;
             }
 
             let input_bottom_row = start_row + 1 + rows_to_display as u16;
@@ -522,8 +519,7 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let prefix = state.display_prefix_for_row(row);
-                write!(stdout, "{}{}", prefix, row.text)?;
+                write!(stdout, "{}", row.text)?;
             }
 
             let input_bottom_row = start_row + 1 + rows_to_display as u16;
@@ -610,8 +606,7 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let prefix = state.display_prefix_for_row(row);
-                write!(stdout, "{}{}", prefix, row.text)?;
+                write!(stdout, "{}", row.text)?;
             }
 
             let input_bottom_row = start_row + 1 + wrapped_rows.len() as u16;
@@ -698,8 +693,7 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let prefix = state.display_prefix_for_row(row);
-                write!(stdout, "{}{}", prefix, row.text)?;
+                write!(stdout, "{}", row.text)?;
             }
 
             let input_bottom_row = start_row + 1 + rows_to_display as u16;
@@ -788,8 +782,7 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let prefix = state.display_prefix_for_row(row);
-                write!(stdout, "{}{}", prefix, row.text)?;
+                write!(stdout, "{}", row.text)?;
             }
 
             let input_bottom_row = start_row + 1 + rows_to_display as u16;
@@ -878,8 +871,7 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let prefix = state.display_prefix_for_row(row);
-                write!(stdout, "{}{}", prefix, row.text)?;
+                write!(stdout, "{}", row.text)?;
             }
 
             let input_bottom_row = start_row + 1 + rows_to_display as u16;
@@ -1024,8 +1016,7 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let prefix = state.display_prefix_for_row(row);
-                write!(stdout, "{}{}", prefix, row.text)?;
+                write!(stdout, "{}", row.text)?;
             }
 
             let input_bottom_row = current_row + 1 + rows_to_display as u16;
@@ -1046,7 +1037,7 @@ impl PromptBox {
             // Position cursor in input - adjust for viewport offset
             let display_cursor_row = cursor_pos.row.saturating_sub(viewport_start);
             let cursor_row = current_row + 1 + display_cursor_row as u16;
-            let prefix_width = state.display_prefix_width(&cursor_pos);
+            let prefix_width = state.display_prefix_width();
             let cursor_col = prefix_width + cursor_pos.col;
             queue!(
                 stdout,
@@ -1063,7 +1054,7 @@ impl PromptBox {
         let input_start = start_row + pending_extra;
         let display_cursor_row = cursor_pos.row.saturating_sub(viewport_start);
         let cursor_row = input_start + 1 + display_cursor_row as u16;
-        let prefix_width = state.display_prefix_width(&cursor_pos);
+        let prefix_width = state.display_prefix_width();
         let cursor_col = prefix_width + cursor_pos.col;
         cli_terminal::set_prompt_cursor(cursor_row.saturating_sub(start_row), cursor_col as u16);
 

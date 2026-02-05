@@ -2949,19 +2949,14 @@ fn spawn_chat_task(
         terminal::ensure_line_break();
     }
 
-    let display_prompt = prompt.strip_prefix('!').unwrap_or(&prompt);
+    let display_prompt = &prompt;
 
     // Use a slightly reduced width to avoid terminals auto-wrapping when the last column
     // is filled. We'll still paint the remainder of the line using `\x1b[K`.
     let term_width = terminal::term_width() as usize;
     let safe_width = term_width.saturating_sub(1).max(1);
-    let prompt_prefix = if prompt.trim_start().starts_with('!') {
-        input::SHELL_PROMPT
-    } else {
-        input::PROMPT
-    };
-    let content_width = safe_width.saturating_sub(2); // prefix is 2 chars
-    let mut is_first_row = true;
+    let prompt_prefix = input::PROMPT;
+    let content_width = safe_width;
 
     // Build all prompt lines first so we can avoid printing a trailing newline on the
     // final line. Leaving the cursor mid-line prevents a visible blank row above the
@@ -2972,12 +2967,7 @@ fn spawn_chat_task(
         // Wrap each logical line to fit terminal width
         let wrapped = render::wrap_text(line, content_width);
         for wrapped_line in &wrapped {
-            let prefix = if is_first_row {
-                is_first_row = false;
-                prompt_prefix
-            } else {
-                input::CONTINUATION
-            };
+            let prefix = prompt_prefix;
             // Colorize image markers, restoring grey background after each marker.
             let styled_line =
                 render::colorize_image_markers(wrapped_line, Some(render::BG_GREY_ANSI));
@@ -3007,7 +2997,7 @@ fn spawn_chat_task(
 
     for (idx, line) in prompt_lines.iter().enumerate() {
         if idx + 1 < prompt_lines.len() {
-            terminal::print_above(&format!("{}\n", line));
+            terminal::println_above(line);
         } else {
             terminal::print_above(line);
         }

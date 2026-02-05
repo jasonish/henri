@@ -221,29 +221,19 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
     output
 }
 
-/// Render user prompt - with arrow prefix and grey background spanning full width
+/// Render user prompt with grey background spanning full width
 ///
 /// The text may contain inline image markers like `Image#1` which are colorized.
 fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String {
-    let mut prefix = if text.starts_with('!') {
-        super::input::SHELL_PROMPT
-    } else {
-        super::input::PROMPT
-    };
-    let text = text.strip_prefix('!').unwrap_or(text);
-    let continuation = super::input::CONTINUATION;
-
     // Use a slightly reduced width to avoid terminals auto-wrapping when the last column
     // is filled. We still paint the rest of the line using `\x1b[K`.
     let safe_width = width.saturating_sub(1).max(1);
-    let content_width = safe_width.saturating_sub(2); // prefix/continuation is 2 chars
+    let content_width = safe_width;
 
     let mut output = String::new();
 
     if text.is_empty() {
         // Empty prompt: still render a single prompt row.
-        output.push_str(BG_GREY_ANSI);
-        output.push_str(prefix);
         output.push_str(BG_GREY_ANSI);
         output.push_str("\x1b[K\x1b[0m\n");
         return output;
@@ -251,22 +241,16 @@ fn render_user_prompt(text: &str, _images: &[ImageMeta], width: usize) -> String
 
     for line in text.lines() {
         let wrapped = wrap_text(line, content_width);
-        for (j, wrapped_line) in wrapped.iter().enumerate() {
-            let p = if j == 0 { prefix } else { continuation };
-
+        for wrapped_line in &wrapped {
             // Colorize image markers in the line, restoring grey background after each marker.
             let styled_line = colorize_image_markers(wrapped_line, Some(BG_GREY_ANSI));
 
             // Full-width grey background without printing trailing spaces.
             output.push_str(BG_GREY_ANSI);
-            output.push_str(p);
             output.push_str(&styled_line);
             output.push_str(BG_GREY_ANSI);
             output.push_str("\x1b[K\x1b[0m\n");
         }
-
-        // After the first logical line, subsequent lines start with continuation.
-        prefix = continuation;
     }
 
     output

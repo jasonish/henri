@@ -18,9 +18,7 @@ use crate::cli::PastedImage;
 use crate::commands::Command;
 use crate::completion::FileCompleter;
 
-pub(super) const PROMPT: &str = "> ";
-pub(super) const SHELL_PROMPT: &str = "! ";
-pub(super) const CONTINUATION: &str = "  ";
+pub(super) const PROMPT: &str = "";
 
 /// Get display width of a character
 fn char_width(c: char) -> usize {
@@ -193,10 +191,6 @@ fn find_word_end_forward(chars: &[char], mut col: usize) -> usize {
 pub(super) struct WrappedRow {
     /// The text content of this row
     pub text: String,
-    /// The logical line index this row belongs to
-    pub line_idx: usize,
-    /// Whether this is the first row of the logical line (gets the prompt/continuation prefix)
-    pub is_first: bool,
 }
 
 /// Information about cursor position in wrapped display
@@ -219,17 +213,13 @@ pub(super) fn compute_wrapped_display_lines(
     let mut rows = Vec::new();
     let mut cursor_pos = CursorPosition { row: 0, col: 0 };
 
-    let prefix_width = display_width(PROMPT); // Both PROMPT and CONTINUATION are same width
+    let prefix_width = display_width(PROMPT);
     let content_width = term_width.saturating_sub(prefix_width);
 
     if content_width == 0 {
         // Terminal too narrow, just output lines as-is
         for (line_idx, line) in lines.iter().enumerate() {
-            rows.push(WrappedRow {
-                text: line.clone(),
-                line_idx,
-                is_first: true,
-            });
+            rows.push(WrappedRow { text: line.clone() });
             if line_idx == cursor_line_idx {
                 // Convert char index to byte index for cursor display
                 let cursor_byte_idx = line
@@ -262,13 +252,9 @@ pub(super) fn compute_wrapped_display_lines(
 
         let wrapped = wrap_line_with_cursor(line, content_width, cursor_byte_idx);
 
-        for (i, (text, cursor_col)) in wrapped.into_iter().enumerate() {
+        for (text, cursor_col) in wrapped {
             let row_idx = rows.len();
-            rows.push(WrappedRow {
-                text,
-                line_idx,
-                is_first: i == 0,
-            });
+            rows.push(WrappedRow { text });
 
             if let Some(col) = cursor_col {
                 cursor_pos = CursorPosition { row: row_idx, col };
@@ -280,8 +266,6 @@ pub(super) fn compute_wrapped_display_lines(
     if rows.is_empty() {
         rows.push(WrappedRow {
             text: String::new(),
-            line_idx: 0,
-            is_first: true,
         });
         cursor_pos = CursorPosition { row: 0, col: 0 };
     }
@@ -582,55 +566,18 @@ impl InputState {
         self.lines[line_idx].chars().count()
     }
 
-    pub fn is_shell_command(&self) -> bool {
-        self.lines.len() == 1 && self.lines[0].starts_with('!')
-    }
-
     pub fn display_lines(&self) -> Vec<String> {
-        if !self.is_shell_command() {
-            return self.lines.clone();
-        }
-
-        let mut lines = Vec::with_capacity(self.lines.len());
-        for (idx, line) in self.lines.iter().enumerate() {
-            if idx == 0 {
-                let display = line.strip_prefix('!').unwrap_or(line).to_string();
-                lines.push(display);
-            } else {
-                lines.push(line.clone());
-            }
-        }
-        lines
+        self.lines.clone()
     }
 
-    pub fn display_prefix_for_row(&self, row: &WrappedRow) -> &'static str {
-        // Only the very first row of the very first line gets the prompt
-        if row.is_first && row.line_idx == 0 {
-            if self.is_shell_command() {
-                SHELL_PROMPT
-            } else {
-                PROMPT
-            }
-        } else {
-            CONTINUATION
-        }
-    }
-
-    pub fn display_prefix_width(&self, cursor_pos: &CursorPosition) -> usize {
-        if self.is_shell_command() && cursor_pos.row == 0 {
-            display_width(SHELL_PROMPT)
-        } else {
-            display_width(PROMPT)
-        }
+    pub(super) fn display_prefix_width(&self) -> usize {
+        0
     }
 
     pub fn display_lines_and_cursor(&self, term_width: usize) -> (Vec<WrappedRow>, CursorPosition) {
         let display = self.display_lines();
         let cursor_line_idx = self.line_idx;
-        let mut cursor_col_idx = self.col_idx;
-        if self.is_shell_command() && cursor_line_idx == 0 {
-            cursor_col_idx = cursor_col_idx.saturating_sub(1);
-        }
+        let cursor_col_idx = self.col_idx;
         compute_wrapped_display_lines(&display, cursor_line_idx, cursor_col_idx, term_width)
     }
 
@@ -642,13 +589,7 @@ impl InputState {
         if content_width == 0 {
             return false;
         }
-        let current = self.current_line();
-        let line = if self.is_shell_command() {
-            current.strip_prefix('!').unwrap_or(current)
-        } else {
-            current
-        };
-        let line_width = display_width(line);
+        let line_width = display_width(self.current_line());
         line_width > content_width
     }
 
@@ -1844,20 +1785,20 @@ mod wrap_tests {
     fn test_current_line_needs_wrapping() {
         let mut state = test_state();
 
-        // Short line should not need wrapping (80 char terminal, 2 char prefix = 78 content)
+        // Short line should not need wrapping (80 char terminal, 0 char prefix = 80 content)
         state.lines[0] = "short".to_string();
         assert!(!state.current_line_needs_wrapping(80));
 
         // Long line should need wrapping
-        state.lines[0] = "a".repeat(80);
+        state.lines[0] = "a".repeat(160);
         assert!(state.current_line_needs_wrapping(80));
 
         // Exactly at boundary should not need wrapping
-        state.lines[0] = "a".repeat(78);
+        state.lines[0] = "a".repeat(80);
         assert!(!state.current_line_needs_wrapping(80));
 
         // One over boundary should need wrapping
-        state.lines[0] = "a".repeat(79);
+        state.lines[0] = "a".repeat(81);
         assert!(state.current_line_needs_wrapping(80));
     }
 }
