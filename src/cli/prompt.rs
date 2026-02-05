@@ -43,13 +43,24 @@ const WELCOME_HINT_TEXT: &str = "Welcome to Henri 🐕, type /help for more info
 const SOFTWARE_CURSOR_ON: &str = "\x1b[7m";
 const SOFTWARE_CURSOR_OFF: &str = "\x1b[27m";
 
+const SGR_DIM_ON: &str = "\x1b[2m";
+const SGR_DIM_OFF: &str = "\x1b[22m";
+
 fn render_hint_text_with_cursor(text: &str, show_cursor: bool) -> String {
-    // Always reserve column 0 so the hint text doesn't shift left/right when the
-    // cursor blinks.
-    if show_cursor {
-        format!("{SOFTWARE_CURSOR_ON} {SOFTWARE_CURSOR_OFF}{text}")
+    if !show_cursor {
+        return text.to_string();
+    }
+
+    // When showing placeholder text (welcome/exit hint) we still want a visible
+    // software cursor, but we don't want to shift the hint right by one column.
+    // To make the first character "shine through" even though the hint is dimmed,
+    // explicitly disable "dim" just for the cursor cell.
+    let mut chars = text.chars();
+    if let Some(first) = chars.next() {
+        let rest = chars.as_str();
+        format!("{SGR_DIM_OFF}{SOFTWARE_CURSOR_ON}{first}{SOFTWARE_CURSOR_OFF}{SGR_DIM_ON}{rest}")
     } else {
-        format!(" {text}")
+        format!("{SGR_DIM_OFF}{SOFTWARE_CURSOR_ON} {SOFTWARE_CURSOR_OFF}{SGR_DIM_ON}")
     }
 }
 
@@ -390,11 +401,8 @@ impl PromptBox {
                 )?;
 
                 let is_cursor_row = display_idx == cursor_pos.row.saturating_sub(viewport_start);
-                let text = render_input_row(
-                    &row.text,
-                    is_cursor_row.then_some(cursor_pos.col),
-                    super::cursor_blink::visible(),
-                );
+                let text =
+                    render_input_row(&row.text, is_cursor_row.then_some(cursor_pos.col), true);
                 write!(stdout, "{}", text)?;
             }
 
@@ -419,8 +427,7 @@ impl PromptBox {
                 } else {
                     hint_text.to_string()
                 };
-                let display_text =
-                    render_hint_text_with_cursor(&display_text, super::cursor_blink::visible());
+                let display_text = render_hint_text_with_cursor(&display_text, true);
                 queue!(stdout, SetAttribute(Attribute::Dim))?;
                 write!(stdout, "{}", display_text)?;
                 queue!(stdout, SetAttribute(Attribute::Reset))?;
@@ -523,11 +530,8 @@ impl PromptBox {
                 )?;
 
                 let is_cursor_row = display_idx == cursor_pos.row;
-                let text = render_input_row(
-                    &row.text,
-                    is_cursor_row.then_some(cursor_pos.col),
-                    super::cursor_blink::visible(),
-                );
+                let text =
+                    render_input_row(&row.text, is_cursor_row.then_some(cursor_pos.col), true);
                 write!(stdout, "{}", text)?;
             }
 
@@ -1116,11 +1120,8 @@ impl PromptBox {
                 )?;
 
                 let is_cursor_row = display_idx == cursor_pos.row.saturating_sub(viewport_start);
-                let text = render_input_row(
-                    &row.text,
-                    is_cursor_row.then_some(cursor_pos.col),
-                    super::cursor_blink::visible(),
-                );
+                let text =
+                    render_input_row(&row.text, is_cursor_row.then_some(cursor_pos.col), true);
                 write!(stdout, "{}", text)?;
             }
 
