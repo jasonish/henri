@@ -27,6 +27,10 @@ const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const OPENAI_CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_DEFAULT_MODEL: &str = "gpt-5.2-codex#medium";
 const OPENAI_MODELS: &[&str] = &[
+    "gpt-5.3-codex#low",
+    "gpt-5.3-codex#medium",
+    "gpt-5.3-codex#high",
+    "gpt-5.3-codex#xhigh",
     "gpt-5.2-codex#low",
     "gpt-5.2-codex#medium",
     "gpt-5.2-codex#high",
