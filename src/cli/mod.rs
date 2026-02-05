@@ -7,6 +7,7 @@
 //! keyboard input, resize events, and chat streaming concurrently.
 
 mod clipboard;
+mod cursor_blink;
 mod editor;
 pub(crate) mod history;
 pub(crate) mod image_preview;
@@ -570,6 +571,8 @@ async fn run_event_loop(
     // Track LSP generation to detect when servers start during streaming
     let mut last_lsp_generation = crate::lsp::generation();
 
+    let mut last_cursor_blink_gen = cursor_blink::generation();
+
     // Enable raw mode for the entire session (skip in batch mode)
     if !batch {
         let cwd_for_title = shorten_path(working_dir);
@@ -617,6 +620,7 @@ async fn run_event_loop(
         // Start spinner/bandwidth updates.
         listener::reload_show_network_stats();
         listener::init_spinner();
+        cursor_blink::init();
     }
 
     // Load settings (needed for both interactive and batch mode)
@@ -1248,6 +1252,27 @@ async fn run_event_loop(
                     mcp_server_count,
                 );
                 prompt_box.draw(&input_state, false)?;
+            }
+        }
+
+        // Fake blinking software cursor: redraw when the blink generation changes.
+        let current_blink_gen = cursor_blink::generation();
+        if current_blink_gen != last_cursor_blink_gen {
+            last_cursor_blink_gen = current_blink_gen;
+
+            // Avoid interfering with menus.
+            if history_search.is_none()
+                && model_menu.is_none()
+                && session_menu.is_none()
+                && settings_menu.is_none()
+                && mcp_menu.is_none()
+                && tools_menu.is_none()
+            {
+                if pending_prompts.is_empty() {
+                    prompt_box.draw(&input_state, false)?;
+                } else {
+                    prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
+                }
             }
         }
 

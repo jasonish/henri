@@ -407,7 +407,7 @@ pub(crate) fn write_status_line(text: &str) {
 
         // Restore cursor only if we have a saved position (menu modes hide the cursor)
         if let Some((cursor_row, cursor_col)) = cursor_info {
-            queue!(stdout, MoveTo(cursor_col, cursor_row), Show)?;
+            queue!(stdout, MoveTo(cursor_col, cursor_row))?;
         }
 
         io::Result::Ok(())
@@ -462,7 +462,7 @@ pub(crate) fn update_bandwidth_display(text: &str) {
 
             // Restore cursor only if we have a saved position (menu modes hide the cursor)
             if let Some((cursor_row, cursor_col)) = cursor_info {
-                queue!(stdout, MoveTo(cursor_col, cursor_row), Show)?;
+                queue!(stdout, MoveTo(cursor_col, cursor_row))?;
             }
 
             io::Result::Ok(())
@@ -517,7 +517,7 @@ pub(crate) fn update_bandwidth_display(text: &str) {
 
         // Restore cursor only if we have a saved position (menu modes hide the cursor)
         if let Some((cursor_row, cursor_col)) = cursor_info {
-            queue!(stdout, MoveTo(cursor_col, cursor_row), Show)?;
+            queue!(stdout, MoveTo(cursor_col, cursor_row))?;
         }
 
         io::Result::Ok(())
@@ -868,9 +868,7 @@ pub(crate) fn clear_viewport_lines(lines_to_clear: u16, old_reserved: u16) {
 
         // Restore cursor
         if let Some((off, col)) = cursor_pos {
-            queue!(stdout, MoveTo(col, start_row + off), Show)?;
-        } else {
-            queue!(stdout, Show)?;
+            queue!(stdout, MoveTo(col, start_row + off))?;
         }
 
         io::Result::Ok(())
@@ -929,9 +927,7 @@ pub(crate) fn render_tool_viewport(lines: &[String], height: u16, spacer_lines: 
 
         // Restore cursor
         if let Some((off, col)) = cursor_pos {
-            queue!(stdout, MoveTo(col, start_row + off), Show)?;
-        } else {
-            queue!(stdout, Show)?;
+            queue!(stdout, MoveTo(col, start_row + off))?;
         }
 
         io::Result::Ok(())

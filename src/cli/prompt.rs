@@ -16,6 +16,7 @@ use crossterm::style::{
 };
 use crossterm::terminal::{self, ClearType};
 use crossterm::{SynchronizedUpdate, cursor, execute, queue};
+use unicode_width::UnicodeWidthChar;
 
 use crate::usage;
 
@@ -38,6 +39,86 @@ const PROMPT_BG_COLOR: Color = Color::AnsiValue(236);
 
 const EXIT_HINT_TEXT: &str = "Press Ctrl+C again within 2s to exit";
 const WELCOME_HINT_TEXT: &str = "Welcome to Henri 🐕, type /help for more info";
+
+const SOFTWARE_CURSOR_ON: &str = "\x1b[7m";
+const SOFTWARE_CURSOR_OFF: &str = "\x1b[27m";
+
+fn render_hint_text_with_cursor(text: &str, show_cursor: bool) -> String {
+    // Always reserve column 0 so the hint text doesn't shift left/right when the
+    // cursor blinks.
+    if show_cursor {
+        format!("{SOFTWARE_CURSOR_ON} {SOFTWARE_CURSOR_OFF}{text}")
+    } else {
+        format!(" {text}")
+    }
+}
+
+fn apply_software_cursor(styled_text: &str, cursor_col: usize, show_cursor: bool) -> String {
+    if !show_cursor {
+        return styled_text.to_string();
+    }
+    let bytes = styled_text.as_bytes();
+    let mut i = 0;
+    let mut out = String::with_capacity(styled_text.len() + 16);
+
+    let mut col = 0usize;
+    let mut cursor_applied = false;
+
+    while i < bytes.len() {
+        // Skip ANSI CSI sequences (we only expect SGR here, but be tolerant).
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let start = i;
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'm' {
+                i += 1;
+            }
+            if i < bytes.len() {
+                i += 1;
+            }
+            out.push_str(&styled_text[start..i]);
+            continue;
+        }
+
+        let ch = styled_text[i..].chars().next().unwrap();
+        let ch_len = ch.len_utf8();
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+
+        let is_cursor_char = !cursor_applied
+            && ((ch_width > 0 && cursor_col >= col && cursor_col < col + ch_width)
+                || (ch_width == 0 && cursor_col == col));
+
+        if is_cursor_char {
+            out.push_str(SOFTWARE_CURSOR_ON);
+            out.push(ch);
+            out.push_str(SOFTWARE_CURSOR_OFF);
+            cursor_applied = true;
+        } else {
+            out.push(ch);
+        }
+
+        col = col.saturating_add(ch_width);
+        i += ch_len;
+    }
+
+    // Cursor at end-of-line: render an inverted space.
+    if !cursor_applied {
+        out.push_str(SOFTWARE_CURSOR_ON);
+        out.push(' ');
+        out.push_str(SOFTWARE_CURSOR_OFF);
+    }
+
+    out
+}
+
+fn render_input_row(row_text: &str, cursor_col: Option<usize>, show_cursor: bool) -> String {
+    let styled = colorize_image_markers(row_text, None);
+
+    if let Some(col) = cursor_col {
+        apply_software_cursor(&styled, col, show_cursor)
+    } else {
+        styled
+    }
+}
 
 /// Thinking status for the status line.
 #[derive(Clone, Default)]
@@ -307,8 +388,14 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let styled_text = colorize_image_markers(&row.text, None);
-                write!(stdout, "{}", styled_text)?;
+
+                let is_cursor_row = display_idx == cursor_pos.row.saturating_sub(viewport_start);
+                let text = render_input_row(
+                    &row.text,
+                    is_cursor_row.then_some(cursor_pos.col),
+                    super::cursor_blink::visible(),
+                );
+                write!(stdout, "{}", text)?;
             }
 
             let input_bottom_row = start_row + 1 + rows_to_display as u16;
@@ -326,12 +413,14 @@ impl PromptBox {
                     cursor::MoveTo(0, hint_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                let max_text_width = self.width;
+                let max_text_width = self.width.saturating_sub(1);
                 let display_text = if display_width(hint_text) > max_text_width {
                     truncate_to_width(hint_text, max_text_width.saturating_sub(1))
                 } else {
                     hint_text.to_string()
                 };
+                let display_text =
+                    render_hint_text_with_cursor(&display_text, super::cursor_blink::visible());
                 queue!(stdout, SetAttribute(Attribute::Dim))?;
                 write!(stdout, "{}", display_text)?;
                 queue!(stdout, SetAttribute(Attribute::Reset))?;
@@ -350,7 +439,9 @@ impl PromptBox {
                 menu.render(stdout, menu_start_row)?;
             }
 
-            // Position cursor in input - adjust for viewport offset
+            // Keep the hardware cursor hidden; a software cursor is rendered in the
+            // prompt buffer so it remains visible even when the user scrolls
+            // terminal scrollback.
             let display_cursor_row = cursor_pos.row.saturating_sub(viewport_start);
             let cursor_row = start_row + 1 + display_cursor_row as u16;
             let prefix_width = state.display_prefix_width();
@@ -358,7 +449,7 @@ impl PromptBox {
             queue!(
                 stdout,
                 cursor::MoveTo(cursor_col as u16, cursor_row),
-                cursor::Show
+                cursor::Hide
             )?;
 
             io::Result::Ok(())
@@ -387,7 +478,7 @@ impl PromptBox {
         let wrap_width = self.input_wrap_width();
 
         // Compute wrapped display (cursor_pos unused since cursor is hidden in menu mode)
-        let (wrapped_rows, _) = state.display_lines_and_cursor(wrap_width);
+        let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(wrap_width);
 
         let menu_height = model_menu.display_height();
 
@@ -430,7 +521,14 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                write!(stdout, "{}", row.text)?;
+
+                let is_cursor_row = display_idx == cursor_pos.row;
+                let text = render_input_row(
+                    &row.text,
+                    is_cursor_row.then_some(cursor_pos.col),
+                    super::cursor_blink::visible(),
+                );
+                write!(stdout, "{}", text)?;
             }
 
             let input_bottom_row = start_row + 1 + rows_to_display as u16;
@@ -1016,7 +1114,14 @@ impl PromptBox {
                     cursor::MoveTo(0, term_row),
                     terminal::Clear(ClearType::CurrentLine)
                 )?;
-                write!(stdout, "{}", row.text)?;
+
+                let is_cursor_row = display_idx == cursor_pos.row.saturating_sub(viewport_start);
+                let text = render_input_row(
+                    &row.text,
+                    is_cursor_row.then_some(cursor_pos.col),
+                    super::cursor_blink::visible(),
+                );
+                write!(stdout, "{}", text)?;
             }
 
             let input_bottom_row = current_row + 1 + rows_to_display as u16;
@@ -1034,7 +1139,9 @@ impl PromptBox {
                 menu.render(stdout, menu_start_row)?;
             }
 
-            // Position cursor in input - adjust for viewport offset
+            // Keep the hardware cursor hidden; a software cursor is rendered in the
+            // prompt buffer so it remains visible even when the user scrolls
+            // terminal scrollback.
             let display_cursor_row = cursor_pos.row.saturating_sub(viewport_start);
             let cursor_row = current_row + 1 + display_cursor_row as u16;
             let prefix_width = state.display_prefix_width();
@@ -1042,7 +1149,7 @@ impl PromptBox {
             queue!(
                 stdout,
                 cursor::MoveTo(cursor_col as u16, cursor_row),
-                cursor::Show
+                cursor::Hide
             )?;
 
             io::Result::Ok(())
