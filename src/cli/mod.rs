@@ -124,8 +124,35 @@ fn pasted_images_to_history_images(
         .collect()
 }
 
+/// If `input` is a custom slash command (e.g. "/commit"), expand it to the
+/// full prompt text that should be sent to the model.
+///
+/// This is used for queued prompts: we want to keep the queue compact, but send
+/// the expanded text when the queued entry is actually executed.
+fn expand_custom_command_if_needed(
+    input: &str,
+    custom_commands: &[CustomCommand],
+) -> Option<String> {
+    let input = input.trim();
+    let cmd_input = input.strip_prefix('/')?;
+
+    let command = crate::commands::parse(cmd_input, custom_commands)?;
+
+    let Command::Custom { name, args } = command else {
+        return None;
+    };
+
+    custom_commands
+        .iter()
+        .find(|c| c.name == name)
+        .map(|custom| custom_commands::substitute_variables(&custom.prompt, &args))
+}
+
 struct PendingPrompt {
-    /// The prompt text to send
+    /// The raw input text as entered by the user (e.g., "/commit").
+    ///
+    /// Note: Custom commands are expanded when dequeued (right before sending to the model)
+    /// so the pending queue display stays compact.
     input: String,
     /// Images pasted with this prompt
     images: Vec<PastedImage>,
@@ -1027,6 +1054,11 @@ async fn run_event_loop(
                     {
                         // Note: prompt was already added to history when queued
 
+                        // Expand custom commands at execution time (important for queued prompts).
+                        let prompt_to_send =
+                            expand_custom_command_if_needed(&next.input, custom_commands)
+                                .unwrap_or(next.input);
+
                         // Draw prompt first so it's visible for spawn_chat_task's println_above
                         prompt_box.draw_with_pending(&input_state, &pending_prompts)?;
 
@@ -1044,7 +1076,7 @@ async fn run_event_loop(
                             session_id: current_session_id.clone().unwrap(),
                         };
                         chat_task = Some(spawn_chat_task(
-                            next.input,
+                            prompt_to_send,
                             next.images,
                             &mut messages,
                             pm,
@@ -1141,9 +1173,15 @@ async fn run_event_loop(
 
                 // Process any pending prompts that were queued while shell was running
                 if let Some(next) = pending_prompts.pop_front() {
+                    let PendingPrompt { input, images } = next;
+
+                    // Expand custom commands before processing so the model receives the expanded prompt.
+                    let expanded_input =
+                        expand_custom_command_if_needed(&input, custom_commands).unwrap_or(input);
+
                     // Process the input
                     let result = process_input(
-                        &next.input,
+                        &expanded_input,
                         &mut messages,
                         current_session_id,
                         working_dir,
@@ -1159,7 +1197,7 @@ async fn run_event_loop(
                     match result {
                         ProcessResult::Continue => {
                             // Command completed (like a /command), echo it
-                            echo_user_prompt_to_output(&next.input, &next.images);
+                            echo_user_prompt_to_output(&expanded_input, &images);
                             // Check for more pending prompts
                             if pending_prompts.is_empty() {
                                 prompt_box.draw(&input_state, false)?;
@@ -1170,10 +1208,9 @@ async fn run_event_loop(
                         ProcessResult::Quit => {
                             break;
                         }
-                        ProcessResult::StartChat(prompt, history_entry) => {
+                        ProcessResult::StartChat(prompt, _history_entry) => {
                             // spawn_chat_task echoes the prompt itself
-                            let history_text = history_entry.as_ref().unwrap_or(&prompt);
-                            let _ = prompt_history.add_with_images(history_text, vec![]);
+                            // Note: queued prompts were already added to prompt_history when queued.
 
                             if let Some(pm) = provider_manager.take() {
                                 if current_session_id.is_none() {
@@ -1189,7 +1226,7 @@ async fn run_event_loop(
                                 };
                                 chat_task = Some(spawn_chat_task(
                                     prompt,
-                                    next.images,
+                                    images,
                                     &mut messages,
                                     pm,
                                     thinking_state,
@@ -3418,6 +3455,7 @@ async fn process_input(
                 CommandResult::Quit => return ProcessResult::Quit,
                 CommandResult::SendToModel(prompt) => {
                     // For custom commands, save original command to history instead of expanded prompt
+                    // (so Ctrl+R shows what the user typed).
                     let history_entry = if is_custom {
                         Some(input.to_string())
                     } else {
