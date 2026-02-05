@@ -86,7 +86,13 @@ fn echo_user_prompt_to_output(prompt: &str, pasted_images: &[PastedImage]) {
             terminal::print_above("\n");
         }
     } else {
-        terminal::ensure_line_break();
+        // First turn of a fresh session: add one visual separator row between
+        // the shell command line and the first echoed user prompt.
+        if terminal::output_has_output() {
+            terminal::ensure_line_break();
+        } else {
+            terminal::ensure_trailing_newlines(1);
+        }
     }
 
     let image_metas: Vec<history::ImageMeta> = pasted_images
@@ -2983,7 +2989,13 @@ fn spawn_chat_task(
             terminal::print_above("\n");
         }
     } else {
-        terminal::ensure_line_break();
+        // First turn of a fresh session: add one visual separator row between
+        // the shell command line and the first echoed user prompt.
+        if terminal::output_has_output() {
+            terminal::ensure_line_break();
+        } else {
+            terminal::ensure_trailing_newlines(1);
+        }
     }
 
     let display_prompt = &prompt;
