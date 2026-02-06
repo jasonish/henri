@@ -2545,6 +2545,11 @@ impl CliListener {
                 language,
                 summary,
             } => {
+                // Acquire viewport transition lock to prevent racing with toggle
+                let _viewport_guard = VIEWPORT_TRANSITION_LOCK
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+
                 let pending_tool_line = self
                     .state
                     .lock()
@@ -2555,7 +2560,12 @@ impl CliListener {
                     })
                     .unwrap_or(false);
 
-                if pending_tool_line {
+                let expanded = TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed);
+
+                // In expanded mode we print diff lines inline, so we must close the banner line first.
+                // In collapsed viewport mode we defer this until the checkmark, avoiding an extra
+                // blank line between the tool banner and the viewport content.
+                if pending_tool_line && expanded {
                     if terminal::prompt_visible() {
                         terminal::ensure_line_break();
                     } else {
@@ -2566,21 +2576,90 @@ impl CliListener {
 
                 // Only render the diff if tool output is not hidden
                 if !HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
-                    // Track line numbers across the diff
-                    let mut old_line_num = 0usize;
-                    let mut new_line_num = 0usize;
+                    if expanded {
+                        // Track line numbers across the diff
+                        let mut old_line_num = 0usize;
+                        let mut new_line_num = 0usize;
+                        for line in diff.lines() {
+                            if let Some(styled) = render_diff_line(
+                                line,
+                                language.as_deref(),
+                                &mut old_line_num,
+                                &mut new_line_num,
+                            ) {
+                                terminal::println_above(&styled);
+                            }
+                        }
+                    } else {
+                        use std::collections::VecDeque;
 
-                    for line in diff.lines() {
-                        if let Some(styled) = render_diff_line(
-                            line,
-                            language.as_deref(),
-                            &mut old_line_num,
-                            &mut new_line_num,
-                        ) {
-                            terminal::println_above(&styled);
+                        let max_lines = tool_output_viewport_lines();
+                        let mut old_line_num = 0usize;
+                        let mut new_line_num = 0usize;
+                        let mut tail: VecDeque<String> = VecDeque::with_capacity(max_lines);
+                        let mut total_lines = 0usize;
+
+                        for line in diff.lines() {
+                            if let Some(styled) = render_diff_line(
+                                line,
+                                language.as_deref(),
+                                &mut old_line_num,
+                                &mut new_line_num,
+                            ) {
+                                total_lines += 1;
+                                if tail.len() == max_lines {
+                                    tail.pop_front();
+                                }
+                                tail.push_back(styled);
+                            }
+                        }
+
+                        if !tail.is_empty() {
+                            let visible_count = tail.len();
+                            let hidden = total_lines.saturating_sub(visible_count);
+                            let mut visible: Vec<String> = tail.into_iter().collect();
+                            if hidden > 0 {
+                                visible.push(crate::cli::render::style_tool_output_line(
+                                    &crate::cli::render::format_scrolled_indicator(
+                                        hidden,
+                                        visible_count,
+                                        Some(total_lines),
+                                    ),
+                                ));
+                            }
+
+                            let viewport_height = visible.len() as u16;
+                            let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;
+                            let desired_total = viewport_height.saturating_add(spacer);
+                            let reserve_delta = self
+                                .state
+                                .lock()
+                                .map(|mut state| {
+                                    let delta = desired_total
+                                        .saturating_sub(state.tool_output.reserved_lines);
+                                    state.tool_output.reserved_lines = desired_total;
+                                    delta
+                                })
+                                .unwrap_or(desired_total);
+
+                            if reserve_delta > 0 {
+                                terminal::reserve_output_lines(reserve_delta);
+                            }
+
+                            terminal::render_tool_viewport(&visible, viewport_height, spacer);
                         }
                     }
                 }
+
+                if pending_tool_line && !expanded {
+                    if terminal::prompt_visible() {
+                        terminal::ensure_line_break();
+                    } else {
+                        println!();
+                        let _ = io::stdout().flush();
+                    }
+                }
+
                 let summary_suffix = format_summary_suffix(summary.as_deref());
                 let checkmark = format!("{}{}", "✓".green(), summary_suffix);
                 if terminal::prompt_visible() {

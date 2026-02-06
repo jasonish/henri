@@ -929,30 +929,86 @@ fn render_file_diff(diff: &str, language: Option<&str>, summary: Option<&str>) -
     }
 
     let mut output = String::new();
+    let expanded = super::listener::is_tool_output_expanded();
 
-    // Track line numbers by parsing hunk headers
-    let mut old_line_num = 0usize;
-    let mut new_line_num = 0usize;
+    if expanded {
+        let mut old_line_num = 0usize;
+        let mut new_line_num = 0usize;
 
-    for line in diff.lines() {
-        // Skip --- and +++ header lines
-        if line.starts_with("+++") || line.starts_with("---") {
-            continue;
-        }
-
-        // Parse hunk headers to update line numbers, but don't render them
-        if line.starts_with("@@") {
-            if let Some((old_start, new_start)) = parse_hunk_header(line) {
-                old_line_num = old_start;
-                new_line_num = new_start;
+        for line in diff.lines() {
+            // Skip --- and +++ header lines
+            if line.starts_with("+++") || line.starts_with("---") {
+                continue;
             }
-            continue;
+
+            // Parse hunk headers to update line numbers, but don't render them
+            if line.starts_with("@@") {
+                if let Some((old_start, new_start)) = parse_hunk_header(line) {
+                    old_line_num = old_start;
+                    new_line_num = new_start;
+                }
+                continue;
+            }
+
+            output.push_str(&render_diff_line_with_gutter(
+                line,
+                language,
+                &mut old_line_num,
+                &mut new_line_num,
+            ));
+            output.push('\n');
+        }
+    } else {
+        use std::collections::VecDeque;
+
+        let max_lines = super::listener::tool_output_viewport_lines();
+        let mut old_line_num = 0usize;
+        let mut new_line_num = 0usize;
+        let mut tail: VecDeque<String> = VecDeque::with_capacity(max_lines);
+        let mut total_lines = 0usize;
+
+        for line in diff.lines() {
+            // Skip --- and +++ header lines
+            if line.starts_with("+++") || line.starts_with("---") {
+                continue;
+            }
+
+            // Parse hunk headers to update line numbers, but don't render them
+            if line.starts_with("@@") {
+                if let Some((old_start, new_start)) = parse_hunk_header(line) {
+                    old_line_num = old_start;
+                    new_line_num = new_start;
+                }
+                continue;
+            }
+
+            total_lines += 1;
+            if tail.len() == max_lines {
+                tail.pop_front();
+            }
+            tail.push_back(render_diff_line_with_gutter(
+                line,
+                language,
+                &mut old_line_num,
+                &mut new_line_num,
+            ));
         }
 
-        let styled =
-            render_diff_line_with_gutter(line, language, &mut old_line_num, &mut new_line_num);
-        output.push_str(&styled);
-        output.push('\n');
+        for line in tail {
+            output.push_str(&line);
+            output.push('\n');
+        }
+
+        let visible_count = total_lines.min(max_lines);
+        let hidden = total_lines.saturating_sub(visible_count);
+        if hidden > 0 {
+            output.push_str(&style_tool_output_line(&format_scrolled_indicator(
+                hidden,
+                visible_count,
+                Some(total_lines),
+            )));
+            output.push('\n');
+        }
     }
 
     output.push_str(&checkmark);
@@ -1663,6 +1719,19 @@ const x = 42;
         assert!(result.contains("✓"));
         // Should NOT have two checkmarks
         assert_eq!(result.matches("✓").count(), 1);
+    }
+
+    #[test]
+    fn test_render_file_diff_collapsed_shows_tail_indicator() {
+        enable_colors();
+        let mut diff = String::from("@@ -0,0 +1,8 @@\n");
+        for idx in 1..=8 {
+            diff.push_str(&format!("+line {}\n", idx));
+        }
+
+        let rendered = render_file_diff(&diff, None, None);
+        assert!(rendered.contains("Showing last"));
+        assert!(rendered.contains("of 8 lines"));
     }
 
     #[test]

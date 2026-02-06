@@ -307,11 +307,6 @@ impl Tool for FileRead {
                 truncated: line.truncated,
             });
 
-            if output_lines.len() <= 5 {
-                let formatted_line = format!("{}\n", line.content);
-                crate::output::emit_file_read_output(output, &input.filename, &formatted_line);
-            }
-
             line_idx += 1;
 
             if line.truncated {
@@ -342,6 +337,7 @@ impl Tool for FileRead {
         // Append footer (allowed to push output a bit beyond MAX_OUTPUT_SIZE).
         let summary = build_bracket_summary(offset, &output_lines, stop_reason);
         output_buf.push_str(&summary);
+        crate::output::emit_file_read_output(output, &input.filename, &output_buf);
 
         let tool_summary = format!(
             "[Read {} lines, {} bytes]",
