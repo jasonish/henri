@@ -39,6 +39,33 @@ struct GrepInput {
     include_hidden: bool,
 }
 
+fn summary_from_message(message: &str) -> Option<String> {
+    let line = message.lines().next().unwrap_or("").trim();
+    if line.is_empty() {
+        return None;
+    }
+    Some(line.to_string())
+}
+
+fn error_with_summary(tool_use_id: &str, message: impl Into<String>) -> ToolResult {
+    let message = message.into();
+    let mut result = ToolResult::error(tool_use_id, message.clone());
+    if let Some(summary) = summary_from_message(&message) {
+        result.summary = Some(summary);
+    }
+    result
+}
+
+fn attach_summary_if_missing(mut result: ToolResult) -> ToolResult {
+    if result.is_error
+        && result.summary.is_none()
+        && let Some(summary) = summary_from_message(&result.content)
+    {
+        result.summary = Some(summary);
+    }
+    result
+}
+
 impl Grep {
     /// Check if ripgrep (rg) is available in the PATH
     async fn has_ripgrep(&self) -> bool {
@@ -241,7 +268,7 @@ impl Grep {
                     } else {
                         format!("Search failed with exit code {}", exit_code)
                     };
-                    return Ok(ToolResult::error(tool_use_id, error_msg));
+                    return Ok(error_with_summary(tool_use_id, error_msg));
                 }
 
                 let mut output = stdout_output;
@@ -271,7 +298,7 @@ impl Grep {
             }
             Err(_) => {
                 let _ = child.kill().await;
-                Ok(ToolResult::error(
+                Ok(error_with_summary(
                     tool_use_id,
                     format!("Search timed out after {} seconds", DEFAULT_TIMEOUT_SECS),
                 ))
@@ -319,14 +346,14 @@ impl Tool for Grep {
     ) -> ToolResult {
         let input: GrepInput = match super::deserialize_input(tool_use_id, input) {
             Ok(i) => i,
-            Err(e) => return *e,
+            Err(e) => return attach_summary_if_missing(*e),
         };
 
         let search_path = super::expand_tilde(input.path.as_deref().unwrap_or("."));
         let path = Path::new(&search_path);
 
         if let Err(e) = super::validate_path_exists(tool_use_id, path, &search_path) {
-            return *e;
+            return attach_summary_if_missing(*e);
         }
 
         let result = if self.has_ripgrep().await {
@@ -343,7 +370,7 @@ impl Tool for Grep {
                 }
                 res
             }
-            Err(err_msg) => ToolResult::error(tool_use_id, err_msg),
+            Err(err_msg) => error_with_summary(tool_use_id, err_msg),
         }
     }
 }

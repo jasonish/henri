@@ -973,6 +973,12 @@ struct WordWrapper {
     maybe_table_row: bool,
     /// Whether the current line might be a markdown heading
     maybe_heading: bool,
+    /// Optional spacing to apply right before the first rendered output.
+    ///
+    /// `Some(1)` means ensure a line break, `Some(2)` means ensure a blank line.
+    pending_spacing_before_output: Option<usize>,
+    /// Whether output was emitted since the last `take_emitted_output()`.
+    emitted_output_since_check: bool,
 }
 
 impl WordWrapper {
@@ -994,6 +1000,8 @@ impl WordWrapper {
             table_width: 0,
             maybe_table_row: false,
             maybe_heading: false,
+            pending_spacing_before_output: None,
+            emitted_output_since_check: false,
         }
     }
 
@@ -1012,6 +1020,44 @@ impl WordWrapper {
         self.in_table = false;
         self.maybe_table_row = false;
         self.maybe_heading = false;
+        self.pending_spacing_before_output = None;
+        self.emitted_output_since_check = false;
+    }
+
+    fn set_pending_spacing_before_output(&mut self, min_newlines: usize) {
+        let min_newlines = min_newlines.max(1);
+        self.pending_spacing_before_output = Some(
+            self.pending_spacing_before_output
+                .map_or(min_newlines, |existing| existing.max(min_newlines)),
+        );
+    }
+
+    fn take_emitted_output(&mut self) -> bool {
+        std::mem::replace(&mut self.emitted_output_since_check, false)
+    }
+
+    fn apply_pending_spacing_before_output(&mut self) {
+        let Some(min_newlines) = self.pending_spacing_before_output.take() else {
+            return;
+        };
+
+        if min_newlines >= 2 {
+            terminal::ensure_trailing_newlines(min_newlines.min(u8::MAX as usize) as u8);
+        } else {
+            terminal::ensure_line_break();
+        }
+    }
+
+    fn emit_print(&mut self, text: &str) {
+        self.apply_pending_spacing_before_output();
+        terminal::print_above(text);
+        self.emitted_output_since_check = true;
+    }
+
+    fn emit_println(&mut self, text: &str) {
+        self.apply_pending_spacing_before_output();
+        terminal::println_above(text);
+        self.emitted_output_since_check = true;
     }
 
     fn needs_line_break(&self) -> bool {
@@ -1028,7 +1074,7 @@ impl WordWrapper {
 
         if self.in_code_block && !self.line_buffer.is_empty() {
             let highlighted = self.highlight_line(&self.line_buffer.clone());
-            terminal::println_above(&highlighted);
+            self.emit_println(&highlighted);
             self.line_buffer.clear();
             self.word_buffer.clear();
             self.column = 0;
@@ -1042,7 +1088,7 @@ impl WordWrapper {
 
         self.flush_word(width);
         if self.column > 0 || !self.line_buffer.is_empty() {
-            terminal::print_above("\n");
+            self.emit_print("\n");
         }
         self.column = 0;
         self.word_buffer.clear();
@@ -1064,17 +1110,17 @@ impl WordWrapper {
 
         // If word doesn't fit on current line and we're not at the start, wrap first
         if self.column + word_width > width && self.column > self.indent {
-            terminal::print_above("\n");
+            self.emit_print("\n");
             // Start new line with indent (with style if set)
             if self.indent > 0 {
                 let indent_str = " ".repeat(self.indent);
                 if let Some(style) = self.style {
-                    terminal::print_above(&format!("{}{}", style, indent_str));
+                    self.emit_print(&format!("{}{}", style, indent_str));
                 } else {
-                    terminal::print_above(&indent_str);
+                    self.emit_print(&indent_str);
                 }
             } else if let Some(style) = self.style {
-                terminal::print_above(style);
+                self.emit_print(style);
             }
             self.column = self.indent;
         }
@@ -1082,9 +1128,9 @@ impl WordWrapper {
         // Print the word (with style if set)
         if let Some(style) = self.style {
             let rendered = render_markdown_inlines_with_style(&self.word_buffer, Some(style));
-            terminal::print_above(&format!("{}{}\x1b[0m", style, rendered));
+            self.emit_print(&format!("{}{}\x1b[0m", style, rendered));
         } else {
-            terminal::print_above(&render_markdown_inlines(&self.word_buffer));
+            self.emit_print(&render_markdown_inlines(&self.word_buffer));
         }
         self.column += word_width;
         self.word_buffer.clear();
@@ -1107,10 +1153,10 @@ impl WordWrapper {
         while let Some(line) = lines.next() {
             let is_last = lines.peek().is_none();
             if !trailing_newline && is_last {
-                terminal::print_above(line);
+                self.emit_print(line);
                 self.column = display_width(line);
             } else {
-                terminal::println_above(line);
+                self.emit_println(line);
                 self.column = 0;
             }
         }
@@ -1196,7 +1242,7 @@ impl WordWrapper {
                         // Closing fence - just print it and reset state
                         self.in_code_block = false;
                         self.code_language = None;
-                        terminal::println_above("```");
+                        self.emit_println("```");
                         self.column = 0;
                     } else {
                         // Opening fence - extract language and enter code block mode
@@ -1210,7 +1256,8 @@ impl WordWrapper {
                             .trim()
                             .to_string();
                         self.code_language = if lang.is_empty() { None } else { Some(lang) };
-                        terminal::println_above(&self.line_buffer);
+                        let fence_line = self.line_buffer.clone();
+                        self.emit_println(&fence_line);
                         self.column = 0;
                     }
                     self.line_buffer.clear();
@@ -1225,7 +1272,7 @@ impl WordWrapper {
                 if self.in_code_block {
                     // Inside code block - print line with syntax highlighting
                     let highlighted = self.highlight_line(&self.line_buffer.clone());
-                    terminal::println_above(&highlighted);
+                    self.emit_println(&highlighted);
                     self.line_buffer.clear();
                 } else if self.maybe_heading {
                     if self.in_table {
@@ -1235,21 +1282,21 @@ impl WordWrapper {
                     if super::markdown::is_heading_line(&line) {
                         self.flush_word(width);
                         if self.column > self.indent {
-                            terminal::print_above("\n");
+                            self.emit_print("\n");
                         }
-                        terminal::print_above(&render_markdown_line(&line));
-                        terminal::print_above("\n");
+                        self.emit_print(&render_markdown_line(&line));
+                        self.emit_print("\n");
                         if self.indent > 0 {
                             let indent_str = " ".repeat(self.indent);
-                            terminal::print_above(&indent_str);
+                            self.emit_print(&indent_str);
                         }
                         self.column = self.indent;
                     } else {
                         self.output_line_content(&line, width);
-                        terminal::print_above("\n");
+                        self.emit_print("\n");
                         if self.indent > 0 {
                             let indent_str = " ".repeat(self.indent);
-                            terminal::print_above(&indent_str);
+                            self.emit_print(&indent_str);
                         }
                         self.column = self.indent;
                     }
@@ -1265,7 +1312,7 @@ impl WordWrapper {
                             // First table row - flush any pending content
                             self.flush_word(width);
                             if self.column > self.indent {
-                                terminal::print_above("\n");
+                                self.emit_print("\n");
                             }
                             self.table_width = width;
                         }
@@ -1283,19 +1330,19 @@ impl WordWrapper {
                         }
                         // Print the line that turned out not to be a table row
                         self.output_line_content(&self.line_buffer.clone(), width);
-                        terminal::print_above("\n");
+                        self.emit_print("\n");
                         self.line_buffer.clear();
                         self.word_buffer.clear();
                         // Start new line with indent
                         if self.indent > 0 {
                             let indent_str = " ".repeat(self.indent);
                             if let Some(style) = self.style {
-                                terminal::print_above(&format!("{}{}", style, indent_str));
+                                self.emit_print(&format!("{}{}", style, indent_str));
                             } else {
-                                terminal::print_above(&indent_str);
+                                self.emit_print(&indent_str);
                             }
                         } else if let Some(style) = self.style {
-                            terminal::print_above(style);
+                            self.emit_print(style);
                         }
                         self.column = self.indent;
                     } else if self.in_table {
@@ -1303,17 +1350,17 @@ impl WordWrapper {
                         self.flush_table();
                         // Then process this line normally
                         self.flush_word(width);
-                        terminal::print_above("\n");
+                        self.emit_print("\n");
                         // Start new line with indent (with style if set)
                         if self.indent > 0 {
                             let indent_str = " ".repeat(self.indent);
                             if let Some(style) = self.style {
-                                terminal::print_above(&format!("{}{}", style, indent_str));
+                                self.emit_print(&format!("{}{}", style, indent_str));
                             } else {
-                                terminal::print_above(&indent_str);
+                                self.emit_print(&indent_str);
                             }
                         } else if let Some(style) = self.style {
-                            terminal::print_above(style);
+                            self.emit_print(style);
                         }
                         self.column = self.indent;
                         self.line_buffer.clear();
@@ -1322,16 +1369,16 @@ impl WordWrapper {
                         self.flush_word(width);
 
                         // Output newline and start next line with indent
-                        terminal::print_above("\n");
+                        self.emit_print("\n");
                         if self.indent > 0 {
                             let indent_str = " ".repeat(self.indent);
                             if let Some(style) = self.style {
-                                terminal::print_above(&format!("{}{}", style, indent_str));
+                                self.emit_print(&format!("{}{}", style, indent_str));
                             } else {
-                                terminal::print_above(&indent_str);
+                                self.emit_print(&indent_str);
                             }
                         } else if let Some(style) = self.style {
-                            terminal::print_above(style);
+                            self.emit_print(style);
                         }
                         self.column = self.indent;
                         self.line_buffer.clear();
@@ -1357,9 +1404,9 @@ impl WordWrapper {
                     self.flush_word(width);
                     if self.column > self.indent {
                         if let Some(style) = self.style {
-                            terminal::print_above(&format!("{} \x1b[0m", style));
+                            self.emit_print(&format!("{} \x1b[0m", style));
                         } else {
-                            terminal::print_above(" ");
+                            self.emit_print(" ");
                         }
                         self.column += 1;
                     }
@@ -1378,9 +1425,9 @@ impl WordWrapper {
                 self.flush_word(width);
                 if self.column > self.indent {
                     if let Some(style) = self.style {
-                        terminal::print_above(&format!("{} \x1b[0m", style));
+                        self.emit_print(&format!("{} \x1b[0m", style));
                     } else {
-                        terminal::print_above(" ");
+                        self.emit_print(" ");
                     }
                     self.column += 1;
                 }
@@ -1814,20 +1861,20 @@ impl CliListener {
                 }
                 let main = &text[..cut];
 
-                let mut did_output = false;
-
                 if !main.is_empty() {
-                    // Insert spacing before the first thinking output.
-                    //
-                    // This is reactive (we only do it once we know thinking is being printed), and
-                    // it handles cases where the previous output intentionally didn't end with a
-                    // newline (user prompt / tool checkmark).
+                    // Set up lazy spacing before the first thinking output. The
+                    // spacing only materializes when `emit_print`/`emit_println`
+                    // actually renders content, avoiding phantom blank lines.
                     if !state.thinking.has_content {
-                        if needs_blank_line_before(state.last_block, LastBlock::Thinking) {
-                            terminal::ensure_trailing_newlines(2);
-                        } else {
-                            terminal::ensure_line_break();
-                        }
+                        let min_newlines =
+                            if needs_blank_line_before(state.last_block, LastBlock::Thinking) {
+                                2
+                            } else {
+                                1
+                            };
+                        state
+                            .thinking
+                            .set_pending_spacing_before_output(min_newlines);
                     }
 
                     // Flush any previously buffered trailing newlines now that we have more content.
@@ -1837,22 +1884,18 @@ impl CliListener {
                         state.thinking_pending_newlines = 0;
                     }
 
-                    // Start with style on first content
-                    // Note: We use raw escape here because we're streaming character-by-character
-                    // and colored requires complete strings
-                    if !state.thinking.has_content {
-                        terminal::print_above("\x1b[90m");
-                        state.thinking.has_content = true;
-                    }
-
                     state.thinking.process_text(main, width);
-                    state.last_block = Some(LastBlock::Thinking);
-                    did_output = true;
                 }
 
                 state.thinking_pending_newlines = state
                     .thinking_pending_newlines
                     .saturating_add(trailing_newlines);
+
+                let did_output = state.thinking.take_emitted_output();
+                if did_output {
+                    state.thinking.has_content = true;
+                    state.last_block = Some(LastBlock::Thinking);
+                }
 
                 if matches!(
                     state.output_state,
@@ -1940,20 +1983,29 @@ impl CliListener {
                 }
 
                 // Ensure response text starts on the correct line.
-                if !state.text_output_written
-                    && needs_blank_line_before(state.last_block, LastBlock::Text)
-                {
-                    terminal::ensure_trailing_newlines(2);
-                } else if !state.text_output_written {
-                    terminal::ensure_line_break();
+                if !state.text_output_written {
+                    let min_newlines = if needs_blank_line_before(state.last_block, LastBlock::Text)
+                    {
+                        2
+                    } else {
+                        1
+                    };
+                    state
+                        .response
+                        .set_pending_spacing_before_output(min_newlines);
                 }
 
-                state.text_output_written = true;
                 state.response.process_text(text, width);
+                let did_output = state.response.take_emitted_output();
+                if did_output {
+                    state.text_output_written = true;
+                    state.last_block = Some(LastBlock::Text);
+                }
                 history::append_assistant_text(text);
                 state.output_state.start_text();
-                state.output_state.mark_text_output();
-                state.last_block = Some(LastBlock::Text);
+                if did_output {
+                    state.output_state.mark_text_output();
+                }
             }
 
             OutputEvent::TextEnd => {
