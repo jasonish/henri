@@ -2195,6 +2195,7 @@ async fn run_event_loop(
                             services.set_session_id(current_session_id.clone());
                             crate::usage::reset_last_context_usage();
                             history::clear();
+                            terminal::set_streaming_status_line_active(false);
                             terminal::redraw_from_history(prompt_box.height());
                         }
                         InputAction::Submit => {
@@ -3565,6 +3566,7 @@ async fn handle_command(
             services.set_session_id(current_session_id.clone());
             crate::usage::reset_last_context_usage();
             history::clear();
+            terminal::set_streaming_status_line_active(false);
             terminal::redraw_from_history(prompt_box.height());
             CommandResult::Continue
         }
