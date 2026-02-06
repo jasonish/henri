@@ -2746,12 +2746,17 @@ async fn run_event_loop(
                             // Toggle runtime state only (don't persist to config)
                             let now_hidden = listener::toggle_hide_tool_output();
 
-                            // Show feedback message
-                            let status = if now_hidden { "hidden" } else { "visible" };
-                            terminal::println_above(&format!("Tool output is now {}", status));
-
                             // Redraw history to reflect the change
                             prompt_box.redraw_history().ok();
+
+                            // Show feedback message after redraw so it remains visible.
+                            let status = if now_hidden { "hidden" } else { "visible" };
+                            let msg = format!("Tool output is now {}", status);
+                            if terminal::prompt_visible() {
+                                terminal::print_above(&msg);
+                            } else {
+                                terminal::println_above(&msg);
+                            }
                         }
                         InputAction::ToggleToolOutputExpanded => {
                             // Hold the viewport transition lock for the entire toggle operation
@@ -2762,7 +2767,7 @@ async fn run_event_loop(
 
                             // Redraw to reflect the new mode immediately:
                             // - Expanded: tool output is rendered as normal scrolling output.
-                            // - Collapsed: tool output is rendered in the 10-line viewport.
+                            // - Collapsed: tool output is rendered in the viewport tail.
                             prompt_box.redraw_history().ok();
                             listener::reset_tool_output_viewport();
 

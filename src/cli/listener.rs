@@ -40,11 +40,31 @@ static SHOW_NETWORK_STATS: AtomicBool = AtomicBool::new(false);
 // Whether to show image previews (loaded from config)
 static SHOW_IMAGE_PREVIEWS: AtomicBool = AtomicBool::new(true);
 
-// Whether to hide tool output (loaded from config)
-static HIDE_TOOL_OUTPUT: AtomicBool = AtomicBool::new(false);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum ToolOutputDisplayMode {
+    Hidden = 0,
+    Viewport = 1,
+    Expanded = 2,
+}
 
-// Whether tool output is currently expanded (full output vs 10-line viewport)
-static TOOL_OUTPUT_EXPANDED: AtomicBool = AtomicBool::new(false);
+impl ToolOutputDisplayMode {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Hidden,
+            1 => Self::Viewport,
+            2 => Self::Expanded,
+            _ => Self::Viewport,
+        }
+    }
+}
+
+// Tool output display mode: hidden, viewport tail, or expanded full output.
+static TOOL_OUTPUT_DISPLAY_MODE: AtomicU8 = AtomicU8::new(ToolOutputDisplayMode::Viewport as u8);
+// Last non-hidden display mode for hidden-mode expanded toggles and visibility restores
+// driven by config reload.
+static LAST_VISIBLE_TOOL_OUTPUT_MODE: AtomicU8 =
+    AtomicU8::new(ToolOutputDisplayMode::Viewport as u8);
 
 // Lock to prevent racing between viewport toggle and streaming output rendering
 static VIEWPORT_TRANSITION_LOCK: Mutex<()> = Mutex::new(());
@@ -84,32 +104,82 @@ pub(crate) fn reload_hide_tool_output() {
     let enabled = crate::config::ConfigFile::load()
         .map(|c| c.hide_tool_output)
         .unwrap_or(false);
-    HIDE_TOOL_OUTPUT.store(enabled, Ordering::Relaxed);
+    if enabled {
+        hide_tool_output();
+    } else {
+        show_tool_output();
+    }
+}
+
+fn tool_output_display_mode() -> ToolOutputDisplayMode {
+    ToolOutputDisplayMode::from_u8(TOOL_OUTPUT_DISPLAY_MODE.load(Ordering::Relaxed))
+}
+
+fn set_tool_output_display_mode(mode: ToolOutputDisplayMode) {
+    TOOL_OUTPUT_DISPLAY_MODE.store(mode as u8, Ordering::Relaxed);
+    if mode != ToolOutputDisplayMode::Hidden {
+        LAST_VISIBLE_TOOL_OUTPUT_MODE.store(mode as u8, Ordering::Relaxed);
+    }
+}
+
+fn last_visible_tool_output_mode() -> ToolOutputDisplayMode {
+    match ToolOutputDisplayMode::from_u8(LAST_VISIBLE_TOOL_OUTPUT_MODE.load(Ordering::Relaxed)) {
+        ToolOutputDisplayMode::Hidden => ToolOutputDisplayMode::Viewport,
+        mode => mode,
+    }
+}
+
+fn hide_tool_output() {
+    let mode = tool_output_display_mode();
+    if mode != ToolOutputDisplayMode::Hidden {
+        LAST_VISIBLE_TOOL_OUTPUT_MODE.store(mode as u8, Ordering::Relaxed);
+        TOOL_OUTPUT_DISPLAY_MODE.store(ToolOutputDisplayMode::Hidden as u8, Ordering::Relaxed);
+    }
+}
+
+fn show_tool_output() {
+    if tool_output_display_mode() == ToolOutputDisplayMode::Hidden {
+        TOOL_OUTPUT_DISPLAY_MODE.store(last_visible_tool_output_mode() as u8, Ordering::Relaxed);
+    }
 }
 
 /// Check if tool output should be hidden
 pub(crate) fn is_tool_output_hidden() -> bool {
-    HIDE_TOOL_OUTPUT.load(Ordering::Relaxed)
+    tool_output_display_mode() == ToolOutputDisplayMode::Hidden
 }
 
 /// Toggle hide tool output state at runtime.
 /// Returns the new hidden state (true = hidden, false = visible).
 pub(crate) fn toggle_hide_tool_output() -> bool {
-    let was_hidden = HIDE_TOOL_OUTPUT.fetch_xor(true, Ordering::Relaxed);
-    !was_hidden
+    if is_tool_output_hidden() {
+        set_tool_output_display_mode(ToolOutputDisplayMode::Viewport);
+        false
+    } else {
+        hide_tool_output();
+        true
+    }
 }
 
 pub(crate) fn is_tool_output_expanded() -> bool {
-    TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed)
+    tool_output_display_mode() == ToolOutputDisplayMode::Expanded
 }
 
 /// Toggle tool output viewport expanded state.
 /// Returns the new expanded state (true = expanded, false = collapsed).
 pub(crate) fn toggle_tool_output_expanded() -> bool {
-    let was_expanded = TOOL_OUTPUT_EXPANDED.fetch_xor(true, Ordering::Relaxed);
+    let mode = tool_output_display_mode();
+    let next_mode = match mode {
+        ToolOutputDisplayMode::Viewport => ToolOutputDisplayMode::Expanded,
+        ToolOutputDisplayMode::Expanded => ToolOutputDisplayMode::Viewport,
+        // If hidden, Ctrl+O should unhide directly into full/expanded mode.
+        ToolOutputDisplayMode::Hidden => ToolOutputDisplayMode::Expanded,
+    };
+
     // Note: We don't reset reserved_lines here because force_tool_output_rerender
     // needs the old value to know how many lines to clear when collapsing.
-    !was_expanded
+    set_tool_output_display_mode(next_mode);
+
+    next_mode == ToolOutputDisplayMode::Expanded
 }
 
 /// Acquire the viewport transition lock.
@@ -162,10 +232,10 @@ pub(crate) fn is_tool_output_active() -> bool {
 /// When expanded, tool output is printed as normal scrolling output and is not
 /// rendered in the viewport.
 pub(crate) fn is_tool_output_viewport_active() -> bool {
-    if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+    if is_tool_output_hidden() {
         return false;
     }
-    if TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed) {
+    if is_tool_output_expanded() {
         return false;
     }
 
@@ -182,10 +252,10 @@ pub(crate) fn is_tool_output_viewport_active() -> bool {
 /// Get the current tool output viewport height (including spacer) if active.
 /// Returns 0 if tool output is not active.
 pub(crate) fn active_tool_output_height() -> u16 {
-    if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+    if is_tool_output_hidden() {
         return 0;
     }
-    if TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed) {
+    if is_tool_output_expanded() {
         return 0;
     }
 
@@ -218,10 +288,10 @@ pub(crate) fn active_tool_output_height() -> u16 {
 /// Force a re-render of the tool output viewport with the current size settings.
 /// Called when toggling viewport size during active streaming.
 pub(crate) fn force_tool_output_rerender() {
-    if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+    if is_tool_output_hidden() {
         return;
     }
-    if TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed) {
+    if is_tool_output_expanded() {
         return;
     }
 
@@ -2144,7 +2214,7 @@ impl CliListener {
                 }
 
                 // If hiding tool output, skip rendering but still record to history
-                if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+                if is_tool_output_hidden() {
                     // Still mark tool output as active so ToolResult rendering works correctly
                     if let Ok(mut state) = self.state.lock() {
                         state.last_tool_call_open = false;
@@ -2167,7 +2237,7 @@ impl CliListener {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
 
-                let expanded = TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed);
+                let expanded = is_tool_output_expanded();
 
                 // EXPANDED MODE: Print tool output as normal scrolling text.
                 // This allows the user to scroll back through up to the last 2000 buffered lines
@@ -2311,7 +2381,7 @@ impl CliListener {
                 }
 
                 // If hiding tool output, skip rendering but still record to history
-                if HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+                if is_tool_output_hidden() {
                     // Still mark tool output as active so ToolResult rendering works correctly
                     if let Ok(mut state) = self.state.lock() {
                         state.last_tool_call_open = false;
@@ -2336,7 +2406,7 @@ impl CliListener {
 
                 let language = syntax::language_from_path(filename);
 
-                let expanded = TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed);
+                let expanded = is_tool_output_expanded();
 
                 // EXPANDED MODE: Print output as normal scrolling text.
                 if expanded {
@@ -2560,7 +2630,7 @@ impl CliListener {
                     })
                     .unwrap_or(false);
 
-                let expanded = TOOL_OUTPUT_EXPANDED.load(Ordering::Relaxed);
+                let expanded = is_tool_output_expanded();
 
                 // In expanded mode we print diff lines inline, so we must close the banner line first.
                 // In collapsed viewport mode we defer this until the checkmark, avoiding an extra
@@ -2575,7 +2645,7 @@ impl CliListener {
                 }
 
                 // Only render the diff if tool output is not hidden
-                if !HIDE_TOOL_OUTPUT.load(Ordering::Relaxed) {
+                if !is_tool_output_hidden() {
                     if expanded {
                         // Track line numbers across the diff
                         let mut old_line_num = 0usize;

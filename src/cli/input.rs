@@ -1133,7 +1133,7 @@ impl InputState {
             // Ctrl+H - Toggle hide tool output
             (KeyCode::Char('h'), KeyModifiers::CONTROL) => InputAction::ToggleHideToolOutput,
 
-            // Ctrl+O - Toggle expanded tool output view (10 lines <-> full output)
+            // Ctrl+O - Toggle expanded tool output view (viewport <-> full output)
             (KeyCode::Char('o'), KeyModifiers::CONTROL) => InputAction::ToggleToolOutputExpanded,
 
             // Ctrl+L - force a full UI redraw
