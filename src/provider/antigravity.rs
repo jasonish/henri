@@ -45,6 +45,11 @@ const ANTIGRAVITY_MODELS: &[&str] = &[
     "claude-opus-4-5-thinking#medium",
     "claude-opus-4-5-thinking#high",
     "claude-opus-4-5-thinking#xhigh",
+    "claude-opus-4-6-thinking#off",
+    "claude-opus-4-6-thinking#low",
+    "claude-opus-4-6-thinking#medium",
+    "claude-opus-4-6-thinking#high",
+    "claude-opus-4-6-thinking#xhigh",
 ];
 
 fn thinking_level_from_model(model: &str) -> Option<&str> {
