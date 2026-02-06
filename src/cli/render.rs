@@ -77,12 +77,12 @@ fn last_block_for_event(event: &HistoryEvent) -> Option<LastBlock> {
         HistoryEvent::Info(_) | HistoryEvent::Error(_) | HistoryEvent::Warning(_) => {
             Some(LastBlock::Info)
         }
-        HistoryEvent::ToolUse { .. }
-        | HistoryEvent::ToolResult { .. }
+        HistoryEvent::ToolUse { .. } => Some(LastBlock::ToolCall),
+        HistoryEvent::ToolResult { .. }
         | HistoryEvent::ToolOutput { .. }
         | HistoryEvent::FileReadOutput { .. }
         | HistoryEvent::ImagePreview { .. }
-        | HistoryEvent::FileDiff { .. } => Some(LastBlock::Tool),
+        | HistoryEvent::FileDiff { .. } => Some(LastBlock::ToolContent),
         HistoryEvent::ToolStart
         | HistoryEvent::ToolEnd
         | HistoryEvent::ThinkingEnd

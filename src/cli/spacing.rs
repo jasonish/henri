@@ -12,7 +12,10 @@ pub(crate) enum LastBlock {
     Thinking,
     Text,
     Info,
-    Tool,
+    /// Tool call banner lines (the "● ..." lines).
+    ToolCall,
+    /// Tool-related content (tool results, tool output, file previews/diffs, etc.).
+    ToolContent,
 }
 
 /// Determine if a blank line should be inserted before `current` based on the previous block.
@@ -40,15 +43,17 @@ pub(crate) fn needs_blank_line_before(prev: Option<LastBlock>, current: LastBloc
             // UserPrompt -> Thinking: blank line
             (LastBlock::UserPrompt, LastBlock::Thinking)
                 // Tool -> Thinking: blank line
-                | (LastBlock::Tool, LastBlock::Thinking)
+                | (LastBlock::ToolCall | LastBlock::ToolContent, LastBlock::Thinking)
                 // UserPrompt -> Text: blank line
                 | (LastBlock::UserPrompt, LastBlock::Text)
                 // Thinking -> Text: blank line
                 | (LastBlock::Thinking, LastBlock::Text)
                 // Tool -> Text: blank line
-                | (LastBlock::Tool, LastBlock::Text)
-                // Thinking/Text -> Tool: blank line
-                | (LastBlock::Thinking | LastBlock::Text, LastBlock::Tool)
+                | (LastBlock::ToolCall | LastBlock::ToolContent, LastBlock::Text)
+                // Tool -> ToolCall: blank line (separate distinct tool calls)
+                | (LastBlock::ToolCall | LastBlock::ToolContent, LastBlock::ToolCall)
+                // Thinking/Text -> ToolCall: blank line
+                | (LastBlock::Thinking | LastBlock::Text, LastBlock::ToolCall)
         ),
     }
 }
@@ -70,7 +75,7 @@ mod tests {
         ));
         assert!(needs_blank_line_before(
             Some(LastBlock::Info),
-            LastBlock::Tool
+            LastBlock::ToolContent
         ));
         assert!(needs_blank_line_before(
             Some(LastBlock::Info),
@@ -85,7 +90,7 @@ mod tests {
             LastBlock::UserPrompt
         ));
         assert!(needs_blank_line_before(
-            Some(LastBlock::Tool),
+            Some(LastBlock::ToolContent),
             LastBlock::UserPrompt
         ));
         assert!(!needs_blank_line_before(
@@ -95,18 +100,30 @@ mod tests {
     }
 
     #[test]
-    fn tool_calls_do_not_space_between_themselves() {
-        assert!(!needs_blank_line_before(
-            Some(LastBlock::Tool),
-            LastBlock::Tool
+    fn tool_calls_space_between_themselves() {
+        assert!(needs_blank_line_before(
+            Some(LastBlock::ToolCall),
+            LastBlock::ToolCall
+        ));
+        assert!(needs_blank_line_before(
+            Some(LastBlock::ToolContent),
+            LastBlock::ToolCall
         ));
         assert!(needs_blank_line_before(
             Some(LastBlock::Thinking),
-            LastBlock::Tool
+            LastBlock::ToolCall
         ));
         assert!(needs_blank_line_before(
             Some(LastBlock::Text),
-            LastBlock::Tool
+            LastBlock::ToolCall
+        ));
+    }
+
+    #[test]
+    fn tool_banner_is_grouped_with_tool_content() {
+        assert!(!needs_blank_line_before(
+            Some(LastBlock::ToolCall),
+            LastBlock::ToolContent
         ));
     }
 }

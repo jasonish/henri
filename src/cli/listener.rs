@@ -2078,8 +2078,8 @@ impl CliListener {
 
                     if starting {
                         // Spacing rules: insert a blank line between blocks where it
-                        // improves readability, but not between consecutive tool calls.
-                        if needs_blank_line_before(state.last_block, LastBlock::Tool) {
+                        // improves readability.
+                        if needs_blank_line_before(state.last_block, LastBlock::ToolCall) {
                             terminal::ensure_trailing_newlines(2);
                         } else {
                             terminal::ensure_line_break();
@@ -2088,14 +2088,8 @@ impl CliListener {
                         state.output_state.start_tool_block();
                         state.in_tool_block = true;
                     } else {
-                        // Subsequent tool call: ensure it starts on its own line.
-                        // If an info message was printed in between tool calls (e.g. LSP activated),
-                        // add a blank line for readability.
-                        if state.info_since_last_tool_call {
-                            terminal::ensure_trailing_newlines(2);
-                        } else {
-                            terminal::ensure_line_break();
-                        }
+                        // Subsequent tool call: always insert a blank line for readability.
+                        terminal::ensure_trailing_newlines(2);
                     }
 
                     // Reset tool output state for the new tool
@@ -2106,7 +2100,7 @@ impl CliListener {
                     let text = format!("{}{}", super::TOOL_USE_PREFIX, description);
                     terminal::print_above(&text);
                     state.last_tool_call_open = true;
-                    state.last_block = Some(LastBlock::Tool);
+                    state.last_block = Some(LastBlock::ToolCall);
                     starting
                 } else {
                     false
@@ -2233,7 +2227,7 @@ impl CliListener {
                 }
 
                 if let Ok(mut state) = self.state.lock() {
-                    state.last_block = Some(LastBlock::Tool);
+                    state.last_block = Some(LastBlock::ToolContent);
                 }
 
                 history::push(HistoryEvent::ToolResult {
@@ -2329,7 +2323,7 @@ impl CliListener {
 
                     history::append_tool_output(text);
                     if let Ok(mut state) = self.state.lock() {
-                        state.last_block = Some(LastBlock::Tool);
+                        state.last_block = Some(LastBlock::ToolContent);
                     }
                     return;
                 }
@@ -2411,7 +2405,7 @@ impl CliListener {
                 history::append_tool_output(text);
 
                 if let Ok(mut state) = self.state.lock() {
-                    state.last_block = Some(LastBlock::Tool);
+                    state.last_block = Some(LastBlock::ToolContent);
                 }
             }
 
@@ -2496,7 +2490,7 @@ impl CliListener {
 
                     history::append_file_read_output(filename, text);
                     if let Ok(mut state) = self.state.lock() {
-                        state.last_block = Some(LastBlock::Tool);
+                        state.last_block = Some(LastBlock::ToolContent);
                     }
                     return;
                 }
@@ -2577,7 +2571,7 @@ impl CliListener {
                 history::append_file_read_output(filename, text);
 
                 if let Ok(mut state) = self.state.lock() {
-                    state.last_block = Some(LastBlock::Tool);
+                    state.last_block = Some(LastBlock::ToolContent);
                 }
             }
 
