@@ -20,7 +20,7 @@ mod slash_menu;
 pub(crate) mod spacing;
 pub(crate) mod terminal;
 
-pub(crate) const TOOL_OUTPUT_VIEWPORT_LINES: usize = 10;
+pub(crate) const TOOL_OUTPUT_VIEWPORT_LINES: usize = 5;
 pub(crate) const TOOL_OUTPUT_VIEWPORT_SPACER_LINES: u16 = 1;
 /// Maximum lines to keep in buffer (matches model context limit)
 pub(crate) const TOOL_OUTPUT_MAX_BUFFER_LINES: usize = 2000;

@@ -25,7 +25,7 @@ const MAX_OUTPUT_BYTES: usize = 32 * 1024;
 const MAX_OUTPUT_LINES: usize = 2_000;
 
 // Number of lines emitted in the CLI preview (via ToolOutput).
-const PREVIEW_LINES: usize = 3;
+const PREVIEW_LINES: usize = 5;
 
 pub(crate) struct Grep;
 

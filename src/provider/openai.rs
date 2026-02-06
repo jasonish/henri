@@ -479,7 +479,7 @@ impl OpenAiProvider {
         let reasoning = if reasoning_effort.is_empty() {
             None
         } else {
-            Some(serde_json::json!({"effort": reasoning_effort, "summary": "auto"}))
+            Some(serde_json::json!({"effort": reasoning_effort, "summary": "detailed"}))
         };
 
         CodexRequest {

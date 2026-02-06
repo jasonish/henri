@@ -200,7 +200,7 @@ impl Tool for FileRead {
                 &base64_data,
             );
 
-            for line in output_buf.lines().take(3) {
+            for line in output_buf.lines().take(5) {
                 let formatted_line = format!("{}\n", line);
                 crate::output::emit_file_read_output(output, &input.filename, &formatted_line);
             }
@@ -307,7 +307,7 @@ impl Tool for FileRead {
                 truncated: line.truncated,
             });
 
-            if output_lines.len() <= 3 {
+            if output_lines.len() <= 5 {
                 let formatted_line = format!("{}\n", line.content);
                 crate::output::emit_file_read_output(output, &input.filename, &formatted_line);
             }

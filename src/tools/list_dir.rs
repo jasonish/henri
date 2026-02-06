@@ -134,17 +134,17 @@ impl Tool for ListDir {
         files.sort();
         dirs.sort();
 
-        // Emit preview: first few directories and files (up to 3 total)
+        // Emit preview: first few directories and files (up to 5 total)
         let mut preview_count = 0;
         for dir in &dirs {
-            if preview_count >= 3 {
+            if preview_count >= 5 {
                 break;
             }
             crate::output::emit_tool_output(output, &format!("{}/\n", dir));
             preview_count += 1;
         }
         for file in &files {
-            if preview_count >= 3 {
+            if preview_count >= 5 {
                 break;
             }
             crate::output::emit_tool_output(output, &format!("{}\n", file));

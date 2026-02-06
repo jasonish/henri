@@ -111,8 +111,8 @@ impl Tool for Fetch {
             body
         };
 
-        // Emit first 3 lines of content for preview
-        for line in content.lines().take(3) {
+        // Emit first 5 lines of content for preview
+        for line in content.lines().take(5) {
             crate::output::emit_tool_output(output, &format!("{}\n", line));
         }
 

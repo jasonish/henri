@@ -148,8 +148,8 @@ impl Tool for Glob {
 
         files.sort();
 
-        // Emit first 3 files as preview
-        for file in files.iter().take(3) {
+        // Emit first 5 files as preview
+        for file in files.iter().take(5) {
             crate::output::emit_tool_output(output, &format!("{}\n", file));
         }
 
