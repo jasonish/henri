@@ -63,6 +63,11 @@ fn from_claude_code_name(name: &str) -> String {
 }
 
 const ANTHROPIC_MODELS: &[&str] = &[
+    "claude-opus-4-6#off",
+    "claude-opus-4-6#low",
+    "claude-opus-4-6#medium",
+    "claude-opus-4-6#high",
+    "claude-opus-4-6#max",
     "claude-opus-4-5#off",
     "claude-opus-4-5#low",
     "claude-opus-4-5#medium",
@@ -81,6 +86,10 @@ const DEFAULT_MODEL: &str = "claude-haiku-4-5#medium";
 
 fn thinking_level_from_model(model: &str) -> Option<&str> {
     model_utils::model_variant(model)
+}
+
+fn is_claude_opus_4_6(model: &str) -> bool {
+    model_utils::base_model_name(model) == "claude-opus-4-6"
 }
 
 struct AuthState {
@@ -268,13 +277,24 @@ struct AnthropicRequest {
     tools: Vec<AnthropicTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<ThinkingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<OutputConfig>,
 }
 
 #[derive(Serialize)]
-struct ThinkingConfig {
-    #[serde(rename = "type")]
-    kind: String,
-    budget_tokens: u32,
+#[serde(tag = "type")]
+enum ThinkingConfig {
+    #[serde(rename = "enabled")]
+    Enabled { budget_tokens: u32 },
+    #[serde(rename = "adaptive")]
+    Adaptive,
+    #[serde(rename = "disabled")]
+    Disabled,
+}
+
+#[derive(Serialize)]
+struct OutputConfig {
+    effort: String,
 }
 
 #[derive(Serialize)]
@@ -382,6 +402,8 @@ impl AnthropicProvider {
     pub(crate) fn default_thinking_state(model: &str) -> crate::providers::ThinkingState {
         if let Some(variant) = thinking_level_from_model(model) {
             crate::providers::ThinkingState::new(variant != "off", Some(variant.to_string()))
+        } else if is_claude_opus_4_6(model) {
+            crate::providers::ThinkingState::new(true, Some("high".to_string()))
         } else {
             crate::providers::ThinkingState::new(true, Some("medium".to_string()))
         }
@@ -392,7 +414,7 @@ impl AnthropicProvider {
     }
 
     /// Get the available variants (thinking levels) for a given model.
-    /// Returns the variant suffixes like "high", "medium", "low", "off".
+    /// Returns variant suffixes like "low", "medium", "high", "off", or "max".
     pub(crate) fn model_variants(model: &str) -> Vec<&'static str> {
         let base = model_utils::base_model_name(model);
         model_utils::get_model_variants(base, ANTHROPIC_MODELS)
@@ -682,24 +704,58 @@ impl AnthropicProvider {
             .collect();
 
         let (model, _) = model_utils::split_model(&self.model);
-        let thinking = match self.thinking_mode.as_deref() {
-            Some("low") => Some(ThinkingConfig {
-                kind: "enabled".to_string(),
-                budget_tokens: 4000,
-            }),
-            Some("medium") => Some(ThinkingConfig {
-                kind: "enabled".to_string(),
-                budget_tokens: 16000,
-            }),
-            Some("high") => Some(ThinkingConfig {
-                kind: "enabled".to_string(),
-                budget_tokens: 32000,
-            }),
-            Some("xhigh") => Some(ThinkingConfig {
-                kind: "enabled".to_string(),
-                budget_tokens: 48000,
-            }),
-            _ => None,
+        let (thinking, output_config) = if model == "claude-opus-4-6" {
+            match self.thinking_mode.as_deref() {
+                Some("off") => (Some(ThinkingConfig::Disabled), None),
+                Some("low") => (
+                    Some(ThinkingConfig::Adaptive),
+                    Some(OutputConfig {
+                        effort: "low".to_string(),
+                    }),
+                ),
+                Some("medium") => (
+                    Some(ThinkingConfig::Adaptive),
+                    Some(OutputConfig {
+                        effort: "medium".to_string(),
+                    }),
+                ),
+                Some("max") => (
+                    Some(ThinkingConfig::Adaptive),
+                    Some(OutputConfig {
+                        effort: "max".to_string(),
+                    }),
+                ),
+                Some("high") => (
+                    Some(ThinkingConfig::Adaptive),
+                    Some(OutputConfig {
+                        effort: "high".to_string(),
+                    }),
+                ),
+                _ => (
+                    Some(ThinkingConfig::Adaptive),
+                    Some(OutputConfig {
+                        effort: "high".to_string(),
+                    }),
+                ),
+            }
+        } else {
+            let thinking = match self.thinking_mode.as_deref() {
+                Some("low") => Some(ThinkingConfig::Enabled {
+                    budget_tokens: 4000,
+                }),
+                Some("medium") => Some(ThinkingConfig::Enabled {
+                    budget_tokens: 16000,
+                }),
+                Some("high") => Some(ThinkingConfig::Enabled {
+                    budget_tokens: 32000,
+                }),
+                Some("xhigh") => Some(ThinkingConfig::Enabled {
+                    budget_tokens: 48000,
+                }),
+                _ => None,
+            };
+
+            (thinking, None)
         };
 
         // OAuth mode: MUST start with Claude Code identity
@@ -742,6 +798,7 @@ impl AnthropicProvider {
             stream: true,
             tools,
             thinking,
+            output_config,
         }
     }
 
@@ -1190,5 +1247,41 @@ impl Provider for AnthropicProvider {
 
     fn start_turn(&self) {
         crate::usage::anthropic().start_turn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_thinking_config_enabled_serialization() {
+        let value = serde_json::to_value(ThinkingConfig::Enabled {
+            budget_tokens: 16000,
+        })
+        .expect("serialize thinking config");
+
+        assert_eq!(
+            value,
+            serde_json::json!({"type": "enabled", "budget_tokens": 16000})
+        );
+    }
+
+    #[test]
+    fn test_thinking_config_adaptive_serialization() {
+        let value =
+            serde_json::to_value(ThinkingConfig::Adaptive).expect("serialize thinking config");
+
+        assert_eq!(value, serde_json::json!({"type": "adaptive"}));
+    }
+
+    #[test]
+    fn test_output_config_serialization() {
+        let value = serde_json::to_value(OutputConfig {
+            effort: "high".to_string(),
+        })
+        .expect("serialize output config");
+
+        assert_eq!(value, serde_json::json!({"effort": "high"}));
     }
 }
