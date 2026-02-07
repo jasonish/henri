@@ -6,6 +6,26 @@
 //! Both live streaming (`listener.rs`) and history replay (`render.rs`) use the same
 //! state-machine rules to decide when to insert a blank padding line between logical blocks.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use super::history::HistoryEvent;
+
+/// When true, all inter-block blank lines are suppressed.
+static COMPACT_MODE: AtomicBool = AtomicBool::new(false);
+
+/// Set compact mode on or off.
+pub(crate) fn set_compact_mode(enabled: bool) {
+    COMPACT_MODE.store(enabled, Ordering::Relaxed);
+}
+
+/// Reload the compact-mode setting from config.
+pub(crate) fn reload_compact_mode() {
+    let enabled = crate::config::ConfigFile::load()
+        .map(|c| c.compact_mode)
+        .unwrap_or(false);
+    set_compact_mode(enabled);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LastBlock {
     UserPrompt,
@@ -18,6 +38,31 @@ pub(crate) enum LastBlock {
     ToolContent,
 }
 
+/// Map a history event to the block type it represents, if any.
+///
+/// Events that are purely structural boundaries (e.g. `ToolStart`, `ToolEnd`) return `None`.
+pub(crate) fn block_for_event(event: &HistoryEvent) -> Option<LastBlock> {
+    match event {
+        HistoryEvent::UserPrompt { .. } => Some(LastBlock::UserPrompt),
+        HistoryEvent::AssistantText { .. } => Some(LastBlock::Text),
+        HistoryEvent::Thinking { .. } => Some(LastBlock::Thinking),
+        HistoryEvent::Info(_) | HistoryEvent::Error(_) | HistoryEvent::Warning(_) => {
+            Some(LastBlock::Info)
+        }
+        HistoryEvent::ToolUse { .. } => Some(LastBlock::ToolCall),
+        HistoryEvent::ToolResult { .. }
+        | HistoryEvent::ToolOutput { .. }
+        | HistoryEvent::FileReadOutput { .. }
+        | HistoryEvent::ImagePreview { .. }
+        | HistoryEvent::FileDiff { .. } => Some(LastBlock::ToolContent),
+        HistoryEvent::ToolStart
+        | HistoryEvent::ToolEnd
+        | HistoryEvent::ThinkingEnd
+        | HistoryEvent::ResponseEnd
+        | HistoryEvent::AutoCompact { .. } => None,
+    }
+}
+
 /// Determine if a blank line should be inserted before `current` based on the previous block.
 ///
 /// A "blank line" means ensuring there is an empty row between the two blocks (i.e. at least two
@@ -26,6 +71,10 @@ pub(crate) enum LastBlock {
 /// Callers should fall back to `terminal::ensure_line_break()` (or equivalent) when this returns
 /// false so the next block still begins on a fresh line when needed.
 pub(crate) fn needs_blank_line_before(prev: Option<LastBlock>, current: LastBlock) -> bool {
+    if COMPACT_MODE.load(Ordering::Relaxed) {
+        return false;
+    }
+
     let Some(prev) = prev else {
         return false;
     };

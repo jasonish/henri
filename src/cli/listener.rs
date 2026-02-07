@@ -1920,6 +1920,16 @@ impl CliListener {
                 let width = Self::terminal_width();
                 state.thinking.flush_word(width);
 
+                // flush_word may have emitted content that was buffered in the
+                // word wrapper (e.g. an entire bold span like "**some text**"
+                // where spaces don't trigger flushes). Account for that now so
+                // the placeholder check below sees the correct state.
+                if state.thinking.take_emitted_output() {
+                    state.thinking.has_content = true;
+                    state.output_state.mark_thinking_output();
+                    state.last_block = Some(LastBlock::Thinking);
+                }
+
                 // If a thinking block started but never received any text, render a
                 // visible placeholder so the user can see it existed.
                 if matches!(
@@ -2088,8 +2098,13 @@ impl CliListener {
                         state.output_state.start_tool_block();
                         state.in_tool_block = true;
                     } else {
-                        // Subsequent tool call: always insert a blank line for readability.
-                        terminal::ensure_trailing_newlines(2);
+                        // Subsequent tool call within the same tool block. Use the
+                        // same spacing rules as all other block transitions.
+                        if needs_blank_line_before(state.last_block, LastBlock::ToolCall) {
+                            terminal::ensure_trailing_newlines(2);
+                        } else {
+                            terminal::ensure_line_break();
+                        }
                     }
 
                     // Reset tool output state for the new tool

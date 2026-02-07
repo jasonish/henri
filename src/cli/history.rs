@@ -294,6 +294,16 @@ pub(crate) fn has_events() -> bool {
     !lock_history().events.is_empty()
 }
 
+/// Return the `LastBlock` type for the most recent meaningful history event, if any.
+pub(crate) fn last_block() -> Option<super::spacing::LastBlock> {
+    let history = lock_history();
+    history
+        .events
+        .iter()
+        .rev()
+        .find_map(super::spacing::block_for_event)
+}
+
 /// Undo the most recent turn in the global history.
 ///
 /// This removes the most recent `UserPrompt` event and everything after it.

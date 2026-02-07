@@ -70,6 +70,7 @@ use crate::providers::{
 use crate::services::Services;
 use crate::session;
 
+use crate::cli::spacing::{LastBlock, needs_blank_line_before};
 use crate::cli::terminal::update_terminal_title;
 
 use input::{InputAction, InputState};
@@ -82,7 +83,11 @@ use prompt::{PromptBox, SecurityStatus, ThinkingStatus};
 fn echo_user_prompt_to_output(prompt: &str, pasted_images: &[PastedImage]) {
     if history::has_events() {
         if terminal::output_has_output() {
-            terminal::ensure_trailing_newlines(2);
+            if needs_blank_line_before(history::last_block(), LastBlock::UserPrompt) {
+                terminal::ensure_trailing_newlines(2);
+            } else {
+                terminal::ensure_line_break();
+            }
         } else {
             terminal::print_above("\n");
         }
@@ -619,6 +624,12 @@ async fn run_event_loop(
         )?;
     }
 
+    // Load settings (needed for both interactive and batch mode).
+    // Do this before any history replay so startup rendering matches live/redraw spacing.
+    listener::reload_show_image_previews();
+    listener::reload_hide_tool_output();
+    spacing::reload_compact_mode();
+
     // Initial draw (skip in batch mode - no interactive prompt needed)
     if !batch {
         let show_welcome_hint = initial_prompt.is_none();
@@ -652,10 +663,6 @@ async fn run_event_loop(
         listener::reload_show_network_stats();
         listener::init_spinner();
     }
-
-    // Load settings (needed for both interactive and batch mode)
-    listener::reload_show_image_previews();
-    listener::reload_hide_tool_output();
 
     // Submit initial prompt if provided
     if let Some(prompt) = initial_prompt {
@@ -1806,6 +1813,7 @@ async fn run_event_loop(
                                 listener::reload_show_network_stats();
                                 listener::reload_show_image_previews();
                                 listener::reload_hide_tool_output();
+                                spacing::reload_compact_mode();
                                 refresh_prompt_status(
                                     &mut prompt_box,
                                     &provider_manager,
@@ -2989,7 +2997,11 @@ fn spawn_chat_task(
     // `terminal::output_has_output()` to know whether there's previous on-screen content.
     if history::has_events() {
         if terminal::output_has_output() {
-            terminal::ensure_trailing_newlines(2);
+            if needs_blank_line_before(history::last_block(), LastBlock::UserPrompt) {
+                terminal::ensure_trailing_newlines(2);
+            } else {
+                terminal::ensure_line_break();
+            }
         } else {
             // First output after a prompt hide/show. A single newline here creates exactly one
             // blank row before the prompt line when the prompt is printed next.

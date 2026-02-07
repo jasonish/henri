@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthChar;
 use super::history::{HistoryEvent, ImageMeta};
 use super::markdown::{align_markdown_tables, render_markdown_line};
 use crate::cli::image_preview;
-use crate::cli::spacing::{LastBlock, needs_blank_line_before};
+use crate::cli::spacing::{LastBlock, block_for_event, needs_blank_line_before};
 use crate::syntax;
 
 // Shared color constants for consistent styling
@@ -68,28 +68,6 @@ pub(crate) fn render_event(event: &HistoryEvent, width: usize) -> String {
             summary,
         } => render_file_diff(diff, language.as_deref(), summary.as_deref()),
         HistoryEvent::AutoCompact { message } => render_auto_compact(message),
-    }
-}
-
-fn last_block_for_event(event: &HistoryEvent) -> Option<LastBlock> {
-    match event {
-        HistoryEvent::UserPrompt { .. } => Some(LastBlock::UserPrompt),
-        HistoryEvent::AssistantText { .. } => Some(LastBlock::Text),
-        HistoryEvent::Thinking { .. } => Some(LastBlock::Thinking),
-        HistoryEvent::Info(_) | HistoryEvent::Error(_) | HistoryEvent::Warning(_) => {
-            Some(LastBlock::Info)
-        }
-        HistoryEvent::ToolUse { .. } => Some(LastBlock::ToolCall),
-        HistoryEvent::ToolResult { .. }
-        | HistoryEvent::ToolOutput { .. }
-        | HistoryEvent::FileReadOutput { .. }
-        | HistoryEvent::ImagePreview { .. }
-        | HistoryEvent::FileDiff { .. } => Some(LastBlock::ToolContent),
-        HistoryEvent::ToolStart
-        | HistoryEvent::ToolEnd
-        | HistoryEvent::ThinkingEnd
-        | HistoryEvent::ResponseEnd
-        | HistoryEvent::AutoCompact { .. } => None,
     }
 }
 
@@ -158,7 +136,7 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
         let current_block = if suppressed_tool_result {
             None
         } else {
-            last_block_for_event(event)
+            block_for_event(event)
         };
 
         // Insert blank line between blocks where appropriate.
@@ -176,14 +154,6 @@ pub(crate) fn render_all(events: &[HistoryEvent], width: usize) -> String {
             } else {
                 ensure_trailing_newlines(&mut output, 2);
             }
-        }
-
-        // Ensure there is a blank line between tool output and an info message.
-        // Skip if the previous rendered event already ends with a newline (e.g. FileDiff output)
-        // so we don't accidentally create a double-blank separator.
-        if matches!(event, HistoryEvent::Info(_)) && in_tool_block && trailing_newlines(&output) < 1
-        {
-            ensure_trailing_newlines(&mut output, 2);
         }
 
         let rendered = match event {

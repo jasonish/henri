@@ -141,6 +141,9 @@ pub(crate) struct ConfigFile {
     /// Hide tool output like bash command output and file read previews (default: false)
     #[serde(default = "default_hide_tool_output", rename = "hide-tool-output")]
     pub hide_tool_output: bool,
+    /// Remove blank lines between output blocks for a more compact display (default: false)
+    #[serde(default = "default_compact_mode", rename = "compact-mode")]
+    pub compact_mode: bool,
     /// List of favorite model identifiers (e.g., "claude/claude-sonnet-4-5")
     #[serde(
         default,
@@ -173,6 +176,7 @@ impl Default for ConfigFile {
             show_image_previews: default_show_image_previews(),
             lsp_enabled: default_lsp_enabled(),
             hide_tool_output: default_hide_tool_output(),
+            compact_mode: default_compact_mode(),
             favorite_models: Vec::new(),
             auto_compact: AutoCompactConfig::default(),
             disabled_tools: Vec::new(),
@@ -193,6 +197,10 @@ fn default_lsp_enabled() -> bool {
 }
 
 fn default_hide_tool_output() -> bool {
+    false
+}
+
+fn default_compact_mode() -> bool {
     false
 }
 
@@ -687,6 +695,13 @@ impl ConfigFile {
                 && let Some(b) = val.as_bool()
             {
                 config.hide_tool_output = b;
+            }
+
+            // compact-mode
+            if let Some(val) = table.get("compact-mode")
+                && let Some(b) = val.as_bool()
+            {
+                config.compact_mode = b;
             }
 
             // favorite-models

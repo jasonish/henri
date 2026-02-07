@@ -460,6 +460,7 @@ pub(super) enum SettingOption {
     ShowImagePreviews(bool),
     LspEnabled(bool),
     HideToolOutput(bool),
+    CompactMode(bool),
 }
 
 impl SettingOption {
@@ -469,6 +470,7 @@ impl SettingOption {
             SettingOption::ShowImagePreviews(_) => "Image Previews",
             SettingOption::LspEnabled(_) => "LSP Integration",
             SettingOption::HideToolOutput(_) => "Hide Tool Output",
+            SettingOption::CompactMode(_) => "Compact Mode",
         }
     }
 
@@ -477,7 +479,8 @@ impl SettingOption {
             SettingOption::ShowNetworkStats(enabled)
             | SettingOption::ShowImagePreviews(enabled)
             | SettingOption::LspEnabled(enabled)
-            | SettingOption::HideToolOutput(enabled) => {
+            | SettingOption::HideToolOutput(enabled)
+            | SettingOption::CompactMode(enabled) => {
                 if *enabled { "Enabled" } else { "Disabled" }.to_string()
             }
         }
@@ -488,7 +491,8 @@ impl SettingOption {
             SettingOption::ShowNetworkStats(enabled)
             | SettingOption::ShowImagePreviews(enabled)
             | SettingOption::LspEnabled(enabled)
-            | SettingOption::HideToolOutput(enabled) => {
+            | SettingOption::HideToolOutput(enabled)
+            | SettingOption::CompactMode(enabled) => {
                 *enabled = !*enabled;
             }
         }
@@ -508,6 +512,9 @@ impl SettingOption {
                 }
                 SettingOption::HideToolOutput(enabled) => {
                     config.hide_tool_output = *enabled;
+                }
+                SettingOption::CompactMode(enabled) => {
+                    config.compact_mode = *enabled;
                 }
             }
             let _ = config.save();
@@ -622,6 +629,7 @@ impl SettingsMenuState {
                 SettingOption::ShowImagePreviews(config.show_image_previews),
                 SettingOption::LspEnabled(config.lsp_enabled),
                 SettingOption::HideToolOutput(config.hide_tool_output),
+                SettingOption::CompactMode(config.compact_mode),
             ],
             selected_index: 0,
             default_model_submenu: None,
