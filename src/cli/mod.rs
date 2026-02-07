@@ -7,6 +7,7 @@
 //! keyboard input, resize events, and chat streaming concurrently.
 
 mod clipboard;
+mod completion_menu;
 mod editor;
 pub(crate) mod history;
 pub(crate) mod image_preview;

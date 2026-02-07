@@ -20,6 +20,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::usage;
 
+use super::completion_menu;
 use super::input::{InputState, display_width};
 use super::menus::{
     HistorySearchState, McpMenuState, ModelMenuState, SessionMenuState, SettingsMenuState,
@@ -227,7 +228,7 @@ impl PromptBox {
         if !show_exit_hint {
             return false;
         }
-        if !state.is_empty() || state.slash_menu_active() {
+        if !state.is_empty() || state.slash_menu_active() || state.completion_active() {
             return false;
         }
         self.exit_hint_until
@@ -238,7 +239,7 @@ impl PromptBox {
         if !self.welcome_hint_active {
             return false;
         }
-        state.is_empty() && !state.slash_menu_active()
+        state.is_empty() && !state.slash_menu_active() && !state.completion_active()
     }
 
     /// Update the status line info.
@@ -286,11 +287,7 @@ impl PromptBox {
             // last column is filled.
             let wrap_width = self.input_wrap_width();
             let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(wrap_width);
-            let menu_height = state
-                .slash_menu
-                .as_ref()
-                .map(|m| m.display_height())
-                .unwrap_or(0);
+            let menu_height = state.active_menu_height();
 
             let max_content_rows = self.max_input_content_rows(menu_height, 0);
             let rows_to_display = wrapped_rows.len().min(max_content_rows);
@@ -330,11 +327,7 @@ impl PromptBox {
         // Compute wrapped display
         let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(wrap_width);
 
-        let menu_height = state
-            .slash_menu
-            .as_ref()
-            .map(|m| m.display_height())
-            .unwrap_or(0);
+        let menu_height = state.active_menu_height();
 
         // Cap the prompt height (including borders + status line + menu).
         let max_content_rows = self.max_input_content_rows(menu_height, 0);
@@ -438,13 +431,8 @@ impl PromptBox {
             let status_row = input_bottom_row + 1;
             self.draw_prompt_status_line(stdout, status_row)?;
 
-            // Draw slash menu BELOW the status line if active
-            if let Some(ref menu) = state.slash_menu
-                && menu_height > 0
-            {
-                let menu_start_row = status_row + 1;
-                menu.render(stdout, menu_start_row)?;
-            }
+            // Draw active menu (slash or completion) BELOW the status line.
+            draw_active_menu(stdout, state, status_row)?;
 
             // Keep the hardware cursor hidden; a software cursor is rendered in the
             // prompt buffer so it remains visible even when the user scrolls
@@ -1023,11 +1011,7 @@ impl PromptBox {
         let pending_height: u16 = pending_prompts.len() as u16;
 
         // Cap the prompt height (including pending rows, borders, status, and menu).
-        let menu_height = state
-            .slash_menu
-            .as_ref()
-            .map(|m| m.display_height())
-            .unwrap_or(0);
+        let menu_height = state.active_menu_height();
         let pending_extra = pending_height;
 
         let max_content_rows = self.max_input_content_rows(menu_height, pending_extra);
@@ -1132,13 +1116,8 @@ impl PromptBox {
             let status_row = input_bottom_row + 1;
             self.draw_prompt_status_line(stdout, status_row)?;
 
-            // Draw slash menu BELOW the status line if active
-            if let Some(ref menu) = state.slash_menu
-                && menu_height > 0
-            {
-                let menu_start_row = status_row + 1;
-                menu.render(stdout, menu_start_row)?;
-            }
+            // Draw active menu (slash or completion) BELOW the status line.
+            draw_active_menu(stdout, state, status_row)?;
 
             // Keep the hardware cursor hidden; a software cursor is rendered in the
             // prompt buffer so it remains visible even when the user scrolls
@@ -1221,11 +1200,7 @@ impl PromptBox {
         let prompt_height = {
             let wrap_width = (cols as usize).saturating_sub(1).max(1);
             let (wrapped_rows, cursor_pos) = state.display_lines_and_cursor(wrap_width);
-            let menu_height = state
-                .slash_menu
-                .as_ref()
-                .map(|m| m.display_height())
-                .unwrap_or(0);
+            let menu_height = state.active_menu_height();
             let pending_extra = pending_prompts.len() as u16;
 
             let max_content_rows = self.max_input_content_rows(menu_height, pending_extra);
@@ -1860,6 +1835,27 @@ impl PromptBox {
         }
         Ok(())
     }
+}
+
+/// Render the currently active inline menu (slash or file completion) below `status_row`.
+fn draw_active_menu(
+    stdout: &mut io::Stdout,
+    state: &InputState,
+    status_row: u16,
+) -> io::Result<()> {
+    if state.slash_menu_active() {
+        if let Some(ref menu) = state.slash_menu {
+            menu.render(stdout, status_row + 1)?;
+        }
+    } else if state.completion_active() {
+        completion_menu::render(
+            stdout,
+            &state.file_completer.matches,
+            state.file_completer.index,
+            status_row + 1,
+        )?;
+    }
+    Ok(())
 }
 
 /// Format bytes as human-readable string (B, KB, MB)

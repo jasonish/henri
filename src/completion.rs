@@ -3,7 +3,7 @@
 
 //! File path completion for CLI prompts.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// File path completer with match state
 pub(crate) struct FileCompleter {
@@ -34,11 +34,6 @@ impl FileCompleter {
     pub(crate) fn clear(&mut self) {
         self.matches.clear();
         self.index = 0;
-    }
-
-    /// Check if a word should trigger completion (starts with `.`, `/`, or `~`)
-    pub(crate) fn should_complete(word: &str) -> bool {
-        word.starts_with('/') || word.starts_with('.') || word.starts_with('~')
     }
 
     /// Initialize completion matches for the given prefix
@@ -179,35 +174,9 @@ impl FileCompleter {
                 };
                 (parent.to_path_buf(), file_name, prefix_str)
             }
-        } else if prefix.starts_with("../") {
-            // Relative path starting with ../
-            if prefix.ends_with('/') {
-                // Path ends with "/" - list contents of that directory
-                let dir_path = working_dir.join(prefix);
-                if dir_path.is_dir() {
-                    (dir_path, String::new(), prefix.to_string())
-                } else {
-                    return Vec::new();
-                }
-            } else {
-                let base_path = working_dir.join(prefix);
-                let parent = base_path.parent().unwrap_or(working_dir);
-                let file_name = base_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                // Preserve the ../ prefix structure
-                let prefix_without_file = if let Some(idx) = prefix.rfind('/') {
-                    format!("{}/", &prefix[..idx])
-                } else {
-                    "../".to_string()
-                };
-                (parent.to_path_buf(), file_name, prefix_without_file)
-            }
         } else {
-            return Vec::new();
+            // Relative path: bare (e.g. "src/main") or starting with "../"
+            resolve_relative_path(working_dir, prefix)
         };
 
         // Try to read directory
@@ -253,9 +222,38 @@ impl FileCompleter {
     }
 }
 
-/// Get the word at cursor position in a buffer
-/// Returns (start_index, end_index, word)
-pub(crate) fn get_word_at_cursor(buffer: &str, cursor: usize) -> Option<(usize, usize, String)> {
+/// Resolve a relative path prefix (including `../`) into the (search_dir,
+/// partial_name, result_prefix) tuple used by `get_matches`.
+fn resolve_relative_path(working_dir: &Path, prefix: &str) -> (PathBuf, String, String) {
+    if prefix.ends_with('/') {
+        let dir_path = working_dir.join(prefix);
+        if dir_path.is_dir() {
+            (dir_path, String::new(), prefix.to_string())
+        } else {
+            // Caller will get no matches from an empty search dir.
+            (dir_path, String::new(), prefix.to_string())
+        }
+    } else {
+        let base_path = working_dir.join(prefix);
+        let parent = base_path.parent().unwrap_or(working_dir);
+        let file_name = base_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let result_prefix = if let Some(idx) = prefix.rfind('/') {
+            format!("{}/", &prefix[..idx])
+        } else {
+            String::new()
+        };
+        (parent.to_path_buf(), file_name, result_prefix)
+    }
+}
+
+/// Get the word at cursor position in a buffer.
+/// Returns (start_index, end_index, word). If the cursor is not on a word,
+/// returns the cursor position with an empty string.
+pub(crate) fn get_word_at_cursor(buffer: &str, cursor: usize) -> (usize, usize, String) {
     // Find the start of the word (go backwards until whitespace or start)
     let word_start = buffer[..cursor]
         .rfind(|c: char| c.is_whitespace())
@@ -269,5 +267,5 @@ pub(crate) fn get_word_at_cursor(buffer: &str, cursor: usize) -> Option<(usize, 
         .unwrap_or(buffer.len());
 
     let word = buffer[word_start..word_end].to_string();
-    Some((word_start, word_end, word))
+    (word_start, word_end, word)
 }

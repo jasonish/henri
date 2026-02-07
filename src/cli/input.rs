@@ -482,7 +482,7 @@ pub(super) struct InputState {
     /// Timestamp of last Ctrl+C press for double-Ctrl+C exit detection
     last_ctrl_c_time: Option<Instant>,
     /// File completion state
-    pub file_completer: FileCompleter,
+    pub(super) file_completer: FileCompleter,
     /// Whether the current provider is Claude/Anthropic
     is_claude: bool,
 }
@@ -625,18 +625,28 @@ impl InputState {
         self.file_completer.is_active()
     }
 
+    /// Height of whichever inline menu is currently active.
+    pub(super) fn active_menu_height(&self) -> u16 {
+        if self.slash_menu_active() {
+            self.slash_menu
+                .as_ref()
+                .map(|menu| menu.display_height())
+                .unwrap_or(0)
+        } else if self.completion_active() {
+            super::completion_menu::display_height(self.file_completer.matches.len())
+        } else {
+            0
+        }
+    }
+
     /// Initialize file completion based on word at cursor
     pub fn init_completion(&mut self) {
-        if let Some((_start, _end, word)) =
-            crate::completion::get_word_at_cursor(&self.content(), self.cursor_byte_offset())
-        {
-            if FileCompleter::should_complete(&word) {
-                self.file_completer.init(&word);
-            } else {
-                self.file_completer.clear();
-            }
-        } else {
+        let (_, _, word) =
+            crate::completion::get_word_at_cursor(&self.content(), self.cursor_byte_offset());
+        if word.is_empty() {
             self.file_completer.clear();
+        } else {
+            self.file_completer.init(&word);
         }
     }
 
@@ -648,15 +658,11 @@ impl InputState {
 
         let content = self.content();
         let cursor_offset = self.cursor_byte_offset();
-        if let Some(selected) = self.file_completer.current()
-            && let Some((word_start, word_end, _word)) =
-                crate::completion::get_word_at_cursor(&content, cursor_offset)
-        {
+        if let Some(selected) = self.file_completer.current() {
             let selected = selected.to_string();
-            // Replace the word with the completion
+            let (word_start, word_end, _) =
+                crate::completion::get_word_at_cursor(&content, cursor_offset);
             self.replace_range(word_start, word_end, &selected);
-
-            // Clear completion after applying
             self.file_completer.clear();
             return true;
         }
@@ -675,11 +681,10 @@ impl InputState {
 
         let content = self.content();
         let cursor_offset = self.cursor_byte_offset();
-        if let Some(selected) = self.file_completer.current()
-            && let Some((word_start, word_end, _word)) =
-                crate::completion::get_word_at_cursor(&content, cursor_offset)
-        {
+        if let Some(selected) = self.file_completer.current() {
             let selected = selected.to_string();
+            let (word_start, word_end, _) =
+                crate::completion::get_word_at_cursor(&content, cursor_offset);
             self.replace_range(word_start, word_end, &selected);
             return true;
         }
@@ -1507,6 +1512,38 @@ mod tests {
         assert_eq!(state.lines[0], "/review ");
         assert_eq!(state.col_idx, "/review ".len());
         assert!(state.slash_menu.is_none());
+    }
+
+    #[test]
+    fn test_active_menu_height_uses_completion_when_no_slash_menu() {
+        let mut state = test_state();
+        state.file_completer.matches = vec!["src/".to_string(), "Cargo.toml".to_string()];
+        state.file_completer.index = 0;
+
+        assert_eq!(state.active_menu_height(), 2);
+    }
+
+    #[test]
+    fn test_active_menu_height_prefers_slash_menu() {
+        let mut state = test_state();
+        state.file_completer.matches = vec!["src/".to_string()];
+
+        let mut menu = SlashMenuState::new(false);
+        menu.items = vec![DynamicSlashCommand {
+            command: Command::Help,
+            name: "help".to_string(),
+            description: "Help".to_string(),
+        }];
+        menu.selected = 0;
+        state.slash_menu = Some(menu);
+
+        assert_eq!(state.active_menu_height(), 1);
+    }
+
+    #[test]
+    fn test_active_menu_height_none_when_no_menu() {
+        let state = test_state();
+        assert_eq!(state.active_menu_height(), 0);
     }
 
     #[test]
