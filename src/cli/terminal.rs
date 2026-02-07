@@ -1235,6 +1235,32 @@ fn normalize_newlines(text: &str) -> String {
     output
 }
 
+fn render_history_with_gap(width: usize, status_active: bool) -> Option<String> {
+    use super::history;
+    use super::render;
+
+    let events = history::snapshot();
+    if events.is_empty() {
+        return None;
+    }
+
+    let rendered = render::render_all(&events, width);
+    let normalized = normalize_newlines(&rendered);
+
+    if normalized.is_empty() {
+        return None;
+    }
+
+    // Add a blank line for visual separation between output and prompt when the
+    // streaming status line is inactive. When active, the spacer row already
+    // provides that separation.
+    if status_active {
+        Some(normalized)
+    } else {
+        Some(format!("{}\n", normalized))
+    }
+}
+
 /// Redraw all output from history after terminal resize.
 /// Clears screen and reprints everything at the new width.
 ///
@@ -1247,12 +1273,15 @@ fn redraw_from_history_with_size_inner(
 ) {
     use std::io::Write;
 
-    use super::history;
-    use super::render;
+    let width = width.unwrap_or_else(term_width) as usize;
+    let term_height = height.unwrap_or_else(term_height);
 
-    let events = history::snapshot();
+    let status_active = PROMPT_STATE
+        .lock()
+        .map(|s| s.status_line_active)
+        .unwrap_or(false);
 
-    if events.is_empty() {
+    let Some(with_gap) = render_history_with_gap(width, status_active) else {
         let mut stdout = io::stdout();
         let _ = execute!(
             stdout,
@@ -1263,26 +1292,6 @@ fn redraw_from_history_with_size_inner(
         let _ = stdout.flush();
         reset_output_cursor();
         return;
-    }
-
-    let width = width.unwrap_or_else(term_width) as usize;
-    let term_height = height.unwrap_or_else(term_height);
-
-    let rendered = render::render_all(&events, width);
-    let normalized = normalize_newlines(&rendered);
-
-    let status_active = PROMPT_STATE
-        .lock()
-        .map(|s| s.status_line_active)
-        .unwrap_or(false);
-
-    // Add a blank line for visual separation between output and prompt when the
-    // streaming status line is inactive. When active, the spacer row already
-    // provides that separation.
-    let with_gap = if status_active {
-        normalized.clone()
-    } else {
-        format!("{}\n", normalized)
     };
 
     let (lines_used, end_col) = calculate_output_size(0, &with_gap, width as u16);
@@ -1397,32 +1406,26 @@ pub(crate) fn redraw_from_history(prompt_height: u16) {
 pub(crate) fn print_history_scrolled() {
     use std::io::Write;
 
-    use super::history;
-    use super::render;
-
     let _guard = lock_output();
 
-    let events = history::snapshot();
-    if events.is_empty() {
-        return;
-    }
+    let status_active = PROMPT_STATE
+        .lock()
+        .map(|s| s.status_line_active)
+        .unwrap_or(false);
 
     let width = term_width() as usize;
-    let rendered = render::render_all(&events, width);
-    let normalized = normalize_newlines(&rendered);
-
-    if normalized.is_empty() {
+    let Some(with_gap) = render_history_with_gap(width, status_active) else {
         return;
-    }
-
-    // Trim trailing whitespace to get consistent spacing.
-    let trimmed = normalized.trim_end();
+    };
 
     // Print the rendered output as normal scrolling text.
-    // End current line and add one blank line for visual separation.
-    print!("{}", trimmed);
-    println!();
-    println!();
+    print!("{}", with_gap);
+
+    // Preserve the extra separator row used during session restore so the
+    // prompt doesn't appear glued to the last restored line.
+    if !status_active {
+        print!("\r\n");
+    }
 
     let _ = io::stdout().flush();
 }

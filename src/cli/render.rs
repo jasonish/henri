@@ -6,6 +6,8 @@
 //! Converts semantic HistoryEvents into styled, wrapped text lines
 //! suitable for terminal display.
 
+use std::borrow::Cow;
+
 use colored::{Color, Colorize};
 use unicode_width::UnicodeWidthChar;
 
@@ -313,10 +315,26 @@ pub(super) fn colorize_image_markers(text: &str, restore_bg: Option<&str>) -> St
     result
 }
 
+fn strip_carriage_returns(text: &str) -> Cow<'_, str> {
+    if text.contains('\r') {
+        Cow::Owned(text.replace('\r', ""))
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
 /// Render assistant text with syntax highlighting for code blocks
 fn render_assistant_text(text: &str, _is_streaming: bool, width: usize) -> String {
+    // Streaming output ignores carriage returns; mirror that here so history
+    // redraw/replay matches what was shown live.
+    let text = strip_carriage_returns(text);
+
+    // Match live streaming width (`CliListener::terminal_width`) so replay/redraw wraps
+    // assistant markdown identically.
+    let content_width = width.saturating_sub(2).max(1);
+
     // Align markdown tables if they fit within the width
-    let aligned_text = align_markdown_tables(text, Some(width));
+    let aligned_text = align_markdown_tables(text.as_ref(), Some(content_width));
 
     let mut output = String::new();
     let mut pos = 0;
@@ -327,7 +345,7 @@ fn render_assistant_text(text: &str, _is_streaming: bool, width: usize) -> Strin
         // Render text before the code block
         let before = &aligned_text[pos..block_start];
         if !before.is_empty() {
-            for line in wrap_text(before, width) {
+            for line in wrap_text(before, content_width) {
                 output.push_str(&render_markdown_line(&line));
                 output.push('\n');
             }
@@ -342,7 +360,7 @@ fn render_assistant_text(text: &str, _is_streaming: bool, width: usize) -> Strin
     // Render remaining text after last code block
     let remaining = &aligned_text[pos..];
     if !remaining.is_empty() {
-        for line in wrap_text(remaining, width) {
+        for line in wrap_text(remaining, content_width) {
             output.push_str(&render_markdown_line(&line));
             output.push('\n');
         }
@@ -1695,6 +1713,18 @@ const x = 42;
         assert!(result.contains("Just plain text"));
         // No ANSI escape codes for syntax highlighting
         assert!(!result.contains("\x1b[38;2;"));
+    }
+
+    #[test]
+    fn test_render_assistant_text_strips_carriage_returns() {
+        let text = "## Summary\r\n\r\n**Display Elements:**\r\n-   Markdown table with features\r\n-   Rust function with proper formatting\r\n-   Go function with proper formatting\r\n";
+
+        let result = render_assistant_text(text, false, 80);
+
+        assert!(!result.contains('\r'));
+        assert!(result.contains("-   Markdown table with features"));
+        assert!(result.contains("-   Rust function with proper formatting"));
+        assert!(result.contains("-   Go function with proper formatting"));
     }
 
     #[test]
