@@ -18,6 +18,13 @@ pub(crate) fn set_compact_mode(enabled: bool) {
     COMPACT_MODE.store(enabled, Ordering::Relaxed);
 }
 
+/// Toggle compact mode and return the new enabled state.
+pub(crate) fn toggle_compact_mode() -> bool {
+    let enabled = !COMPACT_MODE.load(Ordering::Relaxed);
+    COMPACT_MODE.store(enabled, Ordering::Relaxed);
+    enabled
+}
+
 /// Reload the compact-mode setting from config.
 pub(crate) fn reload_compact_mode() {
     let enabled = crate::config::ConfigFile::load()

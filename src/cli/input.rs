@@ -462,6 +462,8 @@ pub(super) enum InputAction {
     ToggleToolOutputExpanded,
     /// Force full UI redraw (Ctrl+L)
     RedrawAll,
+    /// Toggle compact mode (Ctrl+N)
+    ToggleCompactMode,
 }
 
 /// State for multi-line input
@@ -1148,6 +1150,9 @@ impl InputState {
                 InputAction::RedrawAll
             }
 
+            // Ctrl+N - Toggle compact mode
+            (KeyCode::Char('n'), KeyModifiers::CONTROL) => InputAction::ToggleCompactMode,
+
             // Alt+B - Backward word (treats image markers as single tokens)
             (KeyCode::Char('b'), KeyModifiers::ALT) => {
                 if self.col_idx > 0 {
@@ -1650,6 +1655,14 @@ mod tests {
 
         let action = state.handle_key(key(KeyCode::Char('d'), KeyModifiers::CONTROL));
         assert!(matches!(action, InputAction::Quit));
+    }
+
+    #[test]
+    fn test_ctrl_n_toggles_compact_mode() {
+        let mut state = test_state();
+
+        let action = state.handle_key(key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert!(matches!(action, InputAction::ToggleCompactMode));
     }
 
     #[test]

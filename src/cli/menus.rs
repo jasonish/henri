@@ -625,11 +625,11 @@ impl SettingsMenuState {
         let config = ConfigFile::load().unwrap_or_default();
         Self {
             options: vec![
+                SettingOption::CompactMode(config.compact_mode),
                 SettingOption::ShowNetworkStats(config.show_network_stats),
                 SettingOption::ShowImagePreviews(config.show_image_previews),
                 SettingOption::LspEnabled(config.lsp_enabled),
                 SettingOption::HideToolOutput(config.hide_tool_output),
-                SettingOption::CompactMode(config.compact_mode),
             ],
             selected_index: 0,
             default_model_submenu: None,

@@ -2787,6 +2787,10 @@ async fn run_event_loop(
                                 listener::force_tool_output_rerender();
                             }
                         }
+                        InputAction::ToggleCompactMode => {
+                            spacing::toggle_compact_mode();
+                            prompt_box.redraw_history().ok();
+                        }
                         InputAction::Quit => {
                             break;
                         }
@@ -3952,6 +3956,8 @@ fn show_help(_custom_commands: &[CustomCommand]) {
     ));
     let shortcut = format!("{:<21}", "Ctrl+H");
     terminal::println_above(&format!("  {} Toggle hide tool output", shortcut.yellow()));
+    let shortcut = format!("{:<21}", "Ctrl+N");
+    terminal::println_above(&format!("  {} Toggle compact mode", shortcut.yellow()));
     let shortcut = format!("{:<21}", "Ctrl+L");
     terminal::println_above(&format!(
         "  {} Force redraw (repaint screen)",
