@@ -29,12 +29,6 @@ struct PromptState {
     cursor_pos: Option<(u16, u16)>,
     /// Whether the streaming status line area (above prompt) is active/reserved
     status_line_active: bool,
-    /// Whether bandwidth stats are currently allowed to render
-    bandwidth_allowed: bool,
-    /// Minimum column where bandwidth stats may start (prevents overlap)
-    bandwidth_min_col: u16,
-    /// Last bandwidth display column for clearing artifacts
-    bandwidth_col: Option<u16>,
 }
 
 pub(super) fn prompt_position() -> Option<(u16, u16)> {
@@ -54,9 +48,6 @@ impl PromptState {
             status_row_offset: 2,
             cursor_pos: None,
             status_line_active: false,
-            bandwidth_allowed: false,
-            bandwidth_min_col: 0,
-            bandwidth_col: None,
         }
     }
 }
@@ -218,9 +209,6 @@ pub(super) fn clear_prompt_cursor() {
 pub(super) fn set_prompt_hidden() {
     if let Ok(mut state) = PROMPT_STATE.lock() {
         state.visible = false;
-        state.bandwidth_allowed = false;
-        state.bandwidth_min_col = 0;
-        state.bandwidth_col = None;
     }
 }
 
@@ -409,120 +397,6 @@ pub(crate) fn write_status_line(text: &str) {
 
         io::Result::Ok(())
     });
-}
-
-/// Update the bandwidth display on the provider/model status line (bottom of prompt).
-pub(crate) fn update_bandwidth_display(text: &str) {
-    use crossterm::SynchronizedUpdate;
-    use crossterm::style::{Color, ResetColor, SetForegroundColor};
-
-    let _guard = lock_output();
-    let (row, cursor_info, prev_col, min_col, allowed) = {
-        let state = PROMPT_STATE.lock().unwrap();
-        if !state.visible || state.height == 0 {
-            return;
-        }
-        let row = state.start_row + state.status_row_offset;
-        let cursor_info = state
-            .cursor_pos
-            .map(|(off, col)| (state.start_row + off, col));
-        (
-            row,
-            cursor_info,
-            state.bandwidth_col,
-            state.bandwidth_min_col,
-            state.bandwidth_allowed,
-        )
-    };
-
-    if !allowed && !text.is_empty() {
-        return;
-    }
-
-    let width = term_width();
-    let text_len = text.chars().count() as u16;
-
-    let clear_display = |prev_col: Option<u16>| {
-        let mut stdout = io::stdout();
-        let _ = stdout.sync_update(|stdout| {
-            use crossterm::queue;
-            use crossterm::terminal::{Clear, ClearType};
-
-            queue!(stdout, Hide)?;
-            if let Some(prev_col) = prev_col {
-                queue!(
-                    stdout,
-                    MoveTo(prev_col, row),
-                    Clear(ClearType::UntilNewLine)
-                )?;
-            }
-
-            // Restore cursor only if we have a saved position (menu modes hide the cursor)
-            if let Some((cursor_row, cursor_col)) = cursor_info {
-                queue!(stdout, MoveTo(cursor_col, cursor_row))?;
-            }
-
-            io::Result::Ok(())
-        });
-
-        if let Ok(mut state) = PROMPT_STATE.lock() {
-            state.bandwidth_col = None;
-        }
-    };
-
-    if text.is_empty() {
-        // Clear any previous bandwidth display.
-        clear_display(prev_col);
-        return;
-    }
-
-    let col = width.saturating_sub(text_len).max(min_col);
-
-    // If we still cannot fit without overlapping, hide.
-    if col.saturating_add(text_len) > width {
-        clear_display(prev_col);
-        return;
-    }
-
-    let mut stdout = io::stdout();
-
-    let _ = stdout.sync_update(|stdout| {
-        use crossterm::queue;
-        use crossterm::terminal::{Clear, ClearType};
-        use std::io::Write;
-
-        queue!(stdout, Hide)?;
-
-        if let Some(prev_col) = prev_col
-            && prev_col != col
-        {
-            queue!(
-                stdout,
-                MoveTo(prev_col, row),
-                Clear(ClearType::UntilNewLine)
-            )?;
-        }
-
-        queue!(
-            stdout,
-            MoveTo(col, row),
-            Clear(ClearType::UntilNewLine),
-            SetForegroundColor(Color::DarkGrey)
-        )?;
-        write!(stdout, "{}", text)?;
-        queue!(stdout, ResetColor)?;
-
-        // Restore cursor only if we have a saved position (menu modes hide the cursor)
-        if let Some((cursor_row, cursor_col)) = cursor_info {
-            queue!(stdout, MoveTo(cursor_col, cursor_row))?;
-        }
-
-        io::Result::Ok(())
-    });
-
-    if let Ok(mut state) = PROMPT_STATE.lock() {
-        state.bandwidth_col = Some(col);
-    }
 }
 
 /// Get whether the prompt is visible.
@@ -1191,24 +1065,6 @@ pub(super) fn term_height() -> u16 {
 /// Get terminal width.
 pub(crate) fn term_width() -> u16 {
     terminal::size().map(|(w, _)| w).unwrap_or(80)
-}
-
-pub(super) fn set_bandwidth_allowed(allowed: bool) {
-    if let Ok(mut state) = PROMPT_STATE.lock() {
-        state.bandwidth_allowed = allowed;
-    }
-}
-
-pub(super) fn set_bandwidth_min_col(min_col: u16) {
-    if let Ok(mut state) = PROMPT_STATE.lock() {
-        state.bandwidth_min_col = min_col;
-    }
-}
-
-pub(super) fn set_bandwidth_col(col: Option<u16>) {
-    if let Ok(mut state) = PROMPT_STATE.lock() {
-        state.bandwidth_col = col;
-    }
 }
 
 /// Normalize newlines for terminals running in raw mode.

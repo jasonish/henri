@@ -4,7 +4,6 @@
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
-use futures::StreamExt;
 use reqwest::Client;
 use tokio::sync::Mutex;
 
@@ -545,7 +544,6 @@ impl AntigravityProvider {
 
         // Record TX bytes
         let body_bytes = serde_json::to_vec(&request)?;
-        usage::network_stats().record_tx(body_bytes.len() as u64);
 
         let client_metadata = serde_json::json!({
             "ideType": "IDE_UNSPECIFIED",
@@ -691,12 +689,7 @@ impl AntigravityProvider {
         let mut final_cached_tokens: Option<u64> = None;
         let mut final_thought_tokens: Option<u64> = None;
 
-        let mut sse = sse::SseStream::new(response.bytes_stream().map(|chunk| {
-            if let Ok(ref bytes) = chunk {
-                usage::network_stats().record_rx(bytes.len() as u64);
-            }
-            chunk
-        }));
+        let mut sse = sse::SseStream::new(response.bytes_stream());
 
         while let Some(result) = sse.next_event().await {
             let data = result.map_err(Error::Http)?;

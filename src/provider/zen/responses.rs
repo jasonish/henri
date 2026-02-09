@@ -4,7 +4,6 @@
 use std::time::Instant;
 
 use base64::Engine;
-use futures::StreamExt;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
@@ -241,10 +240,6 @@ pub(super) async fn chat(
     let url = format!("{}/responses", ZEN_BASE_URL);
     let request = build_request(ctx.model, &messages, ctx.services).await;
 
-    // Record TX bytes
-    let body_bytes = serde_json::to_vec(&request)?;
-    usage::network_stats().record_tx(body_bytes.len() as u64);
-
     let mut req_headers = std::collections::HashMap::new();
     req_headers.insert(
         "Authorization".to_string(),
@@ -297,12 +292,7 @@ pub(super) async fn chat(
     let mut streaming_start: Option<Instant> = None;
 
     // Use custom SSE parser for event: + data: format
-    let mut sse = ResponsesSseStream::new(response.bytes_stream().map(|chunk| {
-        if let Ok(ref bytes) = chunk {
-            usage::network_stats().record_rx(bytes.len() as u64);
-        }
-        chunk
-    }));
+    let mut sse = ResponsesSseStream::new(response.bytes_stream());
     while let Some(result) = sse.next_event().await {
         let (event_type, data) = result.map_err(Error::Http)?;
 

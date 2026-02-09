@@ -18,8 +18,6 @@ use crossterm::terminal::{self, ClearType};
 use crossterm::{SynchronizedUpdate, cursor, execute, queue};
 use unicode_width::UnicodeWidthChar;
 
-use crate::usage;
-
 use super::completion_menu;
 use super::input::{InputState, display_width};
 use super::menus::{
@@ -181,7 +179,6 @@ pub(super) struct PromptBox {
     last_start_row: Option<u16>,
     last_height: u16,
     status: StatusInfo,
-    show_network_stats: bool,
     exit_hint_until: Option<Instant>,
     welcome_hint_active: bool,
 }
@@ -189,26 +186,15 @@ pub(super) struct PromptBox {
 impl PromptBox {
     pub(super) fn new() -> Self {
         let width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
-        let show_network_stats = crate::config::ConfigFile::load()
-            .map(|c| c.show_network_stats)
-            .unwrap_or(false);
         Self {
             width,
             border: "─".repeat(width),
             last_start_row: None,
             last_height: 0,
             status: StatusInfo::default(),
-            show_network_stats,
             exit_hint_until: None,
             welcome_hint_active: false,
         }
-    }
-
-    /// Reload the show_network_stats setting from config
-    pub(super) fn reload_settings(&mut self) {
-        self.show_network_stats = crate::config::ConfigFile::load()
-            .map(|c| c.show_network_stats)
-            .unwrap_or(false);
     }
 
     /// Get the last known height of the prompt box.
@@ -1738,18 +1724,6 @@ impl PromptBox {
             thinking_suffix = Some((format!("#{}", suffix), *suffix_color));
         }
 
-        // Build network stats if enabled.
-        let net_text = if self.show_network_stats {
-            let stats = usage::network_stats();
-            Some(format!(
-                "↓{} ↑{}",
-                format_bytes(stats.rx_bytes()),
-                format_bytes(stats.tx_bytes())
-            ))
-        } else {
-            None
-        };
-
         // Calculate widths of fixed elements.
         let provider_width = display_width(provider);
         let model_width = display_width(model_display);
@@ -1759,41 +1733,17 @@ impl PromptBox {
             .as_ref()
             .map(|(s, _)| display_width(s))
             .unwrap_or(0);
-        let net_width = net_text.as_ref().map(|s| display_width(s)).unwrap_or(0);
 
         // Fixed: "provider/model#suffix " (the slash and trailing space)
         let fixed_left = provider_width + 1 + model_width + thinking_suffix_width + 1;
-        let total_left = fixed_left + cwd_width;
-        let total_with_net = total_left + if net_width > 0 { 1 + net_width } else { 0 };
-
-        // Decide what fits. Priority: hide net first, then truncate cwd.
-        let show_net = net_text.is_some() && total_with_net <= width;
-        let available = width.saturating_sub(if show_net { 1 + net_width } else { 0 });
 
         // Truncate cwd if needed.
-        let cwd_display = if fixed_left + cwd_width > available {
-            let max_cwd = available.saturating_sub(fixed_left + 1);
+        let cwd_display = if fixed_left + cwd_width > width {
+            let max_cwd = width.saturating_sub(fixed_left + 1);
             truncate_to_width(cwd, max_cwd)
         } else {
             cwd.to_string()
         };
-
-        // Calculate net column if we plan to show it.
-        let net_col = if show_net {
-            (width.saturating_sub(net_width)) as u16
-        } else {
-            0
-        };
-        let left_width = fixed_left + display_width(&cwd_display);
-
-        // Track bandwidth layout so the streaming updater can render during a turn.
-        let bandwidth_allowed = show_net;
-        let bandwidth_min_col = if show_net {
-            left_width.saturating_add(1).min(width) as u16
-        } else {
-            0
-        };
-        let bandwidth_clear = !show_net;
 
         // Render: provider (magenta) / (grey) model (cyan) #suffix (colored) space cwd (blue)
         queue!(stdout, SetForegroundColor(Color::Magenta))?;
@@ -1817,22 +1767,7 @@ impl PromptBox {
         queue!(stdout, SetForegroundColor(Color::Blue))?;
         write!(stdout, "{}", cwd_display)?;
 
-        if show_net && let Some(ref text) = net_text {
-            queue!(
-                stdout,
-                cursor::MoveTo(net_col, row),
-                SetForegroundColor(Color::DarkGrey)
-            )?;
-            write!(stdout, "{}", text)?;
-        }
-
         queue!(stdout, ResetColor)?;
-
-        cli_terminal::set_bandwidth_allowed(bandwidth_allowed);
-        cli_terminal::set_bandwidth_min_col(bandwidth_min_col);
-        if bandwidth_clear {
-            cli_terminal::set_bandwidth_col(None);
-        }
         Ok(())
     }
 }
@@ -1856,21 +1791,6 @@ fn draw_active_menu(
         )?;
     }
     Ok(())
-}
-
-/// Format bytes as human-readable string (B, KB, MB)
-fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-
-    let bytes_f = bytes as f64;
-    if bytes_f >= MB {
-        format!("{:.1} MB", bytes_f / MB)
-    } else if bytes_f >= KB {
-        format!("{:.1} KB", bytes_f / KB)
-    } else {
-        format!("{} B", bytes)
-    }
 }
 
 /// Truncate a string to fit within a display width, adding ellipsis.

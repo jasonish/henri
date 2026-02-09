@@ -659,8 +659,7 @@ async fn run_event_loop(
         // This avoids showing a blank status area on startup.
         prompt_box.draw(&input_state, true)?;
 
-        // Start spinner/bandwidth updates.
-        listener::reload_show_network_stats();
+        // Start spinner updates.
         listener::init_spinner();
     }
 
@@ -1809,8 +1808,6 @@ async fn run_event_loop(
                                 settings_menu = None;
                                 input_state.clear();
                                 // Reload settings after changes
-                                prompt_box.reload_settings();
-                                listener::reload_show_network_stats();
                                 listener::reload_show_image_previews();
                                 listener::reload_hide_tool_output();
                                 spacing::reload_compact_mode();

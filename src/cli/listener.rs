@@ -12,10 +12,6 @@ use colored::{Color, Colorize};
 use tokio::sync::watch;
 use unicode_width::UnicodeWidthChar;
 
-use crate::output::{OutputEvent, OutputListener};
-use crate::syntax;
-use crate::usage;
-
 use super::history::{self, HistoryEvent};
 use super::markdown::{
     render_markdown_inlines, render_markdown_inlines_with_style, render_markdown_line,
@@ -23,19 +19,14 @@ use super::markdown::{
 use super::render::{BG_DARK_GREEN, BG_DARK_RED, format_summary_suffix, style_file_read_line};
 use super::spacing::{LastBlock, needs_blank_line_before};
 use super::terminal;
+use crate::output::{OutputEvent, OutputListener};
+use crate::syntax;
 
 static ACTIVE_LISTENER: OnceLock<&'static CliListener> = OnceLock::new();
 
 // Global spinner state - completely decoupled from mutex-protected state
 static SPINNER_STATE: AtomicU8 = AtomicU8::new(0); // 0=Ready, 1=Working, 2=Thinking
 static SPINNER_TX: OnceLock<watch::Sender<u8>> = OnceLock::new();
-
-// Bandwidth display state - smoothly animated towards actual values
-static BANDWIDTH_RX_DISPLAY: AtomicU64 = AtomicU64::new(0);
-static BANDWIDTH_TX_DISPLAY: AtomicU64 = AtomicU64::new(0);
-
-// Whether to show network stats (loaded from config)
-static SHOW_NETWORK_STATS: AtomicBool = AtomicBool::new(false);
 
 // Whether to show image previews (loaded from config)
 static SHOW_IMAGE_PREVIEWS: AtomicBool = AtomicBool::new(true);
@@ -82,14 +73,6 @@ static STREAMING_START: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 static ACCUMULATED_DURATION_MS: AtomicU64 = AtomicU64::new(0);
 // Stores the final duration in milliseconds when streaming completes (0 = still streaming or no data)
 static FINAL_DURATION_MS: AtomicU64 = AtomicU64::new(0);
-
-/// Reload the show_network_stats setting from config
-pub(crate) fn reload_show_network_stats() {
-    let enabled = crate::config::ConfigFile::load()
-        .map(|c| c.show_network_stats)
-        .unwrap_or(false);
-    SHOW_NETWORK_STATS.store(enabled, Ordering::Relaxed);
-}
 
 /// Reload the show_image_previews setting from config
 pub(crate) fn reload_show_image_previews() {
@@ -774,29 +757,14 @@ fn build_stats_string() -> Option<String> {
     Some(format!("[{}]", parts.join(" | ")))
 }
 
-/// Format token counts as compact strings (e.g. 1.2k)
+/// Format token counts as compact strings using whole-number suffixes (e.g. 102k).
 fn format_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
-        format!("{:.1}m", tokens as f64 / 1_000_000.0)
+        format!("{}m", tokens / 1_000_000)
     } else if tokens >= 1_000 {
-        format!("{:.1}k", tokens as f64 / 1_000.0)
+        format!("{}k", tokens / 1_000)
     } else {
         tokens.to_string()
-    }
-}
-
-/// Format bytes as human-readable string (B, KB, MB)
-fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-
-    let bytes_f = bytes as f64;
-    if bytes_f >= MB {
-        format!("{:.1} MB", bytes_f / MB)
-    } else if bytes_f >= KB {
-        format!("{:.1} KB", bytes_f / KB)
-    } else {
-        format!("{} B", bytes)
     }
 }
 
@@ -823,33 +791,6 @@ fn animate_value(current_display: u64, target: u64) -> u64 {
     .max(1);
 
     (current_display + increment).min(target)
-}
-
-/// Update the bandwidth display on the provider/model status line.
-/// Smoothly animates the display values towards the actual network stats.
-fn update_bandwidth() {
-    // Skip if network stats are disabled
-    if !SHOW_NETWORK_STATS.load(Ordering::Relaxed) {
-        terminal::update_bandwidth_display("");
-        return;
-    }
-
-    let stats = usage::network_stats();
-    let target_tx = stats.tx_bytes();
-    let target_rx = stats.rx_bytes();
-
-    // Animate display values towards targets
-    let current_rx = BANDWIDTH_RX_DISPLAY.load(Ordering::Relaxed);
-    let current_tx = BANDWIDTH_TX_DISPLAY.load(Ordering::Relaxed);
-
-    let new_rx = animate_value(current_rx, target_rx);
-    let new_tx = animate_value(current_tx, target_tx);
-
-    BANDWIDTH_RX_DISPLAY.store(new_rx, Ordering::Relaxed);
-    BANDWIDTH_TX_DISPLAY.store(new_tx, Ordering::Relaxed);
-
-    let text = format!("↓{} ↑{}", format_bytes(new_rx), format_bytes(new_tx));
-    terminal::update_bandwidth_display(&text);
 }
 
 /// Animate total tokens display towards target value
@@ -921,18 +862,13 @@ async fn spinner_task(mut rx: watch::Receiver<u8>) {
                 }
                 let state = *rx.borrow_and_update();
                 write_status_line_for_spinner_state(state, Some(FRAMES[frame_idx % FRAMES.len()]));
-                update_bandwidth();
             }
             _ = interval.tick() => {
-                // Periodic update for animation and bandwidth
                 let state = SPINNER_STATE.load(Ordering::Acquire);
                 if state != 0 {
                     frame_idx = frame_idx.wrapping_add(1);
                     write_status_line_for_spinner_state(state, Some(FRAMES[frame_idx % FRAMES.len()]));
                 }
-
-                // Always update bandwidth on tick
-                update_bandwidth();
             }
         }
     }
@@ -2997,5 +2933,15 @@ mod tests {
         state.end_tool_block();
 
         assert!(!state.start_tool_block());
+    }
+
+    #[test]
+    fn format_tokens_uses_whole_number_suffixes() {
+        assert_eq!(super::format_tokens(999), "999");
+        assert_eq!(super::format_tokens(1_000), "1k");
+        assert_eq!(super::format_tokens(3_300), "3k");
+        assert_eq!(super::format_tokens(102_100), "102k");
+        assert_eq!(super::format_tokens(16_800), "16k");
+        assert_eq!(super::format_tokens(1_200_000), "1m");
     }
 }

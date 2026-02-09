@@ -6,7 +6,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
-use futures::StreamExt;
 use reqwest::Client;
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -503,8 +502,6 @@ impl OpenAiProvider {
     ) -> Result<ChatResponse> {
         // Record TX bytes
         let body_bytes = serde_json::to_vec(&request)?;
-        let body_len = body_bytes.len();
-        crate::usage::network_stats().record_tx(body_len as u64);
 
         let access_token = self.ensure_access_token().await?;
         let account_id = chatgpt_account_id(&access_token)
@@ -576,12 +573,7 @@ impl OpenAiProvider {
         let mut reasoning_summary = String::new();
         let mut encrypted_content: Option<String> = None;
 
-        let mut sse = sse::SseStream::new(response.bytes_stream().map(|chunk| {
-            if let Ok(ref bytes) = chunk {
-                crate::usage::network_stats().record_rx(bytes.len() as u64);
-            }
-            chunk
-        }));
+        let mut sse = sse::SseStream::new(response.bytes_stream());
         while let Some(result) = sse.next_event().await {
             let data = result.map_err(Error::Http)?;
 

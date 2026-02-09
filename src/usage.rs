@@ -195,36 +195,6 @@ pub async fn fetch_anthropic_rate_limits() -> Result<RateLimits> {
 }
 
 #[derive(Default)]
-pub(crate) struct NetworkStats {
-    tx_bytes: AtomicU64,
-    rx_bytes: AtomicU64,
-}
-
-impl NetworkStats {
-    pub(crate) fn record_tx(&self, bytes: u64) {
-        self.tx_bytes.fetch_add(bytes, Ordering::Relaxed);
-    }
-
-    pub(crate) fn record_rx(&self, bytes: u64) {
-        self.rx_bytes.fetch_add(bytes, Ordering::Relaxed);
-    }
-
-    pub(crate) fn tx_bytes(&self) -> u64 {
-        self.tx_bytes.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn rx_bytes(&self) -> u64 {
-        self.rx_bytes.load(Ordering::Relaxed)
-    }
-}
-
-static NETWORK_STATS: std::sync::OnceLock<NetworkStats> = std::sync::OnceLock::new();
-
-pub(crate) fn network_stats() -> &'static NetworkStats {
-    NETWORK_STATS.get_or_init(NetworkStats::default)
-}
-
-#[derive(Default)]
 pub(crate) struct Usage {
     last_input_tokens: AtomicU64,
     last_output_tokens: AtomicU64,

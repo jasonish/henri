@@ -128,8 +128,6 @@ pub(crate) struct ConfigFile {
     pub mcp: Option<McpConfig>,
     #[serde(default)]
     pub lsp: Option<LspConfig>,
-    #[serde(default = "default_show_network_stats")]
-    pub show_network_stats: bool,
     #[serde(
         default = "default_show_image_previews",
         rename = "show-image-previews"
@@ -172,7 +170,6 @@ impl Default for ConfigFile {
             state: None,
             mcp: None,
             lsp: None,
-            show_network_stats: default_show_network_stats(),
             show_image_previews: default_show_image_previews(),
             lsp_enabled: default_lsp_enabled(),
             hide_tool_output: default_hide_tool_output(),
@@ -182,10 +179,6 @@ impl Default for ConfigFile {
             disabled_tools: Vec::new(),
         }
     }
-}
-
-fn default_show_network_stats() -> bool {
-    true
 }
 
 fn default_show_image_previews() -> bool {
@@ -669,13 +662,6 @@ impl ConfigFile {
                 config.lsp = Some(lsp);
             }
 
-            // show-network-stats
-            if let Some(val) = table.get("show-network-stats")
-                && let Some(b) = val.as_bool()
-            {
-                config.show_network_stats = b;
-            }
-
             // show-image-previews
             if let Some(val) = table.get("show-image-previews")
                 && let Some(b) = val.as_bool()
@@ -1048,7 +1034,7 @@ expires-at = 12345
     #[test]
     fn test_default_model_missing_defaults_to_last_used() {
         // Test that missing default-model field defaults to LastUsed
-        let toml_str = r#"show-network-stats = true"#;
+        let toml_str = r#"show-image-previews = true"#;
         let config: ConfigFile = toml::from_str(toml_str).unwrap();
         assert_eq!(config.default_model, DefaultModel::LastUsed);
     }

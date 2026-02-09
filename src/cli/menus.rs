@@ -456,7 +456,6 @@ impl ModelMenuState {
 /// A setting option in the settings menu
 #[derive(Clone, Debug)]
 pub(super) enum SettingOption {
-    ShowNetworkStats(bool),
     ShowImagePreviews(bool),
     LspEnabled(bool),
     HideToolOutput(bool),
@@ -466,7 +465,6 @@ pub(super) enum SettingOption {
 impl SettingOption {
     fn label(&self) -> &'static str {
         match self {
-            SettingOption::ShowNetworkStats(_) => "Network Stats",
             SettingOption::ShowImagePreviews(_) => "Image Previews",
             SettingOption::LspEnabled(_) => "LSP Integration",
             SettingOption::HideToolOutput(_) => "Hide Tool Output",
@@ -476,8 +474,7 @@ impl SettingOption {
 
     fn value_display(&self) -> String {
         match self {
-            SettingOption::ShowNetworkStats(enabled)
-            | SettingOption::ShowImagePreviews(enabled)
+            SettingOption::ShowImagePreviews(enabled)
             | SettingOption::LspEnabled(enabled)
             | SettingOption::HideToolOutput(enabled)
             | SettingOption::CompactMode(enabled) => {
@@ -488,8 +485,7 @@ impl SettingOption {
 
     fn toggle(&mut self) {
         match self {
-            SettingOption::ShowNetworkStats(enabled)
-            | SettingOption::ShowImagePreviews(enabled)
+            SettingOption::ShowImagePreviews(enabled)
             | SettingOption::LspEnabled(enabled)
             | SettingOption::HideToolOutput(enabled)
             | SettingOption::CompactMode(enabled) => {
@@ -501,9 +497,6 @@ impl SettingOption {
     fn save(&self) {
         if let Ok(mut config) = ConfigFile::load() {
             match self {
-                SettingOption::ShowNetworkStats(enabled) => {
-                    config.show_network_stats = *enabled;
-                }
                 SettingOption::ShowImagePreviews(enabled) => {
                     config.show_image_previews = *enabled;
                 }
@@ -626,7 +619,6 @@ impl SettingsMenuState {
         Self {
             options: vec![
                 SettingOption::CompactMode(config.compact_mode),
-                SettingOption::ShowNetworkStats(config.show_network_stats),
                 SettingOption::ShowImagePreviews(config.show_image_previews),
                 SettingOption::LspEnabled(config.lsp_enabled),
                 SettingOption::HideToolOutput(config.hide_tool_output),

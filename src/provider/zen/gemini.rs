@@ -4,7 +4,6 @@
 use std::time::Instant;
 
 use base64::Engine;
-use futures::StreamExt;
 use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 
@@ -301,10 +300,6 @@ pub(super) async fn chat(
     );
     let request = build_request(ctx.model, &messages, None, ctx.services).await;
 
-    // Record TX bytes
-    let body_bytes = serde_json::to_vec(&request)?;
-    usage::network_stats().record_tx(body_bytes.len() as u64);
-
     let mut headers = HeaderMap::new();
     headers.insert(
         "x-goog-api-key",
@@ -361,12 +356,7 @@ pub(super) async fn chat(
     let mut thinking = output::ThinkingState::new(output);
     let mut streaming_start: Option<Instant> = None;
 
-    let mut sse = sse::SseStream::new(response.bytes_stream().map(|chunk| {
-        if let Ok(ref bytes) = chunk {
-            usage::network_stats().record_rx(bytes.len() as u64);
-        }
-        chunk
-    }));
+    let mut sse = sse::SseStream::new(response.bytes_stream());
     while let Some(result) = sse.next_event().await {
         let data = result.map_err(Error::Http)?;
 

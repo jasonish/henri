@@ -11,7 +11,6 @@ use std::collections::HashMap;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use futures::StreamExt;
 use reqwest::Client;
 use reqwest::header::HeaderMap;
 use serde::Serialize;
@@ -185,7 +184,6 @@ async fn execute_chat_inner(
 
     // Record TX bytes
     let body_bytes = serde_json::to_vec(&request)?;
-    crate::usage::network_stats().record_tx(body_bytes.len() as u64);
 
     let response = builder.body(body_bytes).send().await.map_err(|e| {
         Error::Other(format!(
@@ -226,12 +224,7 @@ async fn execute_chat_inner(
     let mut usage_recorded = false;
     let mut raw_events: Vec<serde_json::Value> = Vec::new();
 
-    let mut sse = crate::sse::SseStream::new(response.bytes_stream().map(|chunk| {
-        if let Ok(ref bytes) = chunk {
-            crate::usage::network_stats().record_rx(bytes.len() as u64);
-        }
-        chunk
-    }));
+    let mut sse = crate::sse::SseStream::new(response.bytes_stream());
 
     while let Some(result) = sse.next_event().await {
         let data = result.map_err(Error::Http)?;
