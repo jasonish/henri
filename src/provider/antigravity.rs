@@ -39,11 +39,6 @@ const ANTIGRAVITY_MODELS: &[&str] = &[
     "claude-sonnet-4-5-thinking#medium",
     "claude-sonnet-4-5-thinking#high",
     "claude-sonnet-4-5-thinking#xhigh",
-    "claude-opus-4-5-thinking#off",
-    "claude-opus-4-5-thinking#low",
-    "claude-opus-4-5-thinking#medium",
-    "claude-opus-4-5-thinking#high",
-    "claude-opus-4-5-thinking#xhigh",
     "claude-opus-4-6-thinking#off",
     "claude-opus-4-6-thinking#low",
     "claude-opus-4-6-thinking#medium",
@@ -1040,26 +1035,26 @@ mod tests {
             "gemini-3-flash#minimal" // wraps around
         );
 
-        // Cycle through claude-opus-4-5-thinking variants
+        // Cycle through claude-opus-4-6-thinking variants
         assert_eq!(
-            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking#off"),
-            "claude-opus-4-5-thinking#low"
+            AntigravityProvider::cycle_model_variant("claude-opus-4-6-thinking#off"),
+            "claude-opus-4-6-thinking#low"
         );
         assert_eq!(
-            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking#low"),
-            "claude-opus-4-5-thinking#medium"
+            AntigravityProvider::cycle_model_variant("claude-opus-4-6-thinking#low"),
+            "claude-opus-4-6-thinking#medium"
         );
         assert_eq!(
-            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking#medium"),
-            "claude-opus-4-5-thinking#high"
+            AntigravityProvider::cycle_model_variant("claude-opus-4-6-thinking#medium"),
+            "claude-opus-4-6-thinking#high"
         );
         assert_eq!(
-            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking#high"),
-            "claude-opus-4-5-thinking#xhigh"
+            AntigravityProvider::cycle_model_variant("claude-opus-4-6-thinking#high"),
+            "claude-opus-4-6-thinking#xhigh"
         );
         assert_eq!(
-            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking#xhigh"),
-            "claude-opus-4-5-thinking#off" // wraps around
+            AntigravityProvider::cycle_model_variant("claude-opus-4-6-thinking#xhigh"),
+            "claude-opus-4-6-thinking#off" // wraps around
         );
     }
 
@@ -1076,8 +1071,8 @@ mod tests {
     fn test_cycle_model_variant_bare_model() {
         // Bare model names (without variant) should be treated as #medium and cycle to #high
         assert_eq!(
-            AntigravityProvider::cycle_model_variant("claude-opus-4-5-thinking"),
-            "claude-opus-4-5-thinking#high"
+            AntigravityProvider::cycle_model_variant("claude-opus-4-6-thinking"),
+            "claude-opus-4-6-thinking#high"
         );
         assert_eq!(
             AntigravityProvider::cycle_model_variant("claude-sonnet-4-5-thinking"),
