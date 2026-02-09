@@ -940,36 +940,39 @@ impl AnthropicProvider {
                     if let Some(msg) = &event.message
                         && let Some(u) = &msg.usage
                     {
-                        let mut total_context = 0u64;
-                        let mut input_tokens = 0u64;
-                        let mut cache_read_tokens = 0u64;
-                        let mut cache_write_tokens = 0u64;
-                        if let Some(input) = u.input_tokens {
-                            input_tokens = input;
+                        let input_tokens = u.input_tokens.unwrap_or(0);
+                        let cache_write_tokens = u.cache_creation_input_tokens.unwrap_or(0);
+                        let cache_read_tokens = u.cache_read_input_tokens.unwrap_or(0);
+
+                        // Anthropic usage splits prompt tokens across uncached input,
+                        // cache writes (newly cached), and cache reads (reused from cache).
+                        // For context window display, include all prompt-side tokens.
+                        let context_tokens = input_tokens
+                            .saturating_add(cache_write_tokens)
+                            .saturating_add(cache_read_tokens);
+
+                        if input_tokens > 0 {
+                            usage::anthropic().record_input(input_tokens);
                         }
-                        if let Some(cache_create) = u.cache_creation_input_tokens {
-                            usage::anthropic().add_cache_creation(cache_create);
-                            cache_write_tokens = cache_create;
+                        if context_tokens > 0 {
+                            let limit = Self::context_limit(&self.model);
+                            output::emit_context_update(output, context_tokens, limit);
                         }
-                        if let Some(cache_read) = u.cache_read_input_tokens {
-                            usage::anthropic().add_cache_read(cache_read);
-                            cache_read_tokens = cache_read;
+                        if cache_write_tokens > 0 {
+                            usage::anthropic().add_cache_creation(cache_write_tokens);
                         }
-                        let input_total = input_tokens + cache_read_tokens;
-                        if input_total > 0 {
-                            usage::anthropic().record_input(input_total);
-                            total_context += input_total;
+                        if cache_read_tokens > 0 {
+                            usage::anthropic().add_cache_read(cache_read_tokens);
+                        }
+
+                        if input_tokens > 0 || cache_read_tokens > 0 || cache_write_tokens > 0 {
                             output::emit_usage_update(
                                 output,
-                                input_total,
+                                input_tokens,
                                 0,
                                 cache_read_tokens,
                                 cache_write_tokens,
                             );
-                        }
-                        if total_context > 0 {
-                            let limit = Self::context_limit(&self.model);
-                            output::emit_context_update(output, total_context, limit);
                         }
                     }
                 }

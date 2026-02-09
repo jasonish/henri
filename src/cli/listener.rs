@@ -737,8 +737,12 @@ fn build_stats_string() -> Option<String> {
     let cache_read_tokens = CACHE_READ_TOKENS.load(Ordering::Relaxed);
     let cache_write_tokens = CACHE_WRITE_TOKENS.load(Ordering::Relaxed);
 
-    if input_tokens > 0 {
-        parts.push(format!("↑{}", format_tokens(input_tokens)));
+    // For Anthropic-style usage, cache creation tokens are input prompt tokens that were
+    // processed this turn and written to cache. Include them in the displayed input total.
+    let displayed_input_tokens = input_tokens.saturating_add(cache_write_tokens);
+
+    if displayed_input_tokens > 0 {
+        parts.push(format!("↑{}", format_tokens(displayed_input_tokens)));
     }
     if output_tokens > 0 {
         parts.push(format!("↓{}", format_tokens(output_tokens)));
@@ -2921,6 +2925,8 @@ impl OutputListener for QuietListener {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::OutputState;
 
     #[test]
@@ -2969,5 +2975,23 @@ mod tests {
         assert_eq!(super::format_tokens(1_200_000), "1.2M");
         assert_eq!(super::format_tokens(8_100_000), "8.1M");
         assert_eq!(super::format_tokens(12_000_000), "12M");
+    }
+
+    #[test]
+    fn build_stats_string_counts_cache_write_tokens_in_input() {
+        super::reset_turn_stats();
+        super::INPUT_TOKENS.store(13, Ordering::Relaxed);
+        super::OUTPUT_TOKENS.store(177, Ordering::Relaxed);
+        super::CACHE_READ_TOKENS.store(10_100, Ordering::Relaxed);
+        super::CACHE_WRITE_TOKENS.store(402, Ordering::Relaxed);
+        super::ACCUMULATED_DURATION_MS.store(1_000, Ordering::Relaxed);
+
+        let stats = super::build_stats_string().expect("expected stats string");
+        assert!(stats.contains("↑415"), "{stats}");
+        assert!(stats.contains("↓177"), "{stats}");
+        assert!(stats.contains("R10k"), "{stats}");
+        assert!(stats.contains("W402"), "{stats}");
+
+        super::reset_turn_stats();
     }
 }
