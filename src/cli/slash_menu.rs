@@ -14,6 +14,9 @@ use crossterm::cursor;
 use crossterm::queue;
 use crossterm::style::{Color, ResetColor, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::{self, ClearType};
+use unicode_width::UnicodeWidthStr;
+
+use super::style::{MENU_BG_NORMAL, MENU_BG_SELECTED, SOFTWARE_CURSOR_OFF, SOFTWARE_CURSOR_ON};
 
 use crate::commands::{DynamicSlashCommand, filter_commands};
 use crate::custom_commands::{CustomCommand, load_custom_commands};
@@ -27,6 +30,8 @@ pub(super) struct SlashMenuState {
     pub items: Vec<DynamicSlashCommand>,
     /// Current selection index
     pub selected: usize,
+    /// Current slash query (without leading "/")
+    search_query: String,
     /// Custom commands cache
     custom_commands: Vec<CustomCommand>,
     /// Cached provider info for filtering
@@ -39,6 +44,7 @@ impl SlashMenuState {
         Self {
             items: Vec::new(),
             selected: 0,
+            search_query: String::new(),
             custom_commands: load_custom_commands().unwrap_or_default(),
             is_claude,
             has_claude_oauth: crate::commands::has_claude_oauth_provider(),
@@ -52,6 +58,8 @@ impl SlashMenuState {
 
     /// Update the menu items based on the current query
     pub fn update(&mut self, query: &str) {
+        self.search_query = query.to_string();
+
         // Reload custom commands to pick up any newly added files
         self.custom_commands = load_custom_commands().unwrap_or_default();
 
@@ -96,8 +104,8 @@ impl SlashMenuState {
         if self.items.is_empty() {
             0
         } else {
-            // Show up to MENU_MAX_VISIBLE items
-            MENU_MAX_VISIBLE.min(self.items.len()) as u16
+            // Header/search row + up to MENU_MAX_VISIBLE items
+            (1 + MENU_MAX_VISIBLE.min(self.items.len())) as u16
         }
     }
 
@@ -129,8 +137,24 @@ impl SlashMenuState {
         // Get terminal width for truncation and background fill
         let term_width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
 
+        // Header/filter line with software cursor to indicate typing location.
+        queue!(
+            stdout,
+            cursor::MoveTo(0, start_row),
+            terminal::Clear(ClearType::CurrentLine),
+            SetBackgroundColor(MENU_BG_NORMAL),
+            SetForegroundColor(Color::Yellow)
+        )?;
+        let header_text = format!(" Filter: /{}", self.search_query);
+        let header_width = header_text.width() + 1; // +1 for the cursor cell
+        write!(stdout, "{}", header_text)?;
+        write!(stdout, "{SOFTWARE_CURSOR_ON} {SOFTWARE_CURSOR_OFF}")?;
+        let header_remaining = term_width.saturating_sub(header_width);
+        write!(stdout, "{:width$}", "", width = header_remaining)?;
+        queue!(stdout, ResetColor)?;
+
         for (i, cmd) in visible.iter().enumerate() {
-            let row = start_row + i as u16;
+            let row = start_row + 1 + i as u16;
             let is_selected = i == selected_in_view;
 
             queue!(
@@ -142,11 +166,7 @@ impl SlashMenuState {
             // Colors matching cli/input.rs menu rendering
             let (bg_color, name_color, desc_color) = if is_selected {
                 (
-                    Color::Rgb {
-                        r: 30,
-                        g: 30,
-                        b: 30,
-                    },
+                    MENU_BG_SELECTED,
                     Color::Rgb {
                         r: 137,
                         g: 180,
@@ -160,11 +180,7 @@ impl SlashMenuState {
                 )
             } else {
                 (
-                    Color::Rgb {
-                        r: 20,
-                        g: 20,
-                        b: 20,
-                    },
+                    MENU_BG_NORMAL,
                     Color::Rgb {
                         r: 120,
                         g: 120,
@@ -224,11 +240,12 @@ impl SlashMenuState {
 
         // Show scroll indicator if there are more items
         if total > visible_count {
-            let indicator_row = start_row + visible_count as u16;
+            let indicator_row = start_row + 1 + visible_count as u16;
             queue!(
                 stdout,
                 cursor::MoveTo(0, indicator_row),
                 terminal::Clear(ClearType::CurrentLine),
+                SetBackgroundColor(MENU_BG_NORMAL),
                 SetForegroundColor(Color::DarkGrey)
             )?;
             write!(

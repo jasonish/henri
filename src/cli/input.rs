@@ -1542,7 +1542,8 @@ mod tests {
         menu.selected = 0;
         state.slash_menu = Some(menu);
 
-        assert_eq!(state.active_menu_height(), 1);
+        // Slash menu now includes a dedicated filter/header row.
+        assert_eq!(state.active_menu_height(), 2);
     }
 
     #[test]

@@ -25,6 +25,7 @@ use super::menus::{
     ToolsMenuState,
 };
 use super::render::colorize_image_markers;
+use super::style::{SOFTWARE_CURSOR_OFF, SOFTWARE_CURSOR_ON};
 use super::terminal as cli_terminal;
 
 const BORDER_COLOR: Color = Color::Rgb {
@@ -38,9 +39,6 @@ const PROMPT_BG_COLOR: Color = Color::AnsiValue(236);
 
 const EXIT_HINT_TEXT: &str = "Press Ctrl+C again within 2s to exit";
 const WELCOME_HINT_TEXT: &str = "Welcome to Henri 🐕, type /help for more info";
-
-const SOFTWARE_CURSOR_ON: &str = "\x1b[7m";
-const SOFTWARE_CURSOR_OFF: &str = "\x1b[27m";
 
 const SGR_DIM_ON: &str = "\x1b[2m";
 const SGR_DIM_OFF: &str = "\x1b[22m";
@@ -365,6 +363,10 @@ impl PromptBox {
             // Draw input box first
             self.draw_border_line(stdout, start_row, true)?;
 
+            // Hide the software cursor in the main prompt while slash menu is open.
+            // Slash menu has its own interaction focus and the prompt cursor can look misplaced.
+            let show_input_cursor = !state.slash_menu_active();
+
             // Draw visible wrapped rows (viewport window)
             for (display_idx, row) in wrapped_rows
                 .iter()
@@ -380,8 +382,11 @@ impl PromptBox {
                 )?;
 
                 let is_cursor_row = display_idx == cursor_pos.row.saturating_sub(viewport_start);
-                let text =
-                    render_input_row(&row.text, is_cursor_row.then_some(cursor_pos.col), true);
+                let text = render_input_row(
+                    &row.text,
+                    is_cursor_row.then_some(cursor_pos.col),
+                    show_input_cursor,
+                );
                 write!(stdout, "{}", text)?;
             }
 
@@ -504,8 +509,10 @@ impl PromptBox {
                 )?;
 
                 let is_cursor_row = display_idx == cursor_pos.row;
+                // Model menu has its own filter input; hide the prompt software cursor
+                // so focus is visually in the menu, not the prompt buffer.
                 let text =
-                    render_input_row(&row.text, is_cursor_row.then_some(cursor_pos.col), true);
+                    render_input_row(&row.text, is_cursor_row.then_some(cursor_pos.col), false);
                 write!(stdout, "{}", text)?;
             }
 
@@ -1075,6 +1082,9 @@ impl PromptBox {
             // Draw input box
             self.draw_border_line(stdout, current_row, true)?;
 
+            // Hide the software cursor in the main prompt while slash menu is open.
+            let show_input_cursor = !state.slash_menu_active();
+
             // Draw wrapped rows (viewport window)
             for (display_idx, row) in wrapped_rows
                 .iter()
@@ -1090,8 +1100,11 @@ impl PromptBox {
                 )?;
 
                 let is_cursor_row = display_idx == cursor_pos.row.saturating_sub(viewport_start);
-                let text =
-                    render_input_row(&row.text, is_cursor_row.then_some(cursor_pos.col), true);
+                let text = render_input_row(
+                    &row.text,
+                    is_cursor_row.then_some(cursor_pos.col),
+                    show_input_cursor,
+                );
                 write!(stdout, "{}", text)?;
             }
 
@@ -1568,62 +1581,43 @@ impl PromptBox {
         )?;
 
         if is_top {
-            // Draw the security indicator in the top border
-            let (status_text, status_color) = if self.status.security.read_only {
-                ("RO", Color::Yellow)
+            // Build top-right indicators in order: security, MCP, LSP.
+            // Security is intentionally before MCP/LSP so it appears to their left.
+            let (security_text, security_color) = if self.status.security.read_only {
+                ("RO".to_string(), Color::Yellow)
             } else if self.status.security.sandbox_enabled {
-                ("RW", Color::Green)
+                ("RW".to_string(), Color::Green)
             } else {
-                ("YOLO", Color::Red)
+                ("YOLO".to_string(), Color::Red)
             };
 
-            // Draw: ─[RW]───...
-            write!(stdout, "─[")?;
-            queue!(stdout, SetForegroundColor(status_color))?;
-            write!(stdout, "{}", status_text)?;
-            queue!(stdout, SetForegroundColor(BORDER_COLOR))?;
-            write!(stdout, "]")?;
+            let mut indicators: Vec<(String, Color)> = vec![(security_text, security_color)];
+            if self.status.mcp_server_count > 0 {
+                indicators.push((
+                    format!("MCP: {}", self.status.mcp_server_count),
+                    Color::Cyan,
+                ));
+            }
+            if self.status.lsp_server_count > 0 {
+                indicators.push((
+                    format!("LSP: {}", self.status.lsp_server_count),
+                    Color::Green,
+                ));
+            }
 
-            // Calculate widths
-            let left_width = 3 + status_text.len(); // "─[" + status + "]"
+            // Each indicator is rendered as: [text]─
+            let right_width: usize = indicators.iter().map(|(text, _)| text.len() + 3).sum();
 
-            // Calculate right side indicators (MCP and LSP if active)
-            let mcp_text = if self.status.mcp_server_count > 0 {
-                Some(format!("MCP: {}", self.status.mcp_server_count))
-            } else {
-                None
-            };
-            let lsp_text = if self.status.lsp_server_count > 0 {
-                Some(format!("LSP: {}", self.status.lsp_server_count))
-            } else {
-                None
-            };
-
-            // Calculate total right width: each indicator is "[text]─"
-            let mcp_width = mcp_text.as_ref().map(|t| t.len() + 3).unwrap_or(0);
-            let lsp_width = lsp_text.as_ref().map(|t| t.len() + 3).unwrap_or(0);
-            let right_width = mcp_width + lsp_width;
-
-            // Fill the middle with border characters
-            let middle_width = self.width.saturating_sub(left_width + right_width);
+            // Fill left/middle area with border characters so indicators are right-aligned.
+            let middle_width = self.width.saturating_sub(right_width);
             for _ in 0..middle_width {
                 write!(stdout, "─")?;
             }
 
-            // Draw MCP indicator on the right if active
-            if let Some(mcp_text) = mcp_text {
+            for (text, color) in indicators {
                 write!(stdout, "[")?;
-                queue!(stdout, SetForegroundColor(Color::Cyan))?;
-                write!(stdout, "{}", mcp_text)?;
-                queue!(stdout, SetForegroundColor(BORDER_COLOR))?;
-                write!(stdout, "]─")?;
-            }
-
-            // Draw LSP indicator on the right if active
-            if let Some(lsp_text) = lsp_text {
-                write!(stdout, "[")?;
-                queue!(stdout, SetForegroundColor(Color::Green))?;
-                write!(stdout, "{}", lsp_text)?;
+                queue!(stdout, SetForegroundColor(color))?;
+                write!(stdout, "{}", text)?;
                 queue!(stdout, SetForegroundColor(BORDER_COLOR))?;
                 write!(stdout, "]─")?;
             }

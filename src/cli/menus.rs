@@ -15,6 +15,8 @@ use crossterm::style::{Color, ResetColor, SetBackgroundColor, SetForegroundColor
 use crossterm::terminal::{self, ClearType};
 use unicode_width::UnicodeWidthStr;
 
+use super::style::{MENU_BG_NORMAL, MENU_BG_SELECTED, SOFTWARE_CURSOR_OFF, SOFTWARE_CURSOR_ON};
+
 use crate::config::{ConfigFile, DefaultModel};
 use crate::providers::{ModelChoice, build_model_choices};
 use crate::session::{self, SessionInfo};
@@ -61,6 +63,46 @@ fn fuzzy_match_score(query: &str, target: &str) -> Option<u32> {
     } else {
         None
     }
+}
+
+fn render_filter_header(
+    stdout: &mut io::Stdout,
+    start_row: u16,
+    term_width: usize,
+    query: &str,
+    empty_hint: Option<&str>,
+) -> io::Result<()> {
+    queue!(
+        stdout,
+        cursor::MoveTo(0, start_row),
+        terminal::Clear(ClearType::CurrentLine),
+        SetBackgroundColor(MENU_BG_NORMAL),
+        SetForegroundColor(Color::Yellow)
+    )?;
+
+    let filter_text = format!(" Filter: {}", query);
+    write!(stdout, "{}", filter_text)?;
+    write!(stdout, "{SOFTWARE_CURSOR_ON} {SOFTWARE_CURSOR_OFF}")?;
+
+    let mut written_width = filter_text.width() + 1; // +1 for software cursor cell
+
+    if query.is_empty()
+        && let Some(hint_text) = empty_hint
+    {
+        let hint_prefix = "  ";
+        let hint_width = hint_prefix.width() + hint_text.width();
+        if written_width + hint_width <= term_width {
+            queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+            write!(stdout, "{}{}", hint_prefix, hint_text)?;
+            written_width += hint_width;
+        }
+    }
+
+    let remaining = term_width.saturating_sub(written_width);
+    write!(stdout, "{:width$}", "", width = remaining)?;
+    queue!(stdout, ResetColor)?;
+
+    Ok(())
 }
 
 /// Action from handling a key event in the model menu
@@ -287,45 +329,20 @@ impl ModelMenuState {
 
         let term_width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
 
-        // Background colors matching slash_menu.rs popup style
-        let bg_normal = Color::Rgb {
-            r: 20,
-            g: 20,
-            b: 20,
-        };
-        let bg_selected = Color::Rgb {
-            r: 30,
-            g: 30,
-            b: 30,
-        };
-
-        // Draw header/search line with popup background
-        queue!(
+        render_filter_header(
             stdout,
-            cursor::MoveTo(0, start_row),
-            terminal::Clear(ClearType::CurrentLine),
-            SetBackgroundColor(bg_normal),
-            SetForegroundColor(Color::Yellow)
+            start_row,
+            term_width,
+            &self.search_query,
+            Some("^f fav, ↑↓ navigate"),
         )?;
-
-        let header_text = if self.search_query.is_empty() {
-            " Select model (^f fav, type to filter, ↑↓ navigate):".to_string()
-        } else {
-            format!(" Filter: {}", self.search_query)
-        };
-        let header_width = header_text.width();
-        write!(stdout, "{}", header_text)?;
-        // Fill the rest of the line with background
-        let remaining = term_width.saturating_sub(header_width);
-        write!(stdout, "{:width$}", "", width = remaining)?;
-        queue!(stdout, ResetColor)?;
 
         if total == 0 {
             queue!(
                 stdout,
                 cursor::MoveTo(0, start_row + 1),
                 terminal::Clear(ClearType::CurrentLine),
-                SetBackgroundColor(bg_normal),
+                SetBackgroundColor(MENU_BG_NORMAL),
                 SetForegroundColor(Color::DarkGrey)
             )?;
             let msg = "  No matching models";
@@ -365,7 +382,7 @@ impl ModelMenuState {
             // Colors matching slash_menu.rs
             let (bg_color, name_color, desc_color) = if is_selected {
                 (
-                    bg_selected,
+                    MENU_BG_SELECTED,
                     Color::Rgb {
                         r: 137,
                         g: 180,
@@ -379,7 +396,7 @@ impl ModelMenuState {
                 )
             } else {
                 (
-                    bg_normal,
+                    MENU_BG_NORMAL,
                     Color::Rgb {
                         r: 120,
                         g: 120,
@@ -435,7 +452,7 @@ impl ModelMenuState {
                 stdout,
                 cursor::MoveTo(0, indicator_row),
                 terminal::Clear(ClearType::CurrentLine),
-                SetBackgroundColor(bg_normal),
+                SetBackgroundColor(MENU_BG_NORMAL),
                 SetForegroundColor(Color::DarkGrey)
             )?;
             let msg = format!(
@@ -975,43 +992,20 @@ impl SettingsMenuState {
         let visible_count = MENU_MAX_VISIBLE.min(total);
         let term_width = terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
 
-        let bg_normal = Color::Rgb {
-            r: 20,
-            g: 20,
-            b: 20,
-        };
-        let bg_selected = Color::Rgb {
-            r: 30,
-            g: 30,
-            b: 30,
-        };
-
-        // Header/search line
-        queue!(
+        render_filter_header(
             stdout,
-            cursor::MoveTo(0, start_row),
-            terminal::Clear(ClearType::CurrentLine),
-            SetBackgroundColor(bg_normal),
-            SetForegroundColor(Color::Yellow)
+            start_row,
+            term_width,
+            &submenu.search_query,
+            Some("type to filter, ↑↓ navigate"),
         )?;
-
-        let header_text = if submenu.search_query.is_empty() {
-            " Select default model (type to filter, ↑↓ navigate):".to_string()
-        } else {
-            format!(" Filter: {}", submenu.search_query)
-        };
-        let header_width = header_text.width();
-        write!(stdout, "{}", header_text)?;
-        let remaining = term_width.saturating_sub(header_width);
-        write!(stdout, "{:width$}", "", width = remaining)?;
-        queue!(stdout, ResetColor)?;
 
         if total == 0 {
             queue!(
                 stdout,
                 cursor::MoveTo(0, start_row + 1),
                 terminal::Clear(ClearType::CurrentLine),
-                SetBackgroundColor(bg_normal),
+                SetBackgroundColor(MENU_BG_NORMAL),
                 SetForegroundColor(Color::DarkGrey)
             )?;
             let msg = "  No matching models";
@@ -1053,7 +1047,7 @@ impl SettingsMenuState {
 
             let (bg_color, name_color, desc_color) = if is_selected {
                 (
-                    bg_selected,
+                    MENU_BG_SELECTED,
                     Color::Rgb {
                         r: 137,
                         g: 180,
@@ -1067,7 +1061,7 @@ impl SettingsMenuState {
                 )
             } else {
                 (
-                    bg_normal,
+                    MENU_BG_NORMAL,
                     Color::Rgb {
                         r: 120,
                         g: 120,
@@ -1130,7 +1124,7 @@ impl SettingsMenuState {
                 stdout,
                 cursor::MoveTo(0, indicator_row),
                 terminal::Clear(ClearType::CurrentLine),
-                SetBackgroundColor(bg_normal),
+                SetBackgroundColor(MENU_BG_NORMAL),
                 SetForegroundColor(Color::DarkGrey)
             )?;
             let msg = format!(
