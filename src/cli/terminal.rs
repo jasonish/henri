@@ -10,7 +10,7 @@ use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use crossterm::cursor::{Hide, MoveTo, MoveToNextLine, Show};
+use crossterm::cursor::{Hide, MoveTo, MoveToNextLine};
 use crossterm::execute;
 use crossterm::terminal::{self, Clear, ClearType, ScrollDown, ScrollUp, SetTitle};
 
@@ -283,11 +283,7 @@ pub(super) fn set_streaming_status_line_active(active: bool) {
             .lock()
             .map(|s| s.start_row)
             .unwrap_or(start_row);
-        if let Some((off, col)) = cursor_pos {
-            let _ = execute!(stdout, MoveTo(col, new_start_row + off), Show);
-        } else {
-            let _ = execute!(stdout, Show);
-        }
+        restore_cursor_hidden(&mut stdout, Some(new_start_row), cursor_pos);
     }
 
     if let Ok(mut state) = PROMPT_STATE.lock() {
@@ -406,6 +402,23 @@ fn is_prompt_visible() -> bool {
 
 pub(crate) fn prompt_visible() -> bool {
     is_prompt_visible()
+}
+
+/// Restore the hardware cursor while keeping it hidden.
+///
+/// Henri renders a software cursor in the prompt area. Re-showing the hardware
+/// cursor during frequent streaming/status updates causes visible blink/flicker
+/// on many terminals.
+fn restore_cursor_hidden(
+    stdout: &mut io::Stdout,
+    prompt_start_row: Option<u16>,
+    cursor_pos: Option<(u16, u16)>,
+) {
+    if let (Some(start_row), Some((off, col))) = (prompt_start_row, cursor_pos) {
+        let _ = execute!(stdout, MoveTo(col, start_row + off), Hide);
+    } else {
+        let _ = execute!(stdout, crossterm::cursor::RestorePosition, Hide);
+    }
 }
 
 fn calculate_output_size(mut col: u16, text: &str, width: u16) -> (u16, u16) {
@@ -578,21 +591,17 @@ fn shift_prompt_down(lines: u16) {
     let _ = execute!(stdout, ScrollDown(shift));
     print!("\x1b[r");
 
-    // Restore cursor. If we have a tracked prompt position, use that instead of RestorePosition
-    // because the prompt may have moved due to scrolling.
-    let restored = if let Ok(state) = PROMPT_STATE.lock()
-        && let Some((off, col)) = state.cursor_pos
-    {
-        let new_start = state.start_row.saturating_add(shift);
-        let _ = execute!(stdout, MoveTo(col, new_start + off), Show);
-        true
+    // Restore cursor. If we have a tracked prompt position, account for the
+    // pending prompt shift before moving the hidden hardware cursor.
+    let (prompt_start_row, cursor_pos) = if let Ok(state) = PROMPT_STATE.lock() {
+        (
+            Some(state.start_row.saturating_add(shift)),
+            state.cursor_pos,
+        )
     } else {
-        false
+        (None, None)
     };
-
-    if !restored {
-        let _ = execute!(stdout, crossterm::cursor::RestorePosition, Show);
-    }
+    restore_cursor_hidden(&mut stdout, prompt_start_row, cursor_pos);
 
     if let Ok(mut state) = PROMPT_STATE.lock() {
         state.start_row = state.start_row.saturating_add(shift);
@@ -661,19 +670,13 @@ pub(crate) fn reserve_output_lines(lines: u16) -> bool {
         }
     }
 
-    // Restore cursor to prompt
-    let restored = if let Ok(state) = PROMPT_STATE.lock()
-        && let Some((off, col)) = state.cursor_pos
-    {
-        let _ = execute!(stdout, MoveTo(col, state.start_row + off), Show);
-        true
+    // Restore cursor to prompt while keeping hardware cursor hidden.
+    let (prompt_start_row, cursor_pos) = if let Ok(state) = PROMPT_STATE.lock() {
+        (Some(state.start_row), state.cursor_pos)
     } else {
-        false
+        (None, None)
     };
-
-    if !restored {
-        let _ = execute!(stdout, crossterm::cursor::RestorePosition, Show);
-    }
+    restore_cursor_hidden(&mut stdout, prompt_start_row, cursor_pos);
 
     let success = reserved == lines;
     if success {
@@ -935,14 +938,13 @@ fn print_above_locked(text: &str) {
                 print!("{}", text);
                 let _ = stdout.flush();
 
-                // Restore cursor to prompt
-                if let Ok(state) = PROMPT_STATE.lock() {
-                    if let Some((off, col)) = state.cursor_pos {
-                        let _ = execute!(stdout, MoveTo(col, state.start_row + off), Show);
-                    } else {
-                        let _ = execute!(stdout, crossterm::cursor::RestorePosition, Show);
-                    }
-                }
+                // Restore cursor to prompt while keeping hardware cursor hidden.
+                let (prompt_start_row, cursor_pos) = if let Ok(state) = PROMPT_STATE.lock() {
+                    (Some(state.start_row), state.cursor_pos)
+                } else {
+                    (None, None)
+                };
+                restore_cursor_hidden(&mut stdout, prompt_start_row, cursor_pos);
 
                 if let Ok(mut state) = OUTPUT_CURSOR.lock() {
                     state.col = new_col;
@@ -972,14 +974,13 @@ fn print_above_locked(text: &str) {
             print!("{}", text);
             let _ = stdout.flush();
 
-            // Restore cursor to prompt
-            if let Ok(state) = PROMPT_STATE.lock() {
-                if let Some((off, col)) = state.cursor_pos {
-                    let _ = execute!(stdout, MoveTo(col, state.start_row + off), Show);
-                } else {
-                    let _ = execute!(stdout, crossterm::cursor::RestorePosition, Show);
-                }
-            }
+            // Restore cursor to prompt while keeping hardware cursor hidden.
+            let (prompt_start_row, cursor_pos) = if let Ok(state) = PROMPT_STATE.lock() {
+                (Some(state.start_row), state.cursor_pos)
+            } else {
+                (None, None)
+            };
+            restore_cursor_hidden(&mut stdout, prompt_start_row, cursor_pos);
 
             if let Ok(mut state) = OUTPUT_CURSOR.lock() {
                 state.col = new_col;
@@ -1036,20 +1037,17 @@ fn print_above_locked(text: &str) {
     let _ = stdout.flush();
     print!("\x1b[r");
 
-    // Restore cursor
-    let restored = if let Ok(state) = PROMPT_STATE.lock()
-        && state.visible
-        && let Some((off, col)) = state.cursor_pos
-    {
-        let _ = execute!(stdout, MoveTo(col, state.start_row + off), Show);
-        true
+    // Restore cursor while keeping hardware cursor hidden.
+    let (prompt_start_row, cursor_pos) = if let Ok(state) = PROMPT_STATE.lock() {
+        if state.visible {
+            (Some(state.start_row), state.cursor_pos)
+        } else {
+            (None, None)
+        }
     } else {
-        false
+        (None, None)
     };
-
-    if !restored {
-        let _ = execute!(stdout, crossterm::cursor::RestorePosition, Show);
-    }
+    restore_cursor_hidden(&mut stdout, prompt_start_row, cursor_pos);
 
     if let Ok(mut state) = OUTPUT_CURSOR.lock() {
         state.col = new_col;
