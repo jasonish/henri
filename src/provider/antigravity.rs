@@ -889,6 +889,7 @@ impl AntigravityProvider {
                 usage_input.unwrap_or(0),
                 usage_output.unwrap_or(0),
                 usage_cache.unwrap_or(0),
+                0,
             );
         }
 

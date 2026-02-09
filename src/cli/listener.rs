@@ -68,6 +68,7 @@ static TOTAL_TOKENS_DISPLAY: AtomicU64 = AtomicU64::new(0);
 static INPUT_TOKENS: AtomicU64 = AtomicU64::new(0);
 static OUTPUT_TOKENS: AtomicU64 = AtomicU64::new(0);
 static CACHE_READ_TOKENS: AtomicU64 = AtomicU64::new(0);
+static CACHE_WRITE_TOKENS: AtomicU64 = AtomicU64::new(0);
 static STREAMING_START: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 // Accumulated duration from previous API calls in this turn (in milliseconds)
 static ACCUMULATED_DURATION_MS: AtomicU64 = AtomicU64::new(0);
@@ -638,7 +639,12 @@ fn update_total_tokens(total: u64) {
 }
 
 /// Update usage stats during streaming
-fn update_usage_stats(input_tokens: u64, output_tokens: u64, cache_read_tokens: u64) {
+fn update_usage_stats(
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+) {
     if input_tokens > 0 {
         INPUT_TOKENS.fetch_add(input_tokens, Ordering::Relaxed);
     }
@@ -647,6 +653,9 @@ fn update_usage_stats(input_tokens: u64, output_tokens: u64, cache_read_tokens: 
     }
     if cache_read_tokens > 0 {
         CACHE_READ_TOKENS.fetch_add(cache_read_tokens, Ordering::Relaxed);
+    }
+    if cache_write_tokens > 0 {
+        CACHE_WRITE_TOKENS.fetch_add(cache_write_tokens, Ordering::Relaxed);
     }
 
     let input_total = INPUT_TOKENS.load(Ordering::Relaxed);
@@ -666,6 +675,7 @@ pub(crate) fn reset_turn_stats() {
     INPUT_TOKENS.store(0, Ordering::Relaxed);
     OUTPUT_TOKENS.store(0, Ordering::Relaxed);
     CACHE_READ_TOKENS.store(0, Ordering::Relaxed);
+    CACHE_WRITE_TOKENS.store(0, Ordering::Relaxed);
     ACCUMULATED_DURATION_MS.store(0, Ordering::Relaxed);
     FINAL_DURATION_MS.store(0, Ordering::Relaxed);
 }
@@ -714,53 +724,61 @@ fn get_streaming_duration() -> Option<f64> {
     }
 }
 
-/// Build the stats string for the status line (right side)
+/// Build the stats string for the status line (right side) in a Pi-like style.
+///
+/// Example: "↑308k ↓32k R8.1M W512k 45%/600k [32.9s]"
 fn build_stats_string() -> Option<String> {
     let duration = get_streaming_duration()?;
 
-    let mut parts = vec![format!("{:.1}s", duration)];
+    let mut parts: Vec<String> = Vec::new();
+
+    let input_tokens = INPUT_TOKENS.load(Ordering::Relaxed);
+    let output_tokens = OUTPUT_TOKENS.load(Ordering::Relaxed);
+    let cache_read_tokens = CACHE_READ_TOKENS.load(Ordering::Relaxed);
+    let cache_write_tokens = CACHE_WRITE_TOKENS.load(Ordering::Relaxed);
+
+    if input_tokens > 0 {
+        parts.push(format!("↑{}", format_tokens(input_tokens)));
+    }
+    if output_tokens > 0 {
+        parts.push(format!("↓{}", format_tokens(output_tokens)));
+    }
+    if cache_read_tokens > 0 {
+        parts.push(format!("R{}", format_tokens(cache_read_tokens)));
+    }
+    if cache_write_tokens > 0 {
+        parts.push(format!("W{}", format_tokens(cache_write_tokens)));
+    }
 
     let ctx_tokens = CONTEXT_TOKENS.load(Ordering::Relaxed);
     let ctx_limit = CONTEXT_LIMIT.load(Ordering::Relaxed);
 
     if ctx_tokens > 0 && ctx_limit > 0 {
-        let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
-        let limit_k = ctx_limit / 1000;
         let pct = (ctx_tokens as f64 / ctx_limit as f64) * 100.0;
-        parts.push(format!("ctx:{}k/{}k ({:.0}%)", ctx_k, limit_k, pct));
+        parts.push(format!("{:.0}%/{}", pct, format_tokens(ctx_limit)));
     } else if ctx_tokens > 0 {
-        let ctx_k = (ctx_tokens as f64 / 1000.0).round() as u64;
-        parts.push(format!("ctx:{}k", ctx_k));
+        parts.push(format!("ctx:{}", format_tokens(ctx_tokens)));
     }
 
-    let input_tokens = INPUT_TOKENS.load(Ordering::Relaxed);
-    let output_tokens = OUTPUT_TOKENS.load(Ordering::Relaxed);
-    let cache_read_tokens = CACHE_READ_TOKENS.load(Ordering::Relaxed);
-    let total_display = TOTAL_TOKENS_DISPLAY.load(Ordering::Relaxed);
-    let mut usage_parts = Vec::new();
-    if input_tokens > 0 {
-        usage_parts.push(format!("i:{}", format_tokens(input_tokens)));
-    }
-    if output_tokens > 0 {
-        usage_parts.push(format!("o:{}", format_tokens(output_tokens)));
-    }
-    if cache_read_tokens > 0 {
-        usage_parts.push(format!("c:{}", format_tokens(cache_read_tokens)));
-    }
-    if total_display > 0 {
-        usage_parts.push(format!("t:{}", format_tokens(total_display)));
-    }
-    if !usage_parts.is_empty() {
-        parts.push(usage_parts.join(" "));
-    }
+    parts.push(format!("[{:.1}s]", duration));
 
-    Some(format!("[{}]", parts.join(" | ")))
+    Some(parts.join(" "))
 }
 
-/// Format token counts as compact strings using whole-number suffixes (e.g. 102k).
+/// Format token counts as compact strings in a Pi-like style.
+///
+/// - Thousands: whole-number "k" suffix (e.g. 308k)
+/// - Millions: one decimal "M" suffix when useful (e.g. 8.1M)
 fn format_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
-        format!("{}m", tokens / 1_000_000)
+        let millions = tokens as f64 / 1_000_000.0;
+        if millions >= 10.0 {
+            format!("{:.0}M", millions)
+        } else {
+            let s = format!("{:.1}", millions);
+            let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+            format!("{}M", trimmed)
+        }
     } else if tokens >= 1_000 {
         format!("{}k", tokens / 1_000)
     } else {
@@ -2812,8 +2830,14 @@ impl CliListener {
                 input_tokens,
                 output_tokens,
                 cache_read_tokens,
+                cache_write_tokens,
             } => {
-                update_usage_stats(*input_tokens, *output_tokens, *cache_read_tokens);
+                update_usage_stats(
+                    *input_tokens,
+                    *output_tokens,
+                    *cache_read_tokens,
+                    *cache_write_tokens,
+                );
             }
 
             OutputEvent::Done => {
@@ -2936,12 +2960,14 @@ mod tests {
     }
 
     #[test]
-    fn format_tokens_uses_whole_number_suffixes() {
+    fn format_tokens_uses_pi_style_suffixes() {
         assert_eq!(super::format_tokens(999), "999");
         assert_eq!(super::format_tokens(1_000), "1k");
         assert_eq!(super::format_tokens(3_300), "3k");
         assert_eq!(super::format_tokens(102_100), "102k");
         assert_eq!(super::format_tokens(16_800), "16k");
-        assert_eq!(super::format_tokens(1_200_000), "1m");
+        assert_eq!(super::format_tokens(1_200_000), "1.2M");
+        assert_eq!(super::format_tokens(8_100_000), "8.1M");
+        assert_eq!(super::format_tokens(12_000_000), "12M");
     }
 }

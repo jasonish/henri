@@ -943,11 +943,13 @@ impl AnthropicProvider {
                         let mut total_context = 0u64;
                         let mut input_tokens = 0u64;
                         let mut cache_read_tokens = 0u64;
+                        let mut cache_write_tokens = 0u64;
                         if let Some(input) = u.input_tokens {
                             input_tokens = input;
                         }
                         if let Some(cache_create) = u.cache_creation_input_tokens {
                             usage::anthropic().add_cache_creation(cache_create);
+                            cache_write_tokens = cache_create;
                         }
                         if let Some(cache_read) = u.cache_read_input_tokens {
                             usage::anthropic().add_cache_read(cache_read);
@@ -957,7 +959,13 @@ impl AnthropicProvider {
                         if input_total > 0 {
                             usage::anthropic().record_input(input_total);
                             total_context += input_total;
-                            output::emit_usage_update(output, input_total, 0, cache_read_tokens);
+                            output::emit_usage_update(
+                                output,
+                                input_total,
+                                0,
+                                cache_read_tokens,
+                                cache_write_tokens,
+                            );
                         }
                         if total_context > 0 {
                             let limit = Self::context_limit(&self.model);
@@ -1080,7 +1088,7 @@ impl AnthropicProvider {
                         && let Some(output_tokens) = u.output_tokens
                     {
                         usage::anthropic().record_output(output_tokens);
-                        output::emit_usage_update(output, 0, output_tokens, 0);
+                        output::emit_usage_update(output, 0, output_tokens, 0, 0);
 
                         // Emit final progress with turn total (accumulated across all API calls)
                         if let Some(start) = streaming_start {

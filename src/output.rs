@@ -44,11 +44,12 @@ pub(crate) enum OutputEvent {
     Interrupted,
     /// Progress update during streaming
     WorkingProgress { total_tokens: u64 },
-    /// Usage stats update (input/output/cache read tokens)
+    /// Usage stats update (input/output/cache read/cache write tokens)
     UsageUpdate {
         input_tokens: u64,
         output_tokens: u64,
         cache_read_tokens: u64,
+        cache_write_tokens: u64,
     },
     /// Context size update (input tokens from API response)
     ContextUpdate {
@@ -249,11 +250,13 @@ pub(crate) fn emit_usage_update(
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
+    cache_write_tokens: u64,
 ) {
     ctx.emit(OutputEvent::UsageUpdate {
         input_tokens,
         output_tokens,
         cache_read_tokens,
+        cache_write_tokens,
     });
 }
 

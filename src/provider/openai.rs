@@ -722,6 +722,7 @@ impl OpenAiProvider {
                         let mut input_tokens = 0;
                         let mut output_tokens_value = 0;
                         let mut cache_read_tokens = 0;
+                        let mut cache_write_tokens = 0;
                         let mut saw_usage = false;
 
                         if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
@@ -750,14 +751,32 @@ impl OpenAiProvider {
                                 );
                             }
                         }
-                        // Handle cached tokens
-                        if let Some(details) = usage.get("input_tokens_details")
-                            && let Some(cached) =
+
+                        // Handle cached token details.
+                        // OpenAI responses may report reads as `cached_tokens`, and cache writes
+                        // as either `cache_write_tokens` or `cache_creation_tokens`.
+                        if let Some(details) = usage.get("input_tokens_details") {
+                            if let Some(cached) =
                                 details.get("cached_tokens").and_then(|v| v.as_u64())
-                        {
-                            saw_usage = true;
-                            cache_read_tokens = cached;
-                            self.usage_tracker.add_cache_read(cached);
+                            {
+                                saw_usage = true;
+                                cache_read_tokens = cached;
+                                self.usage_tracker.add_cache_read(cached);
+                            }
+
+                            if let Some(cache_write) = details
+                                .get("cache_write_tokens")
+                                .and_then(|v| v.as_u64())
+                                .or_else(|| {
+                                    details
+                                        .get("cache_creation_tokens")
+                                        .and_then(|v| v.as_u64())
+                                })
+                            {
+                                saw_usage = true;
+                                cache_write_tokens = cache_write;
+                                self.usage_tracker.add_cache_creation(cache_write);
+                            }
                         }
 
                         if saw_usage {
@@ -766,6 +785,7 @@ impl OpenAiProvider {
                                 input_tokens,
                                 output_tokens_value,
                                 cache_read_tokens,
+                                cache_write_tokens,
                             );
                         }
                     }
