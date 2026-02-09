@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-02-09
+
+### Added
+
+- Skills: Load `SKILL.md`-based skills and add `/skills` for listing available
+  skills
+- CLI: Add `--start-transaction-logging` argument (with optional output path)
+- OpenAI: Add `gpt-5.3-codex` model
+- Anthropic: Add `claude-opus-4-6` with adaptive thinking/effort variants
+- Antigravity: Add `claude-opus-4-6-thinking` model variants
+- CLI: Add tool output viewport with `Ctrl+O` toggle
+- CLI: Run shell commands asynchronously with live output streaming and queued
+  prompt support
+- CLI: Add collapsed viewport mode for file diffs
+- CLI: Add file completion popup menu, including support for bare relative paths
+  (e.g. `src/main`)
+- CLI: Add compact spacing mode with `Ctrl+N` shortcut
+- CLI: Add `Ctrl+L` shortcut to force a full redraw
+- Auth: Show OAuth URLs for manual browser open during provider login
+
+### Changed
+
+- CLI: Rework tool output visibility into a unified hidden/viewport/expanded
+  display mode
+- Tools: Add concise tool result summaries and output previews across more tools
+  (`fetch`, `file_delete`, `glob`, `grep`, `list_dir`)
+- Tools: Increase preview lines from 3 to 5 and match viewport height to 5 lines
+- CLI: Show visible/total line counts in tool output scroll indicators
+- CLI: Improve spacing consistency between live output and history replay,
+  including tool call grouping and thinking blocks
+- CLI: Simplify prompt rendering (remove prefix decorations and reduce echoed
+  prompt chrome)
+- CLI: Remove bandwidth stats and simplify status metrics display
+- CLI: Streaming status now includes cache write tokens
+- OpenAI: Remove custom Codex prompt templates and rely on unified prompts
+- Antigravity: Remove Opus 4.5 model variants
+- CLI: Change model menu fallback shortcut from `Ctrl+O` to `Ctrl+P`
+- CLI: Remove software cursor blinking behavior
+
+### Fixed
+
+- CLI: Restore terminal cursor visibility on exit
+- CLI: Keep cursor hidden in selection/menu modes where appropriate
+- CLI: Fix slash menu close artifacts for long command descriptions
+- CLI: Prevent extra status lines when toggling tool output visibility
+- CLI: Prevent prompt auto-wrap glitches at terminal edge
+- CLI: Keep `/undo` transcript display in sync with conversation history
+- CLI: Preserve output cursor tracking across prompt hide/show transitions
+- CLI: Preserve first prompt spacing after cursor-state resets
+- CLI: Avoid phantom blank lines when buffered output is not actually rendered
+- Anthropic: Fix usage accounting and input token display
+
+### Internal
+
+- Cargo: Add package metadata (description/repository)
+- Repo commands: Remove mandatory co-author attribution from commit workflow
+
 ## [0.5.0] - 2026-01-30
 
 ### Added
