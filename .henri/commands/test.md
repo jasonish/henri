@@ -13,4 +13,6 @@ Then lets test some tool calls:
 * Use the built-in grep tool to search for a pattern
 * Find all files in this project ending in .md
 * Edit a Rust file, adding lines, removing lines and changing a line
+* Create a file
+* Delete the file just created
 * Undo the edit
