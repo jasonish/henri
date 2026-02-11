@@ -684,6 +684,17 @@ fn format_viewport_tail_indicator(hidden: usize, visible: usize, older_truncated
     msg.bright_black().to_string()
 }
 
+pub(super) fn file_read_scroll_summary(total_seen: usize, visible: usize) -> Option<String> {
+    if total_seen <= visible {
+        None
+    } else {
+        Some(format!(
+            "(Showing first {} of {} lines)",
+            visible, total_seen
+        ))
+    }
+}
+
 /// Render tool output (tail or full, depending on Ctrl+O).
 fn render_tool_output(text: &str, total_lines: usize, width: usize) -> String {
     // Skip rendering if tool output is hidden
@@ -771,15 +782,15 @@ fn render_file_read_output(filename: &str, text: &str, total_lines: usize, width
 
     let language = syntax::language_from_path(filename);
     let stored_lines = text.bytes().filter(|&b| b == b'\n').count();
-    let older_truncated = total_lines > stored_lines;
+    let newer_truncated = total_lines > stored_lines;
     let expanded = super::listener::is_tool_output_expanded();
 
     if expanded {
         let mut output = String::new();
 
-        if older_truncated {
+        if newer_truncated {
             let msg = format!(
-                "(Older output truncated: {} lines dropped; showing last {} lines)",
+                "(Newer output truncated: {} lines dropped; showing first {} lines)",
                 total_lines - stored_lines,
                 stored_lines
             )
@@ -799,22 +810,12 @@ fn render_file_read_output(filename: &str, text: &str, total_lines: usize, width
     }
 
     let max_lines = super::listener::tool_output_viewport_lines();
-    let start = wrapped.len().saturating_sub(max_lines);
-    let visible = wrapped.len() - start;
+    let visible = wrapped.len().min(max_lines);
     let mut output = String::new();
 
-    for line in &wrapped[start..] {
+    for line in wrapped.iter().take(visible) {
         let styled = style_file_read_line(line, language.as_deref());
         output.push_str(&styled);
-        output.push('\n');
-    }
-
-    if start > 0 || older_truncated {
-        output.push_str(&style_tool_output_line(&format_viewport_tail_indicator(
-            start,
-            visible,
-            older_truncated,
-        )));
         output.push('\n');
     }
 
@@ -1732,6 +1733,18 @@ const x = 42;
         let rendered = render_file_diff(&diff, None, None);
         assert!(rendered.contains("Showing last"));
         assert!(rendered.contains("of 8 lines"));
+    }
+
+    #[test]
+    fn test_render_file_read_collapsed_does_not_show_inline_indicator() {
+        enable_colors();
+        let mut text = String::new();
+        for idx in 1..=8 {
+            text.push_str(&format!("{:>6}\tline {}\n", idx, idx));
+        }
+
+        let rendered = render_file_read_output("Cargo.toml", &text, 8, 120);
+        assert!(!rendered.contains("Showing first"));
     }
 
     #[test]

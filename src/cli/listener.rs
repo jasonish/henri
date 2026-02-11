@@ -16,7 +16,10 @@ use super::history::{self, HistoryEvent};
 use super::markdown::{
     render_markdown_inlines, render_markdown_inlines_with_style, render_markdown_line,
 };
-use super::render::{BG_DARK_GREEN, BG_DARK_RED, format_summary_suffix, style_file_read_line};
+use super::render::{
+    BG_DARK_GREEN, BG_DARK_RED, file_read_scroll_summary, format_summary_suffix,
+    style_file_read_line,
+};
 use super::spacing::{LastBlock, needs_blank_line_before};
 use super::terminal;
 use crate::output::{OutputEvent, OutputListener};
@@ -257,12 +260,17 @@ pub(crate) fn active_tool_output_height() -> u16 {
     let line_count = state.tool_output.line_count;
     let visible_lines = line_count.min(max_lines);
 
-    // Add 1 for scroll indicator if there are hidden lines
-    let has_scroll_indicator = line_count > max_lines || state.tool_output.total_lines > line_count;
-    let viewport_height = if has_scroll_indicator {
-        visible_lines + 1
-    } else {
+    let viewport_height = if state.tool_output.is_file_read_mode() {
         visible_lines
+    } else {
+        // Add 1 for scroll indicator if there are hidden lines
+        let has_scroll_indicator =
+            line_count > max_lines || state.tool_output.total_lines > line_count;
+        if has_scroll_indicator {
+            visible_lines + 1
+        } else {
+            visible_lines
+        }
     };
 
     let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES as usize;
@@ -283,7 +291,7 @@ pub(crate) fn force_tool_output_rerender() {
         return;
     };
 
-    let (buffer, line_count, total_lines, old_reserved_lines) = {
+    let (buffer, line_count, total_lines, old_reserved_lines, file_read_mode) = {
         let Ok(state) = listener.state.lock() else {
             return;
         };
@@ -295,32 +303,49 @@ pub(crate) fn force_tool_output_rerender() {
             state.tool_output.line_count,
             state.tool_output.total_lines,
             state.tool_output.reserved_lines,
+            state.tool_output.is_file_read_mode(),
         )
     };
 
     let max_lines = tool_output_viewport_lines();
     let width = CliListener::terminal_width();
 
-    // Use fast tail extraction with hard wrapping for long lines
-    let (tail_lines, hidden) =
-        crate::cli::render::tail_lines_fast(&buffer, line_count, max_lines, Some(width));
+    let (visible, scroll_summary) = if file_read_mode {
+        let wrapped = crate::cli::render::wrap_text(&buffer, width);
+        let visible_count = wrapped.len().min(max_lines);
 
-    // Build visible lines with scrolled indicator at bottom
-    let mut visible: Vec<String> = Vec::with_capacity(tail_lines.len() + 1);
-    visible.extend(
-        tail_lines
-            .iter()
-            .map(|line| crate::cli::render::style_tool_output_line(line)),
-    );
-    if hidden > 0 || total_lines > line_count {
-        visible.push(crate::cli::render::style_tool_output_line(
-            &crate::cli::render::format_scrolled_indicator(
-                hidden,
-                tail_lines.len(),
-                Some(total_lines),
-            ),
-        ));
-    }
+        let mut lines: Vec<String> = Vec::with_capacity(visible_count);
+        lines.extend(
+            wrapped
+                .iter()
+                .take(visible_count)
+                .map(|line| style_file_read_line(line, None)),
+        );
+
+        (lines, file_read_scroll_summary(total_lines, visible_count))
+    } else {
+        // Tool viewport keeps showing the tail.
+        let (tail_lines, hidden) =
+            crate::cli::render::tail_lines_fast(&buffer, line_count, max_lines, Some(width));
+
+        let mut lines: Vec<String> = Vec::with_capacity(tail_lines.len() + 1);
+        lines.extend(
+            tail_lines
+                .iter()
+                .map(|line| crate::cli::render::style_tool_output_line(line)),
+        );
+        if hidden > 0 || total_lines > line_count {
+            lines.push(crate::cli::render::style_tool_output_line(
+                &crate::cli::render::format_scrolled_indicator(
+                    hidden,
+                    tail_lines.len(),
+                    Some(total_lines),
+                ),
+            ));
+        }
+        (lines, None)
+    };
+
     let viewport_height = visible.len() as u16;
 
     // Keep a spacer row between the tool viewport and where subsequent
@@ -337,6 +362,9 @@ pub(crate) fn force_tool_output_rerender() {
     // Update reserved_lines in state
     if let Ok(mut state) = listener.state.lock() {
         state.tool_output.reserved_lines = new_reserved;
+        if file_read_mode {
+            state.tool_output.set_scroll_summary(scroll_summary);
+        }
     }
 
     // If expanding, reserve additional space
@@ -787,6 +815,32 @@ fn format_tokens(tokens: u64) -> String {
         format!("{}k", tokens / 1_000)
     } else {
         tokens.to_string()
+    }
+}
+
+fn merge_summary_with_scroll(summary: Option<String>, scroll: Option<String>) -> Option<String> {
+    match (summary, scroll) {
+        (Some(s), Some(scroll_msg)) => {
+            let s = s.trim();
+            let scroll_msg = scroll_msg.trim();
+            if s.is_empty() {
+                return Some(scroll_msg.to_string());
+            }
+            if scroll_msg.is_empty() {
+                return Some(s.to_string());
+            }
+
+            let base = s
+                .strip_prefix('[')
+                .and_then(|inner| inner.strip_suffix(']'))
+                .unwrap_or(s)
+                .trim();
+
+            Some(format!("{} {}", base, scroll_msg))
+        }
+        (Some(s), None) => Some(s),
+        (None, Some(scroll_msg)) => Some(scroll_msg),
+        (None, None) => None,
     }
 }
 
@@ -1588,6 +1642,10 @@ struct ToolOutputState {
     active: bool,
     /// Set when ToolResult is received - prevents late-arriving output from rendering
     completed: bool,
+    /// True when the currently active stream is file_read output.
+    file_read_mode: bool,
+    /// Optional file-read viewport scroll summary to merge into ToolResult.
+    scroll_summary: Option<String>,
     buffer: String,
     reserved_lines: u16,
     /// Running count of complete lines (newlines seen) - includes truncated lines
@@ -1601,6 +1659,8 @@ impl ToolOutputState {
         Self {
             active: false,
             completed: false,
+            file_read_mode: false,
+            scroll_summary: None,
             buffer: String::new(),
             reserved_lines: 0,
             total_lines: 0,
@@ -1611,6 +1671,8 @@ impl ToolOutputState {
     fn reset(&mut self) {
         self.active = false;
         self.completed = false;
+        self.file_read_mode = false;
+        self.scroll_summary = None;
         self.buffer.clear();
         self.reserved_lines = 0;
         self.total_lines = 0;
@@ -1636,6 +1698,29 @@ impl ToolOutputState {
         self.total_lines += new_lines;
         self.line_count += new_lines;
         self.buffer.push_str(text);
+    }
+
+    /// Mark upcoming streamed output as generic tool output.
+    fn set_mode_tool_output(&mut self) {
+        self.file_read_mode = false;
+        self.scroll_summary = None;
+    }
+
+    /// Mark upcoming streamed output as file_read output.
+    fn set_mode_file_read(&mut self) {
+        self.file_read_mode = true;
+    }
+
+    fn is_file_read_mode(&self) -> bool {
+        self.file_read_mode
+    }
+
+    fn set_scroll_summary(&mut self, summary: Option<String>) {
+        self.scroll_summary = summary;
+    }
+
+    fn take_scroll_summary(&mut self) -> Option<String> {
+        self.scroll_summary.take()
     }
 
     /// Truncate buffer to keep only the last `max_lines` lines.
@@ -1665,6 +1750,31 @@ impl ToolOutputState {
             self.line_count = max_lines;
             // total_lines is preserved to show how many lines were seen overall
         }
+    }
+
+    /// Truncate buffer to keep only the first `max_lines` lines.
+    /// Updates line_count to reflect the truncated state (total_lines preserved).
+    fn truncate_to_first_lines(&mut self, max_lines: usize) {
+        if self.line_count <= max_lines {
+            return;
+        }
+
+        let mut kept = 0;
+        let mut end_offset = self.buffer.len();
+
+        for (i, c) in self.buffer.char_indices() {
+            if c == '\n' {
+                kept += 1;
+                if kept >= max_lines {
+                    end_offset = i + 1;
+                    break;
+                }
+            }
+        }
+
+        self.buffer.truncate(end_offset);
+        self.line_count = max_lines;
+        // total_lines is preserved to show how many lines were seen overall
     }
 }
 
@@ -2156,7 +2266,17 @@ impl CliListener {
                     String::new()
                 };
 
-                let summary_suffix = format_summary_suffix(summary.as_deref());
+                let mut merged_summary = summary.clone();
+                if !*is_error {
+                    let scroll_summary = self
+                        .state
+                        .lock()
+                        .ok()
+                        .and_then(|mut s| s.tool_output.take_scroll_summary());
+                    merged_summary = merge_summary_with_scroll(merged_summary, scroll_summary);
+                }
+
+                let summary_suffix = format_summary_suffix(merged_summary.as_deref());
                 // Leaving the cursor at end-of-line prevents a "dangling" empty line
                 // above the prompt when a turn ends with just a tool call.
                 // If there's a summary and we're still on the tool header line,
@@ -2240,6 +2360,7 @@ impl CliListener {
                         if !state.tool_output.active {
                             state.tool_output.active = true;
                         }
+                        state.tool_output.set_mode_tool_output();
                         // Keep the last N lines so toggling visibility can show recent output
                         state.tool_output.append(text);
                         state
@@ -2273,6 +2394,7 @@ impl CliListener {
                             state.tool_output.active = true;
                         }
 
+                        state.tool_output.set_mode_tool_output();
                         state.tool_output.append(text);
                         state
                             .tool_output
@@ -2315,6 +2437,7 @@ impl CliListener {
                         state.tool_output.active = true;
                     }
 
+                    state.tool_output.set_mode_tool_output();
                     state.tool_output.append(text);
 
                     // Truncate buffer to save memory.
@@ -2407,11 +2530,12 @@ impl CliListener {
                         if !state.tool_output.active {
                             state.tool_output.active = true;
                         }
-                        // Keep the last N lines so toggling visibility can show recent output
+                        state.tool_output.set_mode_file_read();
+                        // Keep the first N lines so file read previews preserve context.
                         state.tool_output.append(text);
                         state
                             .tool_output
-                            .truncate_to_last_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
+                            .truncate_to_first_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
                     }
                     // Record to history so toggling the setting can show it later
                     history::append_file_read_output(filename, text);
@@ -2440,10 +2564,11 @@ impl CliListener {
                             state.tool_output.active = true;
                         }
 
+                        state.tool_output.set_mode_file_read();
                         state.tool_output.append(text);
                         state
                             .tool_output
-                            .truncate_to_last_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
+                            .truncate_to_first_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
                     }
 
                     // Render complete lines only (leave partial trailing line buffered).
@@ -2468,7 +2593,7 @@ impl CliListener {
                     return;
                 }
 
-                // VIEWPORT MODE: Show only the last N lines in a fixed viewport.
+                // VIEWPORT MODE: Show only the first N lines in a fixed viewport.
                 let has_trailing_newline = text.ends_with('\n');
 
                 {
@@ -2482,16 +2607,23 @@ impl CliListener {
                         state.tool_output.active = true;
                     }
 
+                    state.tool_output.set_mode_file_read();
                     state.tool_output.append(text);
 
                     // Truncate buffer to save memory.
                     state
                         .tool_output
-                        .truncate_to_last_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
+                        .truncate_to_first_lines(crate::cli::TOOL_OUTPUT_MAX_BUFFER_LINES);
                 }
 
                 if has_trailing_newline {
-                    let (reserve_delta, visible_lines, viewport_height, spacer_lines) = {
+                    let (
+                        reserve_delta,
+                        visible_lines,
+                        viewport_height,
+                        spacer_lines,
+                        scroll_summary,
+                    ) = {
                         let Ok(mut state) = self.state.lock() else {
                             return;
                         };
@@ -2501,28 +2633,23 @@ impl CliListener {
                         let total_seen = state.tool_output.total_lines;
                         let width = Self::terminal_width();
 
-                        let (tail_lines, hidden) = crate::cli::render::tail_lines_fast(
-                            &state.tool_output.buffer,
-                            buffer_lines,
-                            max_lines,
-                            Some(width),
-                        );
+                        let wrapped =
+                            crate::cli::render::wrap_text(&state.tool_output.buffer, width);
+                        let visible_count = wrapped.len().min(max_lines);
+                        let hidden = wrapped.len().saturating_sub(visible_count);
+                        let scroll_summary = if hidden > 0 || total_seen > buffer_lines {
+                            file_read_scroll_summary(total_seen, visible_count)
+                        } else {
+                            None
+                        };
 
-                        let mut visible: Vec<String> = Vec::with_capacity(tail_lines.len() + 1);
+                        let mut visible: Vec<String> = Vec::with_capacity(visible_count);
                         visible.extend(
-                            tail_lines
+                            wrapped
                                 .iter()
+                                .take(visible_count)
                                 .map(|line| style_file_read_line(line, language.as_deref())),
                         );
-                        if hidden > 0 || total_seen > buffer_lines {
-                            visible.push(crate::cli::render::style_tool_output_line(
-                                &crate::cli::render::format_scrolled_indicator(
-                                    hidden,
-                                    tail_lines.len(),
-                                    Some(total_seen),
-                                ),
-                            ));
-                        }
                         let viewport_height = visible.len() as u16;
 
                         let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;
@@ -2531,7 +2658,13 @@ impl CliListener {
                             desired_total.saturating_sub(state.tool_output.reserved_lines);
                         state.tool_output.reserved_lines = desired_total;
 
-                        (reserve_delta, visible, viewport_height, spacer)
+                        (
+                            reserve_delta,
+                            visible,
+                            viewport_height,
+                            spacer,
+                            scroll_summary,
+                        )
                     };
 
                     if reserve_delta > 0 {
@@ -2539,6 +2672,9 @@ impl CliListener {
                     }
 
                     terminal::render_tool_viewport(&visible_lines, viewport_height, spacer_lines);
+                    if let Ok(mut state) = self.state.lock() {
+                        state.tool_output.set_scroll_summary(scroll_summary);
+                    }
                 }
 
                 history::append_file_read_output(filename, text);
@@ -2975,6 +3111,19 @@ mod tests {
         assert_eq!(super::format_tokens(1_200_000), "1.2M");
         assert_eq!(super::format_tokens(8_100_000), "8.1M");
         assert_eq!(super::format_tokens(12_000_000), "12M");
+    }
+
+    #[test]
+    fn merge_summary_with_scroll_combines_without_double_brackets() {
+        let merged = super::merge_summary_with_scroll(
+            Some("[Read 44 lines, 1441 bytes]".to_string()),
+            Some("(Showing first 5 of 45 lines)".to_string()),
+        );
+
+        assert_eq!(
+            merged.as_deref(),
+            Some("Read 44 lines, 1441 bytes (Showing first 5 of 45 lines)")
+        );
     }
 
     #[test]

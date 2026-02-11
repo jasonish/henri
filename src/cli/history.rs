@@ -210,7 +210,7 @@ impl History {
     }
 
     /// Append file read output to the last FileReadOutput event with the same filename, or create a new one.
-    /// Truncates to keep only the last TOOL_OUTPUT_MAX_BUFFER_LINES lines.
+    /// Truncates to keep only the first TOOL_OUTPUT_MAX_BUFFER_LINES lines.
     pub(crate) fn append_file_read_output(&mut self, filename: &str, text: &str) {
         let new_lines = text.bytes().filter(|&b| b == b'\n').count();
 
@@ -226,11 +226,12 @@ impl History {
             *total_lines += new_lines;
             *stored_lines += new_lines;
             *stored_lines =
-                truncate_to_last_lines(existing, *stored_lines, TOOL_OUTPUT_MAX_BUFFER_LINES);
+                truncate_to_first_lines(existing, *stored_lines, TOOL_OUTPUT_MAX_BUFFER_LINES);
             return;
         }
         let mut new_text = text.to_string();
-        let stored = truncate_to_last_lines(&mut new_text, new_lines, TOOL_OUTPUT_MAX_BUFFER_LINES);
+        let stored =
+            truncate_to_first_lines(&mut new_text, new_lines, TOOL_OUTPUT_MAX_BUFFER_LINES);
         self.push(HistoryEvent::FileReadOutput {
             filename: filename.to_string(),
             text: new_text,
@@ -266,6 +267,31 @@ fn truncate_to_last_lines(text: &mut String, line_count: usize, max_lines: usize
         *text = text[start_offset..].to_string();
     }
 
+    max_lines
+}
+
+/// Truncate a string to keep only the first `max_lines` lines.
+/// Takes the current line count to avoid rescanning.
+/// Returns the new line count after truncation.
+fn truncate_to_first_lines(text: &mut String, line_count: usize, max_lines: usize) -> usize {
+    if line_count <= max_lines {
+        return line_count;
+    }
+
+    let mut kept = 0;
+    let mut end_offset = text.len();
+
+    for (i, c) in text.char_indices() {
+        if c == '\n' {
+            kept += 1;
+            if kept >= max_lines {
+                end_offset = i + 1;
+                break;
+            }
+        }
+    }
+
+    text.truncate(end_offset);
     max_lines
 }
 
