@@ -64,6 +64,7 @@ const ZEN_MODELS: &[ZenModelSpec] = &[
     ZenModelSpec::new("grok-code", ApiType::OpenAiCompatible),
     ZenModelSpec::new("kimi-k2.5", ApiType::OpenAiCompatible),
     ZenModelSpec::new("kimi-k2.5-free", ApiType::OpenAiCompatible),
+    ZenModelSpec::new("minimax-m2.5-free", ApiType::OpenAiCompatible),
 ];
 
 fn get_model_spec(model: &str) -> Option<&'static ZenModelSpec> {
@@ -223,6 +224,10 @@ impl ZenProvider {
         }
         // Zen big-pickle
         if model.contains("big-pickle") {
+            return Some(200_000);
+        }
+        // MiniMax models hosted by Zen
+        if model.contains("minimax-m2.5") {
             return Some(200_000);
         }
         // GPT-5 models hosted by Zen

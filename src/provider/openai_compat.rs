@@ -322,11 +322,23 @@ async fn execute_chat_inner(
 
         // Capture usage information (only once, from the final chunk that contains it)
         if !usage_recorded && let Some(usage_data) = &chunk.usage {
+            let mut usage_prompt_tokens = 0;
+            let mut usage_completion_tokens = 0;
+            let mut usage_cache_read_tokens = 0;
+
             if let Some(prompt_tokens) = usage_data.prompt_tokens {
                 config.usage_tracker.record_input(prompt_tokens);
+                usage_prompt_tokens = prompt_tokens;
+                let context_limit = if config.provider_name == "zen" {
+                    crate::provider::zen::ZenProvider::context_limit(&config.model)
+                } else {
+                    None
+                };
+                output::emit_context_update(output, prompt_tokens, context_limit);
             }
             if let Some(completion_tokens) = usage_data.completion_tokens {
                 config.usage_tracker.record_output(completion_tokens);
+                usage_completion_tokens = completion_tokens;
 
                 // Emit progress with turn total (accumulated across all API calls)
                 let duration = streaming_start.elapsed().as_secs_f64();
@@ -341,7 +353,20 @@ async fn execute_chat_inner(
                 && let Some(cached) = details.cached_tokens
             {
                 config.usage_tracker.add_cache_read(cached);
+                usage_cache_read_tokens = cached;
             }
+
+            if usage_prompt_tokens > 0 || usage_completion_tokens > 0 || usage_cache_read_tokens > 0
+            {
+                output::emit_usage_update(
+                    output,
+                    usage_prompt_tokens,
+                    usage_completion_tokens,
+                    usage_cache_read_tokens,
+                    0,
+                );
+            }
+
             usage_recorded = true;
         }
     }
