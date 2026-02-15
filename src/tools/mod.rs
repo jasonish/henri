@@ -3,41 +3,29 @@
 
 mod bash;
 mod fetch;
-mod file_delete;
 mod file_edit;
 mod file_read;
 mod file_write;
-mod glob;
-mod grep;
-mod list_dir;
 mod sandbox;
 
 pub(crate) use bash::Bash;
 pub(crate) use fetch::Fetch;
-pub(crate) use file_delete::FileDelete;
 pub(crate) use file_edit::FileEdit;
 pub(crate) use file_read::FileRead;
 pub(crate) use file_write::FileWrite;
-pub(crate) use glob::Glob;
-pub(crate) use grep::Grep;
-pub(crate) use list_dir::ListDir;
 
 use serde::{Deserialize, Serialize, de};
 
-pub(crate) const READ_ONLY_DISABLED_TOOLS: &[&str] = &["file_delete", "file_edit", "file_write"];
+pub(crate) const READ_ONLY_DISABLED_TOOLS: &[&str] = &["file_edit", "file_write"];
 
 /// Built-in tool names and their human-readable descriptions.
 /// This is the single source of truth for tool metadata used in menus and UIs.
 pub(crate) const TOOL_INFO: &[(&str, &str)] = &[
     ("bash", "Execute shell commands"),
     ("fetch", "Fetch URLs and convert to markdown"),
-    ("file_delete", "Delete files from the filesystem"),
     ("file_edit", "Edit files with string replacements"),
     ("file_read", "Read file contents"),
     ("file_write", "Write content to files"),
-    ("glob", "Find files using glob patterns"),
-    ("grep", "Search for patterns in files"),
-    ("list_dir", "List directory contents"),
 ];
 
 const BUILTIN_TOOL_ALIASES: &[(&str, &str)] = &[
@@ -45,15 +33,6 @@ const BUILTIN_TOOL_ALIASES: &[(&str, &str)] = &[
     ("read", "file_read"),
     ("cat", "file_read"),
     ("write", "file_write"),
-    ("delete", "file_delete"),
-    ("del", "file_delete"),
-    ("rm", "file_delete"),
-    ("remove", "file_delete"),
-    ("ls", "list_dir"),
-    ("list", "list_dir"),
-    ("dir", "list_dir"),
-    ("find", "glob"),
-    ("search", "grep"),
 ];
 
 /// Tool definition for AI model consumption
@@ -72,8 +51,10 @@ pub(crate) struct ToolResult {
     pub kind: String,
     pub content: String,
     /// Optional base64-encoded binary data (e.g., for images).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
     /// MIME type for the data field (e.g., "image/png").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
     pub is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,13 +214,9 @@ pub(crate) fn canonicalize_builtin_tool_name(name: &str) -> Option<&'static str>
     match lower.as_str() {
         "bash" => Some("bash"),
         "fetch" => Some("fetch"),
-        "file_delete" => Some("file_delete"),
         "file_edit" => Some("file_edit"),
         "file_read" => Some("file_read"),
         "file_write" => Some("file_write"),
-        "glob" => Some("glob"),
-        "grep" => Some("grep"),
-        "list_dir" => Some("list_dir"),
         _ => BUILTIN_TOOL_ALIASES
             .iter()
             .find_map(|(alias, canonical)| (*alias == lower).then_some(*canonical)),
@@ -256,22 +233,6 @@ pub(crate) fn validate_path_exists(
         Err(Box::new(ToolResult::error(
             tool_use_id,
             format!("Path not found: {}", path_str),
-        )))
-    } else {
-        Ok(())
-    }
-}
-
-/// Validate that a path is a directory, returning an error ToolResult if not
-pub(crate) fn validate_is_directory(
-    tool_use_id: &str,
-    path: &std::path::Path,
-    path_str: &str,
-) -> Result<(), Box<ToolResult>> {
-    if !path.is_dir() {
-        Err(Box::new(ToolResult::error(
-            tool_use_id,
-            format!("Path is not a directory: {}", path_str),
         )))
     } else {
         Ok(())
@@ -468,48 +429,9 @@ pub(crate) fn format_tool_call_description(tool_name: &str, input: &serde_json::
             let filepath = collapse_home_for_display(filepath);
             format!("Writing {}", filepath)
         }
-        "glob" => {
-            let pattern = input
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .unwrap_or("pattern");
-            let path = input.get("path").and_then(|v| v.as_str());
-            match path {
-                Some(p) => format!(
-                    "Finding \"{}\" in {}",
-                    pattern,
-                    collapse_home_for_display(p)
-                ),
-                None => format!("Finding \"{}\"", pattern),
-            }
-        }
-        "grep" => {
-            let pattern = input
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .unwrap_or("pattern");
-            let path = input.get("path").and_then(|v| v.as_str());
-            match path {
-                Some(p) => format!("Grep \"{}\" in {}", pattern, collapse_home_for_display(p)),
-                None => format!("Grep \"{}\"", pattern),
-            }
-        }
-        "file_delete" => {
-            let filepath = input
-                .get("filePath")
-                .and_then(|v| v.as_str())
-                .unwrap_or("file");
-            let filepath = collapse_home_for_display(filepath);
-            format!("Deleting {}", filepath)
-        }
         "fetch" => {
             let url = input.get("url").and_then(|v| v.as_str()).unwrap_or("url");
             format!("Fetching {}", url)
-        }
-        "list_dir" => {
-            let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            let path = collapse_home_for_display(path);
-            format!("Listing {}", path)
         }
         name if name.starts_with("mcp_") => {
             // MCP tools: format as "tool_name via server_name"
@@ -550,9 +472,6 @@ pub(crate) fn builtin_definitions(
     if !is_disabled("fetch") {
         tools.push(Fetch.definition());
     }
-    if !is_disabled("file_delete") {
-        tools.push(FileDelete.definition());
-    }
     if !is_disabled("file_edit") {
         tools.push(FileEdit.definition());
     }
@@ -561,15 +480,6 @@ pub(crate) fn builtin_definitions(
     }
     if !is_disabled("file_write") {
         tools.push(FileWrite.definition());
-    }
-    if !is_disabled("glob") {
-        tools.push(Glob.definition());
-    }
-    if !is_disabled("grep") {
-        tools.push(Grep.definition());
-    }
-    if !is_disabled("list_dir") {
-        tools.push(ListDir.definition());
     }
     tools
 }
@@ -616,13 +526,6 @@ pub(crate) async fn execute(
         match name {
             "bash" => return Some(Bash.execute(tool_use_id, input, output, services).await),
             "fetch" => return Some(Fetch.execute(tool_use_id, input, output, services).await),
-            "file_delete" => {
-                return Some(
-                    FileDelete
-                        .execute(tool_use_id, input, output, services)
-                        .await,
-                );
-            }
             "file_edit" => {
                 return Some(FileEdit.execute(tool_use_id, input, output, services).await);
             }
@@ -636,9 +539,6 @@ pub(crate) async fn execute(
                         .await,
                 );
             }
-            "glob" => return Some(Glob.execute(tool_use_id, input, output, services).await),
-            "grep" => return Some(Grep.execute(tool_use_id, input, output, services).await),
-            "list_dir" => return Some(ListDir.execute(tool_use_id, input, output, services).await),
             _ => {}
         }
     }
@@ -688,7 +588,6 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(!names.contains(&"file_write"));
         assert!(!names.contains(&"file_edit"));
-        assert!(!names.contains(&"file_delete"));
         assert!(names.contains(&"file_read"));
         assert!(names.contains(&"bash"));
     }

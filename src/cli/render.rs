@@ -669,21 +669,6 @@ pub(crate) fn format_scrolled_indicator(
     }
 }
 
-fn format_viewport_tail_indicator(hidden: usize, visible: usize, older_truncated: bool) -> String {
-    let buffer_total = hidden + visible;
-    let mut msg = if hidden > 0 {
-        format!("(Showing last {} of {} lines)", visible, buffer_total)
-    } else {
-        format!("(Showing {} lines)", visible)
-    };
-
-    if older_truncated {
-        msg.push_str(" (older output truncated)");
-    }
-
-    msg.bright_black().to_string()
-}
-
 pub(super) fn file_read_scroll_summary(total_seen: usize, visible: usize) -> Option<String> {
     if total_seen <= visible {
         None
@@ -742,7 +727,6 @@ fn render_tool_output(text: &str, total_lines: usize, width: usize) -> String {
 
     let max_lines = super::listener::tool_output_viewport_lines();
     let start = wrapped.len().saturating_sub(max_lines);
-    let visible = wrapped.len() - start;
     let mut output = String::new();
 
     for line in &wrapped[start..] {
@@ -750,14 +734,8 @@ fn render_tool_output(text: &str, total_lines: usize, width: usize) -> String {
         output.push('\n');
     }
 
-    if start > 0 || older_truncated {
-        output.push_str(&style_tool_output_line(&format_viewport_tail_indicator(
-            start,
-            visible,
-            older_truncated,
-        )));
-        output.push('\n');
-    }
+    // Scroll info is merged into the ToolResult summary line,
+    // so we don't show a separate indicator here.
 
     output
 }

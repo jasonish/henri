@@ -35,11 +35,7 @@ fn to_claude_code_name(name: &str) -> String {
         "file_read" => "Read".to_string(),
         "file_write" => "Write".to_string(),
         "file_edit" => "Edit".to_string(),
-        "file_delete" => "FileDelete".to_string(),
         "bash" => "Bash".to_string(),
-        "grep" => "Grep".to_string(),
-        "glob" => "Glob".to_string(),
-        "list_dir" => "LS".to_string(),
         "fetch" => "Fetch".to_string(),
         other => other.to_string(),
     }
@@ -51,11 +47,7 @@ fn from_claude_code_name(name: &str) -> String {
         "Read" => "file_read".to_string(),
         "Write" => "file_write".to_string(),
         "Edit" => "file_edit".to_string(),
-        "FileDelete" => "file_delete".to_string(),
         "Bash" => "bash".to_string(),
-        "Grep" => "grep".to_string(),
-        "Glob" => "glob".to_string(),
-        "LS" => "list_dir".to_string(),
         "Fetch" => "fetch".to_string(),
         other => other.to_string(),
     }

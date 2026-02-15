@@ -163,40 +163,6 @@ enum McpCommand {
 
 #[derive(Subcommand, Debug)]
 enum ToolCommand {
-    /// Test the glob tool to find files using patterns
-    Glob {
-        /// Glob pattern to match files (e.g., '**/*.rs', 'src/**/*.rs')
-        pattern: String,
-
-        /// Base directory for search (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-
-        /// Maximum number of files to return
-        #[arg(short, long)]
-        limit: Option<usize>,
-
-        /// Include hidden files/directories
-        #[arg(long)]
-        include_hidden: bool,
-    },
-    /// Test the grep tool to search for patterns in files
-    Grep {
-        /// Regular expression or string to search for
-        pattern: String,
-
-        /// Directory or file to search in (default: current directory)
-        #[arg(short, long)]
-        path: Option<String>,
-
-        /// Ignore case distinctions
-        #[arg(short = 'i', long)]
-        case_insensitive: bool,
-
-        /// Include hidden files/directories and ignored files
-        #[arg(long)]
-        include_hidden: bool,
-    },
     /// Test the bash tool to execute shell commands
     Bash {
         /// Command to execute (everything after `bash` is treated as the command)
@@ -224,6 +190,15 @@ enum ToolCommand {
         /// Maximum number of lines to read
         #[arg(short, long)]
         limit: Option<usize>,
+    },
+    /// Test the fetch tool to retrieve URL contents
+    Fetch {
+        /// The URL to fetch
+        url: String,
+
+        /// Return raw content without conversion
+        #[arg(short, long)]
+        raw: bool,
     },
 }
 
@@ -253,34 +228,6 @@ async fn main() -> std::io::Result<()> {
                 }
             },
             Command::ToolCall { tool } => match tool {
-                ToolCommand::Glob {
-                    pattern,
-                    path,
-                    limit,
-                    include_hidden,
-                } => {
-                    return handle_glob_command(
-                        pattern.clone(),
-                        path.clone(),
-                        *limit,
-                        *include_hidden,
-                    )
-                    .await;
-                }
-                ToolCommand::Grep {
-                    pattern,
-                    path,
-                    case_insensitive,
-                    include_hidden,
-                } => {
-                    return handle_grep_command(
-                        pattern.clone(),
-                        path.clone(),
-                        *case_insensitive,
-                        *include_hidden,
-                    )
-                    .await;
-                }
                 ToolCommand::Bash {
                     command,
                     timeout,
@@ -294,6 +241,9 @@ async fn main() -> std::io::Result<()> {
                     limit,
                 } => {
                     return handle_file_read_command(filename.clone(), *offset, *limit).await;
+                }
+                ToolCommand::Fetch { url, raw } => {
+                    return handle_fetch_command(url.clone(), *raw).await;
                 }
             },
             Command::Upgrade => {
@@ -336,75 +286,6 @@ async fn main() -> std::io::Result<()> {
         batch: args.batch,
     })
     .await?;
-
-    Ok(())
-}
-
-async fn handle_glob_command(
-    pattern: String,
-    path: Option<String>,
-    limit: Option<usize>,
-    include_hidden: bool,
-) -> std::io::Result<()> {
-    use tools::Tool;
-
-    let glob_tool = tools::Glob;
-    let input = serde_json::json!({
-        "pattern": pattern,
-        "path": path,
-        "limit": limit,
-        "include_hidden": include_hidden,
-    });
-
-    let output = output::OutputContext::new_quiet();
-    let services = services::Services::new();
-    let result = glob_tool
-        .execute("glob-test", input, &output, &services)
-        .await;
-
-    if result.is_error {
-        eprintln!("Error: {}", result.content);
-        std::process::exit(1);
-    } else {
-        print!("{}", result.content);
-    }
-
-    Ok(())
-}
-
-async fn handle_grep_command(
-    pattern: String,
-    path: Option<String>,
-    case_insensitive: bool,
-    include_hidden: bool,
-) -> std::io::Result<()> {
-    use tools::Tool;
-
-    let grep_tool = tools::Grep;
-    let input = serde_json::json!({
-        "pattern": pattern,
-        "path": path,
-        "case_insensitive": case_insensitive,
-        "include_hidden": include_hidden,
-    });
-
-    let output = output::OutputContext::new_quiet();
-    let services = services::Services::new();
-    let result = grep_tool
-        .execute("grep-test", input, &output, &services)
-        .await;
-
-    match serde_json::to_string(&result) {
-        Ok(json) => println!("{}", json),
-        Err(e) => {
-            eprintln!("Failed to serialize tool result: {}", e);
-            std::process::exit(1);
-        }
-    }
-
-    if result.is_error {
-        std::process::exit(result.exit_code.unwrap_or(1));
-    }
 
     Ok(())
 }
@@ -474,6 +355,36 @@ async fn handle_bash_command(
 
     if result.is_error {
         std::process::exit(result.exit_code.unwrap_or(1));
+    }
+
+    Ok(())
+}
+
+async fn handle_fetch_command(url: String, raw: bool) -> std::io::Result<()> {
+    use tools::Tool;
+
+    let fetch_tool = tools::Fetch;
+    let input = serde_json::json!({
+        "url": url,
+        "raw": raw,
+    });
+
+    let output = output::OutputContext::new_quiet();
+    let services = services::Services::new();
+    let result = fetch_tool
+        .execute("fetch-test", input, &output, &services)
+        .await;
+
+    match serde_json::to_string(&result) {
+        Ok(json) => println!("{}", json),
+        Err(e) => {
+            eprintln!("Failed to serialize tool result: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    if result.is_error {
+        std::process::exit(1);
     }
 
     Ok(())

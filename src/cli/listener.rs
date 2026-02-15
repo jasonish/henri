@@ -258,20 +258,7 @@ pub(crate) fn active_tool_output_height() -> u16 {
 
     let max_lines = tool_output_viewport_lines();
     let line_count = state.tool_output.line_count;
-    let visible_lines = line_count.min(max_lines);
-
-    let viewport_height = if state.tool_output.is_file_read_mode() {
-        visible_lines
-    } else {
-        // Add 1 for scroll indicator if there are hidden lines
-        let has_scroll_indicator =
-            line_count > max_lines || state.tool_output.total_lines > line_count;
-        if has_scroll_indicator {
-            visible_lines + 1
-        } else {
-            visible_lines
-        }
-    };
+    let viewport_height = line_count.min(max_lines);
 
     let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES as usize;
     (viewport_height + spacer) as u16
@@ -325,24 +312,15 @@ pub(crate) fn force_tool_output_rerender() {
         (lines, file_read_scroll_summary(total_lines, visible_count))
     } else {
         // Tool viewport keeps showing the tail.
-        let (tail_lines, hidden) =
+        let (tail_lines, _) =
             crate::cli::render::tail_lines_fast(&buffer, line_count, max_lines, Some(width));
 
-        let mut lines: Vec<String> = Vec::with_capacity(tail_lines.len() + 1);
+        let mut lines: Vec<String> = Vec::with_capacity(tail_lines.len());
         lines.extend(
             tail_lines
                 .iter()
                 .map(|line| crate::cli::render::style_tool_output_line(line)),
         );
-        if hidden > 0 || total_lines > line_count {
-            lines.push(crate::cli::render::style_tool_output_line(
-                &crate::cli::render::format_scrolled_indicator(
-                    hidden,
-                    tail_lines.len(),
-                    Some(total_lines),
-                ),
-            ));
-        }
         (lines, None)
     };
 
@@ -1882,7 +1860,7 @@ impl CliListener {
     fn handle_event(&self, event: &OutputEvent) {
         match event {
             OutputEvent::ThinkingStart => {
-                self.close_tool_block();
+                self.close_tool_block_no_line_break();
                 let Ok(mut state) = self.state.lock() else {
                     return;
                 };
@@ -2042,7 +2020,7 @@ impl CliListener {
                     return;
                 }
 
-                self.close_tool_block();
+                self.close_tool_block_no_line_break();
 
                 let width = Self::terminal_width();
                 let Ok(mut state) = self.state.lock() else {
@@ -2268,11 +2246,25 @@ impl CliListener {
 
                 let mut merged_summary = summary.clone();
                 if !*is_error {
-                    let scroll_summary = self
-                        .state
-                        .lock()
-                        .ok()
-                        .and_then(|mut s| s.tool_output.take_scroll_summary());
+                    let display_mode = tool_output_display_mode();
+                    let scroll_summary = self.state.lock().ok().and_then(|mut s| {
+                        // Explicit scroll_summary (set by file_read)
+                        if let summary @ Some(_) = s.tool_output.take_scroll_summary() {
+                            return summary;
+                        }
+                        // For generic tool output in viewport mode, compute scroll info from state.
+                        if display_mode != ToolOutputDisplayMode::Viewport {
+                            return None;
+                        }
+                        let total = s.tool_output.total_lines;
+                        let max = tool_output_viewport_lines();
+                        let visible = s.tool_output.line_count.min(max);
+                        if total > visible {
+                            Some(format!("(showing last {} of {} lines)", visible, total))
+                        } else {
+                            None
+                        }
+                    });
                     merged_summary = merge_summary_with_scroll(merged_summary, scroll_summary);
                 }
 
@@ -2326,7 +2318,7 @@ impl CliListener {
                 history::push(HistoryEvent::ToolResult {
                     output: error_preview.clone().unwrap_or_default(),
                     is_error: *is_error,
-                    summary: summary.clone(),
+                    summary: merged_summary,
                 });
 
                 // Mark as completed to prevent late-arriving output from rendering
@@ -2455,31 +2447,23 @@ impl CliListener {
 
                         let max_lines = tool_output_viewport_lines();
                         let buffer_lines = state.tool_output.line_count;
-                        let total_seen = state.tool_output.total_lines;
                         let width = Self::terminal_width();
 
-                        let (tail_lines, hidden) = crate::cli::render::tail_lines_fast(
+                        let (tail_lines, _) = crate::cli::render::tail_lines_fast(
                             &state.tool_output.buffer,
                             buffer_lines,
                             max_lines,
                             Some(width),
                         );
 
-                        let mut visible: Vec<String> = Vec::with_capacity(tail_lines.len() + 1);
+                        let mut visible: Vec<String> = Vec::with_capacity(tail_lines.len());
                         visible.extend(
                             tail_lines
                                 .iter()
                                 .map(|line| crate::cli::render::style_tool_output_line(line)),
                         );
-                        if hidden > 0 || total_seen > buffer_lines {
-                            visible.push(crate::cli::render::style_tool_output_line(
-                                &crate::cli::render::format_scrolled_indicator(
-                                    hidden,
-                                    tail_lines.len(),
-                                    Some(total_seen),
-                                ),
-                            ));
-                        }
+                        // Scroll info is merged into the ToolResult summary line,
+                        // so we don't show a separate indicator in the viewport.
                         let viewport_height = visible.len() as u16;
 
                         let spacer = crate::cli::TOOL_OUTPUT_VIEWPORT_SPACER_LINES;
