@@ -2969,6 +2969,10 @@ impl CliListener {
                 self.close_tool_block_no_line_break();
                 // Capture final duration and update display
                 finalize_streaming();
+                // Retract trailing blank lines so they don't stack with the
+                // streaming status spacer row (which would look like two blank
+                // lines between content and the status line).
+                terminal::retract_trailing_blank_lines();
                 spinner_ready();
                 // Reset turn-level state for next turn
                 if let Ok(mut state) = self.state.lock() {
@@ -2982,6 +2986,9 @@ impl CliListener {
                 self.close_tool_block_no_line_break();
                 // Finalize current duration so the stats are displayed on "Cancelled"
                 finalize_streaming();
+                // Retract trailing blank lines so they don't stack with the
+                // streaming status spacer row.
+                terminal::retract_trailing_blank_lines();
                 spinner_ready();
                 // Reset turn-level state for next turn
                 if let Ok(mut state) = self.state.lock() {

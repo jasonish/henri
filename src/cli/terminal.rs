@@ -176,6 +176,76 @@ pub(crate) fn ensure_trailing_newlines(min: u8) {
     }
 }
 
+/// Retract trailing blank lines from the output area.
+///
+/// When the streaming status area is active, a spacer row sits between the output
+/// and the status line. If the output already ends with one or more blank lines
+/// (trailing newlines), the spacer stacks with them, creating an excessive gap.
+///
+/// This function deletes the trailing blank output rows so only the spacer
+/// provides the visual separation.
+pub(super) fn retract_trailing_blank_lines() {
+    let _guard = lock_output();
+
+    let retract = {
+        let state = OUTPUT_CURSOR.lock().unwrap();
+        if state.trailing_newlines == 0 || !state.has_output {
+            return;
+        }
+        state.trailing_newlines as u16
+    };
+
+    let (visible, start_row, status_active, cursor_pos) = {
+        let state = PROMPT_STATE.lock().unwrap();
+        (
+            state.visible,
+            state.start_row,
+            state.status_line_active,
+            state.cursor_pos,
+        )
+    };
+
+    if !visible || !status_active {
+        return;
+    }
+
+    let reserved = STREAMING_STATUS_LINE_ROWS;
+    // First row of the reserved area (spacer + status rows).
+    let output_end = start_row.saturating_sub(reserved);
+
+    if output_end == 0 {
+        return;
+    }
+
+    // Cap retraction to the available output rows.
+    let retract = retract.min(output_end);
+
+    // The blank lines occupy [output_end - retract .. output_end - 1].
+    let delete_row = output_end.saturating_sub(retract);
+
+    let mut stdout = io::stdout();
+    let _ = execute!(stdout, crossterm::cursor::SavePosition, Hide);
+    let _ = execute!(stdout, MoveTo(0, delete_row));
+    // Delete `retract` lines; everything below shifts up.
+    print!("\x1b[{}M", retract);
+    let _ = stdout.flush();
+
+    // Update prompt & output tracking.
+    if let Ok(mut state) = PROMPT_STATE.lock() {
+        state.start_row = state.start_row.saturating_sub(retract);
+    }
+    if let Ok(mut state) = OUTPUT_CURSOR.lock() {
+        state.trailing_newlines = 0;
+    }
+
+    // Restore cursor to updated prompt position.
+    let (prompt_start, cursor) = PROMPT_STATE
+        .lock()
+        .map(|s| (Some(s.start_row), s.cursor_pos))
+        .unwrap_or((None, cursor_pos));
+    restore_cursor_hidden(&mut stdout, prompt_start, cursor);
+}
+
 /// Notify the terminal manager that the prompt box is now visible.
 /// `start_row` is the 0-indexed row where the prompt begins.
 pub(super) fn set_prompt_visible(height: u16, start_row: u16, status_row_offset: u16) {
