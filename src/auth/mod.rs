@@ -5,7 +5,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use colored::Colorize;
 use inquire::error::InquireError;
 use inquire::{Select, Text};
-use rand::Rng;
+use rand::RngExt;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
